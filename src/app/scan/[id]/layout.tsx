@@ -11,7 +11,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
   const hostname = (() => { try { return new URL(scan.target).hostname; } catch { return scan.target; } })();
   const title = `${hostname} — Grade ${scan.grade} | VibeShield`;
-  const description = `Security scan: ${scan.summary.total} findings (${scan.summary.critical} critical, ${scan.summary.high} high, ${scan.summary.medium} medium). Scanned with 37 attack modules.`;
+  const description = `Security scan: ${scan.summary.total} findings (${scan.summary.critical} critical, ${scan.summary.high} high, ${scan.summary.medium} medium). Scanned with 39 attack modules.`;
 
   return {
     title,

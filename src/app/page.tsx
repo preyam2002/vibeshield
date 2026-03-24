@@ -41,6 +41,8 @@ const ATTACK_MODULES = [
   { name: "AI/LLM Security", desc: "Prompt injection, system prompt leak, unauthed AI", icon: "🤖" },
   { name: "SSRF", desc: "Server-side request forgery via proxy/fetch endpoints", icon: "🌀" },
   { name: "File Upload", desc: "Unrestricted file types, SVG XSS, path traversal", icon: "📤" },
+  { name: "CRLF Injection", desc: "HTTP header injection via CRLF in parameters", icon: "↵" },
+  { name: "Host Header", desc: "Host injection, password reset poisoning", icon: "🏠" },
 ];
 
 interface RecentScan {

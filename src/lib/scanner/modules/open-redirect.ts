@@ -22,8 +22,8 @@ const EVIL_URLS = [
 export const openRedirectModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // Test redirect parameters on all known pages and endpoints
-  const testUrls = [target.url, ...target.pages.slice(0, 5), ...target.apiEndpoints.slice(0, 5)];
+  // Test redirect parameters on a subset of pages and endpoints
+  const testUrls = [target.url, ...target.pages.slice(0, 3), ...target.apiEndpoints.slice(0, 3)];
   const foundPaths = new Set<string>();
   const MAX_FINDINGS = 3;
 
@@ -32,9 +32,9 @@ export const openRedirectModule: ScanModule = async (target) => {
     const pathname = new URL(baseUrl).pathname;
     if (foundPaths.has(pathname)) continue;
 
-    for (const param of REDIRECT_PARAMS) {
+    for (const param of REDIRECT_PARAMS.slice(0, 10)) {
       if (foundPaths.has(pathname)) break;
-      for (const evil of EVIL_URLS.slice(0, 4)) {
+      for (const evil of EVIL_URLS.slice(0, 3)) {
         try {
           const url = new URL(baseUrl);
           url.searchParams.set(param, evil);

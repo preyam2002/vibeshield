@@ -45,6 +45,8 @@ import { envLeakModule } from "./modules/env-leak";
 import { aiSecurityModule } from "./modules/ai-security";
 import { ssrfModule } from "./modules/ssrf";
 import { fileUploadModule } from "./modules/file-upload";
+import { crlfModule } from "./modules/crlf";
+import { hostHeaderModule } from "./modules/host-header";
 
 const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
@@ -76,6 +78,8 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "AI Security", description: "Test AI/LLM endpoint security and prompt injection", category: "security", run: aiSecurityModule },
   { name: "SSRF", description: "Test for Server-Side Request Forgery vulnerabilities", category: "security", run: ssrfModule },
   { name: "File Upload", description: "Test file upload security and type validation", category: "security", run: fileUploadModule },
+  { name: "CRLF Injection", description: "Test for HTTP header injection via CRLF characters", category: "security", run: crlfModule },
+  { name: "Host Header", description: "Test for Host header injection and password reset poisoning", category: "security", run: hostHeaderModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [

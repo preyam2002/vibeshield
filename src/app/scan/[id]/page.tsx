@@ -109,9 +109,22 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
           {finding.evidence && (
             <div>
               <h4 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">Evidence</h4>
-              <pre className="text-xs bg-zinc-900/80 border border-zinc-800/50 rounded-lg p-3 text-zinc-400 overflow-x-auto whitespace-pre-wrap break-all">
-                {finding.evidence}
-              </pre>
+              <div className="relative group/evidence">
+                <pre className="text-xs bg-zinc-900/80 border border-zinc-800/50 rounded-lg p-3 pr-10 text-zinc-400 overflow-x-auto whitespace-pre-wrap break-all">
+                  {finding.evidence}
+                </pre>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(finding.evidence!);
+                    const btn = e.currentTarget;
+                    btn.textContent = "✓";
+                    setTimeout(() => { btn.textContent = "⎘"; }, 1200);
+                  }}
+                  className="absolute top-2 right-2 text-zinc-600 hover:text-zinc-300 text-sm opacity-0 group-hover/evidence:opacity-100 transition-opacity bg-zinc-800/80 rounded px-1.5 py-0.5"
+                  title="Copy evidence"
+                >⎘</button>
+              </div>
             </div>
           )}
           <div>
