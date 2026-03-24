@@ -1,20 +1,24 @@
 import type { ScanModule, Finding } from "../types";
 import { scanFetch } from "../fetch";
 
-const EVIL_ORIGINS = [
+const makeEvilOrigins = (targetHost: string) => [
   "https://evil.com",
   "https://attacker.com",
   "null",
+  `https://${targetHost}.evil.com`,         // subdomain of attacker containing target
+  `https://evil${targetHost}`,              // prefix attack
+  `https://${targetHost.replace(".", "")}.com`, // domain without dot
 ];
 
 export const corsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
   const endpoints = [target.url, ...target.apiEndpoints.slice(0, 10)];
+  const targetHost = new URL(target.url).hostname;
+  const evilOrigins = makeEvilOrigins(targetHost);
   let wildcardFound = false;
   let reflectFound = false;
 
   for (const endpoint of endpoints) {
-    // Test wildcard CORS
     try {
       const res = await scanFetch(endpoint, {
         headers: { Origin: "https://evil.com" },
@@ -40,9 +44,9 @@ export const corsModule: ScanModule = async (target) => {
         continue;
       }
 
-      // Test if it reflects the origin
+      // Test if it reflects the origin (including subdomain/prefix bypasses)
       if (reflectFound) continue;
-      for (const origin of EVIL_ORIGINS) {
+      for (const origin of evilOrigins) {
         const res2 = await scanFetch(endpoint, {
           headers: { Origin: origin },
         });
@@ -51,16 +55,19 @@ export const corsModule: ScanModule = async (target) => {
           reflectFound = true;
           const acac2 = res2.headers.get("access-control-allow-credentials");
           const withCreds = acac2 === "true";
+          const isSubdomainBypass = origin.includes(targetHost) && origin !== `https://${targetHost}`;
           findings.push({
             id: `cors-reflect-${findings.length}`,
             module: "CORS",
             severity: withCreds ? "critical" : "high",
-            title: `CORS reflects arbitrary Origin${withCreds ? " with credentials" : ""} on ${new URL(endpoint).pathname}`,
+            title: `CORS reflects ${isSubdomainBypass ? "subdomain-spoofed " : ""}Origin${withCreds ? " with credentials" : ""} on ${new URL(endpoint).pathname}`,
             description: withCreds
               ? `This endpoint echoes back any Origin AND allows credentials. Any website can make fully authenticated requests and steal user data — this is a full CORS bypass.`
-              : `This endpoint echoes back whatever Origin is sent, including "${origin}". Any website can make cross-origin requests and read responses.`,
+              : isSubdomainBypass
+                ? `This endpoint trusts origins containing "${targetHost}" (like ${origin}). An attacker can register a domain matching this pattern to bypass CORS.`
+                : `This endpoint echoes back whatever Origin is sent, including "${origin}". Any website can make cross-origin requests and read responses.`,
             evidence: `Origin: ${origin}\nAccess-Control-Allow-Origin: ${acao2}${withCreds ? "\nAccess-Control-Allow-Credentials: true" : ""}`,
-            remediation: "Validate the Origin header against a whitelist of allowed domains.",
+            remediation: "Validate the Origin header against an exact whitelist of allowed domains. Do not use substring/contains matching.",
             cwe: "CWE-942",
             owasp: "A05:2021",
           });
@@ -84,6 +91,7 @@ export const corsModule: ScanModule = async (target) => {
         },
       });
       const methods = res.headers.get("access-control-allow-methods") || "";
+      const allowHeaders = res.headers.get("access-control-allow-headers") || "";
       if (/DELETE|PUT|PATCH/i.test(methods)) {
         findings.push({
           id: `cors-dangerous-methods-${findings.length}`,
@@ -93,6 +101,18 @@ export const corsModule: ScanModule = async (target) => {
           description: `Preflight response allows ${methods}. Cross-origin sites may be able to modify or delete data.`,
           evidence: `Access-Control-Allow-Methods: ${methods}`,
           remediation: "Only allow the HTTP methods that are actually needed.",
+          cwe: "CWE-942",
+        });
+      }
+      if (allowHeaders === "*") {
+        findings.push({
+          id: `cors-wildcard-headers-${findings.length}`,
+          module: "CORS",
+          severity: "medium",
+          title: `CORS allows any request header on ${new URL(endpoint).pathname}`,
+          description: "Preflight response allows all request headers via wildcard. This permits cross-origin requests with arbitrary headers including Authorization.",
+          evidence: `Access-Control-Allow-Headers: *`,
+          remediation: "Restrict Access-Control-Allow-Headers to specific required headers.",
           cwe: "CWE-942",
         });
       }

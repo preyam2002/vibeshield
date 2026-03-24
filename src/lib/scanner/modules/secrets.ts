@@ -151,6 +151,64 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Sentry DSN found. While Sentry DSNs are semi-public, attackers can flood your error tracking with fake errors.",
     remediation: "Configure allowed origins in Sentry to prevent abuse.",
   },
+  // Modern AI providers
+  {
+    name: "DeepSeek API Key",
+    pattern: /sk-[a-f0-9]{48,}/g,
+    severity: "critical",
+    description: "DeepSeek API key exposed. Attackers can make API calls billed to your account.",
+    remediation: "Rotate in the DeepSeek console. Proxy all AI calls through your backend.",
+  },
+  {
+    name: "Groq API Key",
+    pattern: /gsk_[a-zA-Z0-9]{48,}/g,
+    severity: "critical",
+    description: "Groq API key exposed. Attackers can make API calls billed to your account.",
+    remediation: "Rotate in the Groq console. Proxy all AI calls through your backend.",
+  },
+  {
+    name: "Hugging Face Token",
+    pattern: /hf_[a-zA-Z0-9]{34,}/g,
+    severity: "high",
+    description: "Hugging Face API token exposed. Attackers can access your models and inference endpoints.",
+    remediation: "Rotate in Hugging Face settings. Move to server-side.",
+  },
+  {
+    name: "Replicate API Token",
+    pattern: /r8_[a-zA-Z0-9]{36,}/g,
+    severity: "critical",
+    description: "Replicate API token exposed. Attackers can run models billed to your account.",
+    remediation: "Rotate in Replicate settings. Proxy through your backend.",
+  },
+  {
+    name: "Together AI API Key",
+    pattern: /tog_[a-zA-Z0-9]{48,}/g,
+    severity: "critical",
+    description: "Together AI API key exposed. Attackers can make API calls billed to your account.",
+    remediation: "Rotate in Together AI dashboard. Proxy through your backend.",
+  },
+  {
+    name: "Fireworks AI API Key",
+    pattern: /fw_[a-zA-Z0-9]{36,}/g,
+    severity: "critical",
+    description: "Fireworks AI API key exposed. Attackers can run models billed to your account.",
+    remediation: "Rotate in Fireworks dashboard. Proxy through your backend.",
+  },
+  // Clerk (auth provider common in vibe-coded apps)
+  {
+    name: "Clerk Secret Key",
+    pattern: /sk_live_[a-zA-Z0-9]{40,}/g,
+    severity: "critical",
+    description: "Clerk secret key exposed. Attackers can manage users, sessions, and authentication in your app.",
+    remediation: "Rotate in Clerk dashboard immediately. Only publishable keys should be client-side.",
+  },
+  {
+    name: "Convex Deploy Key",
+    pattern: /prod:[a-z0-9]+:[a-zA-Z0-9]{40,}/g,
+    severity: "critical",
+    description: "Convex deploy key exposed. Attackers can modify your backend functions and data.",
+    remediation: "Rotate in Convex dashboard. Deploy keys must never be in client code.",
+  },
 ];
 
 // Placeholder/test values that look like secrets but aren't
