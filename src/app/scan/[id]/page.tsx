@@ -523,6 +523,29 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
           </div>
         </div>
 
+        {/* Security summary */}
+        {!isRunning && scan.status === "completed" && scan.findings.length > 0 && (
+          <div className="mb-6 bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              {(() => {
+                const { critical, high, medium } = scan.summary;
+                const hostname = (() => { try { return new URL(scan.target).hostname; } catch { return scan.target; } })();
+                const parts: string[] = [];
+                if (critical > 0) parts.push(`${critical} critical ${critical === 1 ? "vulnerability" : "vulnerabilities"} that need immediate attention`);
+                if (high > 0) parts.push(`${high} high-severity ${high === 1 ? "issue" : "issues"}`);
+                if (medium > 0) parts.push(`${medium} medium-severity ${medium === 1 ? "finding" : "findings"}`);
+
+                const modules = [...new Set(scan.findings.filter((f) => f.severity === "critical" || f.severity === "high").map((f) => f.module))];
+                const moduleStr = modules.length > 0 ? ` Key areas: ${modules.slice(0, 3).join(", ")}.` : "";
+
+                if (critical > 0) return `${hostname} has ${parts.join(", ")}. Your app is at significant risk.${moduleStr} Fix critical issues first — they represent the highest risk to your users.`;
+                if (high > 0) return `${hostname} has ${parts.join(" and ")}. While no critical vulnerabilities were found, the high-severity issues should be addressed soon.${moduleStr}`;
+                return `${hostname} has ${parts.join(" and ")}. No critical or high-severity issues — good foundation. Address the medium findings to further harden your app.`;
+              })()}
+            </p>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
           {/* Sidebar */}
           <div className="lg:col-span-1 space-y-4">
