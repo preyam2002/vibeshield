@@ -83,6 +83,11 @@ export const setTechInfo = (id: string, technologies: string[], isSpa: boolean) 
   }
 };
 
+export const setSurface = (id: string, surface: NonNullable<ScanResult["surface"]>) => {
+  const scan = scans.get(id);
+  if (scan) scan.surface = surface;
+};
+
 const recalcSummary = (scan: ScanResult) => {
   const s = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
   for (const f of scan.findings) {

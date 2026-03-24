@@ -74,6 +74,13 @@ export interface ScanResult {
     info: number;
     total: number;
   };
+  surface?: {
+    pages: number;
+    apiEndpoints: number;
+    jsFiles: number;
+    forms: number;
+    cookies: number;
+  };
 }
 
 export type ScanModule = (

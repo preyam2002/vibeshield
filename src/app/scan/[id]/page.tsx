@@ -42,6 +42,13 @@ interface ScanResult {
     info: number;
     total: number;
   };
+  surface?: {
+    pages: number;
+    apiEndpoints: number;
+    jsFiles: number;
+    forms: number;
+    cookies: number;
+  };
   comparison?: {
     previousId: string;
     previousGrade: string;
@@ -635,6 +642,29 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                       SPA
                     </span>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Attack surface */}
+            {scan.surface && (
+              <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                  Attack Surface
+                </h3>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: "Pages", value: scan.surface.pages },
+                    { label: "API endpoints", value: scan.surface.apiEndpoints },
+                    { label: "JS bundles", value: scan.surface.jsFiles },
+                    { label: "Forms", value: scan.surface.forms },
+                    { label: "Cookies", value: scan.surface.cookies },
+                  ].filter((s) => s.value > 0).map((s) => (
+                    <div key={s.label} className="text-xs">
+                      <span className="text-zinc-300 font-medium tabular-nums">{s.value}</span>
+                      <span className="text-zinc-600 ml-1">{s.label}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

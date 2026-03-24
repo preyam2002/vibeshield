@@ -7,6 +7,7 @@ import {
   setModules,
   updateModule,
   setTechInfo,
+  setSurface,
 } from "./store";
 import { runRecon } from "./modules/recon";
 import { headersModule } from "./modules/headers";
@@ -123,6 +124,13 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   try {
     target = await runRecon(targetUrl);
     setTechInfo(scanId, target.technologies, target.isSpa);
+    setSurface(scanId, {
+      pages: target.pages.length,
+      apiEndpoints: target.apiEndpoints.length,
+      jsFiles: target.jsContents.size,
+      forms: target.forms.length,
+      cookies: target.cookies.length,
+    });
     updateModule(scanId, "Recon", { status: "completed" });
   } catch (err) {
     updateModule(scanId, "Recon", { status: "failed", error: String(err) });
