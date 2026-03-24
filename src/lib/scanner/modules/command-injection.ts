@@ -140,59 +140,62 @@ export const commandInjectionModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 2: Output-based detection
-  for (const t of deduped.slice(0, 10)) {
+  // Phase 2: Output-based detection (parallelized per endpoint)
+  const outputTests = deduped.slice(0, 10).map(async (t) => {
     const pathname = new URL(t.url).pathname;
     const key = `${pathname}:${t.paramName}`;
-    if (flagged.has(key)) continue;
+    if (flagged.has(key)) return;
 
-    // Get baseline output to check for false positives
     let baselineText = "";
     try {
       const url = new URL(t.url);
       url.searchParams.set(t.paramName, "normal_value_12345");
       const res = await scanFetch(url.href, { timeoutMs: 5000 });
       baselineText = await res.text();
-    } catch { /* skip */ }
+    } catch { return; }
 
-    for (const { payload, pattern } of OUTPUT_PAYLOADS.slice(0, 4)) {
-      // Skip if baseline already matches the pattern
-      if (pattern.test(baselineText)) continue;
+    const results = await Promise.allSettled(
+      OUTPUT_PAYLOADS.slice(0, 4)
+        .filter(({ pattern }) => !pattern.test(baselineText))
+        .map(async ({ payload, pattern }) => {
+          let res: Response;
+          if (t.method === "GET") {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, `test${payload}`);
+            res = await scanFetch(url.href, { timeoutMs: 5000 });
+          } else {
+            res = await scanFetch(t.url, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`,
+              timeoutMs: 5000,
+            });
+          }
+          return { payload, pattern, text: await res.text() };
+        }),
+    );
 
-      try {
-        let res: Response;
-        if (t.method === "GET") {
-          const url = new URL(t.url);
-          url.searchParams.set(t.paramName, `test${payload}`);
-          res = await scanFetch(url.href, { timeoutMs: 5000 });
-        } else {
-          res = await scanFetch(t.url, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`,
-            timeoutMs: 5000,
-          });
-        }
-        const text = await res.text();
-
-        if (pattern.test(text) && !pattern.test(baselineText)) {
-          flagged.add(key);
-          findings.push({
-            id: `cmdi-output-${count++}`,
-            module: "Command Injection",
-            severity: "critical",
-            title: `Command injection on ${pathname} (param: ${t.paramName})`,
-            description: "A system command payload produced identifiable output in the response. The server is executing user-controlled commands.",
-            evidence: `Payload: test${payload}\nPattern matched: ${pattern.source}\nResponse excerpt: ${text.substring(0, 300)}`,
-            remediation: "Never pass user input to system commands. Use language-native libraries instead of shelling out. If unavoidable, use strict allowlists.",
-            cwe: "CWE-78",
-            owasp: "A03:2021",
-          });
-          break;
-        }
-      } catch { /* skip */ }
+    for (const r of results) {
+      if (r.status !== "fulfilled" || flagged.has(key)) continue;
+      const { payload, pattern, text } = r.value;
+      if (pattern.test(text) && !pattern.test(baselineText)) {
+        flagged.add(key);
+        findings.push({
+          id: `cmdi-output-${count++}`,
+          module: "Command Injection",
+          severity: "critical",
+          title: `Command injection on ${pathname} (param: ${t.paramName})`,
+          description: "A system command payload produced identifiable output in the response. The server is executing user-controlled commands.",
+          evidence: `Payload: test${payload}\nPattern matched: ${pattern.source}\nResponse excerpt: ${text.substring(0, 300)}`,
+          remediation: "Never pass user input to system commands. Use language-native libraries instead of shelling out. If unavoidable, use strict allowlists.",
+          cwe: "CWE-78",
+          owasp: "A03:2021",
+        });
+        break;
+      }
     }
-  }
+  });
+  await Promise.allSettled(outputTests);
 
   return findings;
 };

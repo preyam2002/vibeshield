@@ -85,99 +85,93 @@ export const pathTraversalModule: ScanModule = async (target) => {
 
   const flagged = new Set<string>();
 
+  // Parallelize: test all endpoints with all payloads concurrently
+  const allPayloads = [...TRAVERSAL_PAYLOADS, ...NULL_BYTE_PAYLOADS];
+  const traversalTests: Promise<void>[] = [];
+
   for (const t of deduped.slice(0, 15)) {
     const pathname = new URL(t.url).pathname;
     const key = `${pathname}:${t.paramName}`;
-    if (flagged.has(key)) continue;
-
     const baseText = baselineTexts.get(key) || "";
-    // If baseline already contains traversal indicators, skip (false positive)
     if (TRAVERSAL_INDICATORS.some((p) => p.test(baseText))) continue;
 
-    for (const payload of TRAVERSAL_PAYLOADS) {
-      try {
-        const url = new URL(t.url);
-        url.searchParams.set(t.paramName, payload);
-        const res = await scanFetch(url.href, { timeoutMs: 5000 });
-        const text = await res.text();
-
-        if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
-          flagged.add(key);
-          findings.push({
-            id: `path-traversal-${count++}`,
-            module: "Path Traversal",
-            severity: "critical",
-            title: `Path traversal on ${pathname} (param: ${t.paramName})`,
-            description: "A directory traversal payload returned sensitive system file contents. Attackers can read any file on the server including configuration files, credentials, and source code.",
-            evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
-            remediation: "Never use user input directly in file paths. Use a whitelist of allowed files, or resolve the path and verify it stays within the intended directory using path.resolve() + startsWith() checks.",
-            cwe: "CWE-22",
-            owasp: "A01:2021",
-          });
-          break;
-        }
-      } catch { /* skip */ }
-    }
-
-    // Null byte injection (legacy PHP/older runtimes)
-    if (!flagged.has(key)) {
-      for (const payload of NULL_BYTE_PAYLOADS) {
-        try {
-          const url = new URL(t.url);
-          url.searchParams.set(t.paramName, payload);
-          const res = await scanFetch(url.href, { timeoutMs: 5000 });
-          const text = await res.text();
-
+    traversalTests.push(
+      (async () => {
+        if (flagged.has(key)) return;
+        const results = await Promise.allSettled(
+          allPayloads.map(async (payload) => {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, payload);
+            const res = await scanFetch(url.href, { timeoutMs: 5000 });
+            return { payload, text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, text } = r.value;
           if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
             flagged.add(key);
+            const isNullByte = payload.includes("%00") || payload.includes("\x00");
             findings.push({
-              id: `path-traversal-null-${count++}`,
+              id: `path-traversal-${isNullByte ? "null-" : ""}${count++}`,
               module: "Path Traversal",
               severity: "critical",
-              title: `Path traversal via null byte on ${pathname}`,
-              description: "A null byte in the file path bypassed extension validation, allowing reading of arbitrary files. This is a classic bypass for file extension checks.",
+              title: isNullByte
+                ? `Path traversal via null byte on ${pathname}`
+                : `Path traversal on ${pathname} (param: ${t.paramName})`,
+              description: isNullByte
+                ? "A null byte in the file path bypassed extension validation, allowing reading of arbitrary files."
+                : "A directory traversal payload returned sensitive system file contents. Attackers can read any file on the server.",
               evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
-              remediation: "Reject null bytes in all user input. Use path.resolve() and validate the resolved path is within the intended directory.",
+              remediation: "Never use user input directly in file paths. Use path.resolve() and verify the resolved path stays within the intended directory.",
               cwe: "CWE-22",
               owasp: "A01:2021",
             });
             break;
           }
-        } catch { /* skip */ }
-      }
-    }
+        }
+      })(),
+    );
   }
 
-  // Check for path traversal in URL path segments (e.g., /api/files/../../../etc/passwd)
+  // URL path segment traversal (parallel)
   const fileEndpoints = target.apiEndpoints.filter((ep) =>
     /file|download|image|asset|static|upload|doc|media/i.test(ep),
   );
   for (const endpoint of fileEndpoints.slice(0, 5)) {
-    try {
-      const url = new URL(endpoint);
-      const basePath = url.pathname;
-      for (const traversal of ["../../../etc/passwd", "..%2f..%2f..%2fetc%2fpasswd"]) {
-        const testUrl = `${url.origin}${basePath}/${traversal}`;
-        const res = await scanFetch(testUrl, { timeoutMs: 5000 });
-        const text = await res.text();
-
-        if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
-          findings.push({
-            id: `path-traversal-url-${count++}`,
-            module: "Path Traversal",
-            severity: "critical",
-            title: `Path traversal in URL path at ${basePath}`,
-            description: "Directory traversal sequences in the URL path returned system file contents.",
-            evidence: `URL: ${testUrl}\nResponse excerpt: ${text.substring(0, 200)}`,
-            remediation: "Validate and sanitize URL path segments. Use a web application firewall or middleware that blocks traversal sequences.",
-            cwe: "CWE-22",
-            owasp: "A01:2021",
-          });
-          break;
+    const url = new URL(endpoint);
+    const basePath = url.pathname;
+    traversalTests.push(
+      (async () => {
+        const results = await Promise.allSettled(
+          ["../../../etc/passwd", "..%2f..%2f..%2fetc%2fpasswd"].map(async (traversal) => {
+            const testUrl = `${url.origin}${basePath}/${traversal}`;
+            const res = await scanFetch(testUrl, { timeoutMs: 5000 });
+            return { testUrl, text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled") continue;
+          if (TRAVERSAL_INDICATORS.some((p) => p.test(r.value.text))) {
+            findings.push({
+              id: `path-traversal-url-${count++}`,
+              module: "Path Traversal",
+              severity: "critical",
+              title: `Path traversal in URL path at ${basePath}`,
+              description: "Directory traversal sequences in the URL path returned system file contents.",
+              evidence: `URL: ${r.value.testUrl}\nResponse excerpt: ${r.value.text.substring(0, 200)}`,
+              remediation: "Validate and sanitize URL path segments. Block traversal sequences in middleware.",
+              cwe: "CWE-22",
+              owasp: "A01:2021",
+            });
+            break;
+          }
         }
-      }
-    } catch { /* skip */ }
+      })(),
+    );
   }
+
+  await Promise.allSettled(traversalTests);
 
   return findings;
 };
