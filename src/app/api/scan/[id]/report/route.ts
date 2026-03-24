@@ -46,6 +46,39 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
       ``,
     ];
 
+    // Comparison section (if rescan)
+    if (scan.comparison) {
+      const c = scan.comparison;
+      const scoreDir = c.delta.score > 0 ? "improved" : c.delta.score < 0 ? "regressed" : "unchanged";
+      lines.push(
+        `### Comparison with Previous Scan`, ``,
+        `| Metric | Previous | Current | Delta |`,
+        `|--------|----------|---------|-------|`,
+        `| Grade | ${c.previousGrade} | ${scan.grade} | ${c.delta.score > 0 ? "+" : ""}${c.delta.score} |`,
+        `| Score | ${c.previousScore} | ${scan.score} | ${scoreDir} |`,
+        `| Findings | ${c.previousFindings} | ${s.total} | ${c.delta.findings > 0 ? "+" : ""}${c.delta.findings} |`,
+        ``,
+      );
+      if (c.fixedFindings && c.fixedFindings.length > 0) {
+        lines.push(`**Fixed:** ${c.fixedFindings.map((f) => f.title).join(", ")}`, ``);
+      }
+      if (c.newFindings && c.newFindings.length > 0) {
+        lines.push(`**New:** ${c.newFindings.map((f) => f.title).join(", ")}`, ``);
+      }
+    }
+
+    // Module results
+    if (scan.modules.length > 0) {
+      const completed = scan.modules.filter((m) => m.status === "completed");
+      const passed = completed.filter((m) => m.findingsCount === 0);
+      const failed = scan.modules.filter((m) => m.status === "failed");
+      lines.push(
+        `### Module Results`, ``,
+        `${completed.length} modules completed, ${passed.length} passed, ${completed.length - passed.length} found issues${failed.length > 0 ? `, ${failed.length} failed` : ""}`,
+        ``,
+      );
+    }
+
     if (scan.findings.length > 0) {
       lines.push(`### Findings`, ``);
 

@@ -41,6 +41,16 @@ const TECH_SIGNATURES: Record<string, RegExp[]> = {
   PlanetScale: [/planetscale/i],
   Convex: [/convex/i, /\.convex\.dev/i],
   Appwrite: [/appwrite/i],
+  Remix: [/__remix/i, /remix\.run/i, /entry\.client/i],
+  Astro: [/astro/i, /__astro/i, /astro\.config/i],
+  Vite: [/vite/i, /@vite\/client/i, /modulepreload/i],
+  Angular: [/angular/i, /ng-version/i, /\bng\b.*module/i],
+  Nuxt: [/__nuxt/i, /nuxt/i, /\.nuxt\./i],
+  SvelteKit: [/sveltekit/i, /__sveltekit/i],
+  Drizzle: [/drizzle/i, /drizzle-orm/i],
+  tRPC: [/trpc/i, /\.trpc\./i],
+  Neon: [/neon\.tech/i, /neondb/i],
+  Turso: [/turso/i, /\.turso\.io/i],
 };
 
 export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
