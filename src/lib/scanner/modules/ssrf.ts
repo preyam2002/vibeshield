@@ -134,10 +134,12 @@ const isSSRFIndicator = (text: string, payloadName: string): boolean => {
   if (payloadName === "Apache server-status") {
     return /Apache Server Status|scoreboard/i.test(text);
   }
-  // For localhost/zero-address: check if we got internal content (not an error page)
+  // For localhost/zero-address: require strong evidence of internal service content
   if (/localhost|zero address|IPv6/.test(payloadName)) {
-    return !text.includes("ECONNREFUSED") && !text.includes("fetch failed") &&
-      (text.length > 50) && !/{}\s*$/.test(text.trim());
+    if (text.includes("ECONNREFUSED") || text.includes("fetch failed") || text.length < 50) return false;
+    // Must contain indicators of actual internal service content, not just a generic response
+    return /localhost|127\.0\.0\.1|\[::1\]|internal|server-status|phpinfo|<title>|admin|dashboard|version|port/i.test(text) &&
+      !/{}\s*$/.test(text.trim()) && !/not found|404|error/i.test(text.substring(0, 100));
   }
   return false;
 };
