@@ -124,6 +124,7 @@ export default function Home() {
           <div className="flex items-center gap-4">
             <span className="text-xs text-zinc-600 hidden sm:block">Black-box pentesting for vibe-coded apps</span>
             <a href="/scans" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">All Scans</a>
+            <a href="/docs" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">API</a>
           </div>
         </div>
       </nav>
@@ -189,6 +190,21 @@ export default function Home() {
             <p className="text-xs text-zinc-600 mt-3">
               No signup required. No code access needed. We scan the live app from the outside.
             </p>
+
+            {!loading && (
+              <div className="flex items-center justify-center gap-2 mt-3">
+                <span className="text-[10px] text-zinc-700">Try:</span>
+                {["https://bolt.new", "https://lovable.dev", "https://cal.com"].map((demo) => (
+                  <button
+                    key={demo}
+                    onClick={() => setUrl(demo)}
+                    className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors underline underline-offset-2"
+                  >
+                    {new URL(demo).hostname}
+                  </button>
+                ))}
+              </div>
+            )}
           </form>
         </div>
 

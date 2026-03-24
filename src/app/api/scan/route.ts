@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { startScan } from "@/lib/scanner";
 
 export async function POST(req: Request) {
-  const body = await req.json() as { url?: string };
+  const body = await req.json() as { url?: string; callbackUrl?: string };
   const url = body.url?.trim();
+  const callbackUrl = body.callbackUrl?.trim();
 
   if (!url) {
     return NextResponse.json({ error: "URL is required" }, { status: 400 });
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
   }
 
   const scanId = crypto.randomUUID();
-  startScan(scanId, parsed.href);
+  startScan(scanId, parsed.href, callbackUrl);
 
   return NextResponse.json({ id: scanId, url: parsed.href });
 }

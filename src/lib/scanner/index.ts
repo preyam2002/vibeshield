@@ -1,6 +1,7 @@
 import type { ScanModuleDefinition, ScanTarget } from "./types";
 import {
   createScan,
+  getScan,
   updateScanStatus,
   addFindings,
   setModules,
@@ -83,7 +84,7 @@ const STRESS_MODULES: ScanModuleDefinition[] = [
 
 const ALL_MODULES = [...SECURITY_MODULES, ...STRESS_MODULES];
 
-export const startScan = (scanId: string, targetUrl: string) => {
+export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string) => {
   createScan(scanId, targetUrl);
 
   const moduleStatuses = [
@@ -99,9 +100,12 @@ export const startScan = (scanId: string, targetUrl: string) => {
 
   // Detach from the request using setTimeout so the API response returns immediately
   setTimeout(() => {
-    runScan(scanId, targetUrl).catch((err) => {
+    runScan(scanId, targetUrl).then(() => {
+      if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
+    }).catch((err) => {
       console.error(`Scan ${scanId} failed:`, err);
       updateScanStatus(scanId, "failed");
+      if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
     });
   }, 0);
 };
@@ -150,4 +154,27 @@ const runScan = async (scanId: string, targetUrl: string) => {
   }
 
   updateScanStatus(scanId, "completed");
+};
+
+const sendCallback = async (callbackUrl: string, scanId: string) => {
+  const scan = getScan(scanId);
+  if (!scan) return;
+  try {
+    await fetch(callbackUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event: "scan.completed",
+        scanId: scan.id,
+        target: scan.target,
+        status: scan.status,
+        grade: scan.grade,
+        score: scan.score,
+        summary: scan.summary,
+        resultUrl: `/scan/${scan.id}`,
+      }),
+    });
+  } catch (err) {
+    console.error(`Callback to ${callbackUrl} failed:`, err);
+  }
 };
