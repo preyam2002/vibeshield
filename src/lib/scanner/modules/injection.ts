@@ -1,5 +1,6 @@
 import type { ScanModule, Finding } from "../types";
 import { scanFetch } from "../fetch";
+import { looksLikeHtml } from "../soft404";
 
 const SQLI_PAYLOADS = [
   "' OR '1'='1",
@@ -206,16 +207,23 @@ export const injectionModule: ScanModule = async (target) => {
   }
 
   // SSTI testing — fetch baseline first to avoid false positives
+  const sstiFound = new Set<string>();
   for (const t of testTargets.slice(0, 5)) {
-    // Get baseline response without injection to check if "49" already exists
+    const pathname = new URL(t.url).pathname;
+    if (sstiFound.has(pathname)) continue;
+
+    // Get baseline: fetch with a harmless value and check if "49" exists
     let baselineHas49 = false;
+    let baselineText = "";
     try {
-      const baseRes = await scanFetch(t.url);
-      const baseText = await baseRes.text();
-      baselineHas49 = baseText.includes("49");
-    } catch {
-      // skip
-    }
+      const baseUrl = new URL(t.url);
+      baseUrl.searchParams.set(t.paramName, "harmless_test_value");
+      const baseRes = await scanFetch(baseUrl.href);
+      baselineText = await baseRes.text();
+      baselineHas49 = baselineText.includes("49");
+    } catch { /* skip */ }
+
+    if (baselineHas49) continue; // "49" exists naturally — can't distinguish injection
 
     for (const payload of SSTI_PAYLOADS.slice(0, 3)) {
       try {
@@ -224,14 +232,16 @@ export const injectionModule: ScanModule = async (target) => {
         const res = await scanFetch(url.href);
         const text = await res.text();
 
+        // Skip HTML responses — real SSTI shows in rendered output, not SPA shells
+        if (looksLikeHtml(text) && target.isSpa) continue;
+
         if (payload === "{{7*7}}" && text.includes("49") && !text.includes("{{7*7}}")) {
-          // Skip if "49" was already in the baseline response (not from our injection)
-          if (baselineHas49 || target.isSpa) continue;
+          sstiFound.add(pathname);
           findings.push({
             id: `injection-ssti-${findings.length}`,
             module: "SSTI",
             severity: "critical",
-            title: `Server-Side Template Injection on ${new URL(t.url).pathname}`,
+            title: `Server-Side Template Injection on ${pathname}`,
             description: "Template expressions are evaluated on the server. Attackers can execute arbitrary code on your server.",
             evidence: `Payload: ${payload}\nResult contains "49" (evaluated expression)`,
             remediation: "Never pass user input into template engines. Use a logic-less template or sandbox the engine.",

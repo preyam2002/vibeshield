@@ -237,6 +237,24 @@ export default function Home() {
           </div>
         )}
 
+        {/* Stats */}
+        {recentScans.filter((s) => s.status === "completed").length > 0 && (
+          <div className="mt-16 max-w-3xl w-full px-4">
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: "Apps Scanned", value: recentScans.filter((s) => s.status === "completed").length },
+                { label: "Vulns Found", value: recentScans.filter((s) => s.status === "completed").reduce((acc, s) => acc + s.findings, 0) },
+                { label: "Avg Grade", value: (() => { const grades = recentScans.filter((s) => s.status === "completed").map((s) => s.grade); const gMap: Record<string, number> = { A: 95, "A-": 90, "B+": 85, B: 80, "C+": 75, C: 70, "D+": 65, D: 60, F: 40 }; const avg = grades.reduce((a, g) => a + (gMap[g] || 50), 0) / grades.length; if (avg >= 90) return "A"; if (avg >= 80) return "B"; if (avg >= 70) return "C"; if (avg >= 60) return "D"; return "F"; })() },
+              ].map((stat) => (
+                <div key={stat.label} className="text-center">
+                  <div className="text-2xl font-bold text-zinc-200">{stat.value}</div>
+                  <div className="text-[10px] text-zinc-600 uppercase tracking-wider">{stat.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Attack modules grid */}
         <div className="mt-20 max-w-5xl w-full px-4">
           <h2 className="text-center text-zinc-600 text-xs font-semibold uppercase tracking-widest mb-2">

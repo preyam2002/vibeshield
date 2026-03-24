@@ -107,7 +107,8 @@ export const envLeakModule: ScanModule = async (target) => {
 
       const text = await res.text();
       if (isSoft404(text, target)) continue;
-      if (looksLikeHtml(text) && target.isSpa) continue;
+      // Real env endpoints return plain text or JSON, not HTML
+      if (looksLikeHtml(text)) continue;
 
       // Check if response looks like env vars or config
       const looksLikeEnv =

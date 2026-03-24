@@ -60,31 +60,46 @@ export const authModule: ScanModule = async (target) => {
   }
 
   // Test admin paths
+  const foundAdminPaths = new Set<string>();
   for (const path of ADMIN_PATHS) {
+    if (foundAdminPaths.size >= 2) break; // Cap admin findings
     try {
       const url = target.baseUrl + path;
       const res = await scanFetch(url);
-      if (res.status === 200) {
-        const text = await res.text();
-        // Skip if this is a SPA returning its shell for any route
-        if (isSoft404(text, target)) continue;
-        // Check if it looks like an actual admin page, not just a redirect or 404 page
-        const looksAdmin = /admin|dashboard|manage|settings|configuration/i.test(text) &&
-          !/login|sign.?in|unauthorized/i.test(text.substring(0, 2000));
-        if (looksAdmin) {
-          findings.push({
-            id: `auth-admin-exposed-${findings.length}`,
-            module: "Authentication",
-            severity: "critical",
-            title: `Admin panel accessible without authentication: ${path}`,
-            description: "An administrative interface is accessible without any authentication. Anyone who discovers this URL has full admin access.",
-            evidence: `GET ${url}\nStatus: 200\nPage appears to be an admin interface`,
-            remediation: "Protect admin routes with authentication and authorization checks. Consider IP allowlisting.",
-            cwe: "CWE-306",
-            owasp: "A07:2021",
-          });
-        }
+      if (res.status !== 200) continue;
+
+      const text = await res.text();
+      // Skip SPA shells
+      if (isSoft404(text, target)) continue;
+      if (looksLikeHtml(text) && target.isSpa) continue;
+
+      // For HTML responses, require admin-specific interactive content (forms, tables, CRUD UI)
+      // Generic marketing pages mentioning "admin" don't count
+      if (looksLikeHtml(text)) {
+        const hasAdminUI = (/(<table|<form|<input|data-admin|admin-panel)/i.test(text)) &&
+          (/<title[^>]*>.*(?:admin|dashboard|manage|panel)/i.test(text)) &&
+          !/login|sign.?in|unauthorized|403|forbidden/i.test(text.substring(0, 2000));
+        if (!hasAdminUI) continue;
       }
+
+      // For non-HTML (JSON), check for admin-specific data
+      if (!looksLikeHtml(text)) {
+        if (text.length < 20) continue;
+        if (!/users|config|settings|permissions|roles/i.test(text)) continue;
+      }
+
+      foundAdminPaths.add(path);
+      findings.push({
+        id: `auth-admin-exposed-${findings.length}`,
+        module: "Authentication",
+        severity: "critical",
+        title: `Admin panel accessible without authentication: ${path}`,
+        description: "An administrative interface is accessible without any authentication. Anyone who discovers this URL has full admin access.",
+        evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 300)}`,
+        remediation: "Protect admin routes with authentication and authorization checks. Consider IP allowlisting.",
+        cwe: "CWE-306",
+        owasp: "A07:2021",
+      });
     } catch {
       // skip
     }
