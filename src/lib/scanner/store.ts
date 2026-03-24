@@ -22,6 +22,13 @@ export const createScan = (id: string, target: string): ScanResult => {
 
 export const getScan = (id: string): ScanResult | undefined => scans.get(id);
 
+export const findPreviousScan = (target: string, excludeId: string): ScanResult | undefined => {
+  return Array.from(scans.values())
+    .filter((s) => s.target === target && s.id !== excludeId && s.status === "completed")
+    .sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || ""))
+    [0];
+};
+
 export const getRecentScans = (): { id: string; target: string; grade: string; status: string; findings: number; summary: ScanResult["summary"] }[] => {
   return Array.from(scans.values())
     .sort((a, b) => {

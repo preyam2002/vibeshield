@@ -42,6 +42,13 @@ interface ScanResult {
     info: number;
     total: number;
   };
+  comparison?: {
+    previousId: string;
+    previousGrade: string;
+    previousScore: number;
+    previousFindings: number;
+    delta: { score: number; findings: number; critical: number; high: number };
+  };
 }
 
 const SEVERITY_CONFIG = {
@@ -340,6 +347,22 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     {" — "}
                     <ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /> scan time
                   </div>
+                  {scan.comparison && (
+                    <div className="text-xs text-zinc-500 mt-1 flex items-center gap-2">
+                      vs previous scan:
+                      <span className={scan.comparison.delta.score > 0 ? "text-green-400" : scan.comparison.delta.score < 0 ? "text-red-400" : "text-zinc-400"}>
+                        {scan.comparison.delta.score > 0 ? "+" : ""}{scan.comparison.delta.score} score
+                      </span>
+                      <span className={scan.comparison.delta.findings < 0 ? "text-green-400" : scan.comparison.delta.findings > 0 ? "text-red-400" : "text-zinc-400"}>
+                        {scan.comparison.delta.findings > 0 ? "+" : ""}{scan.comparison.delta.findings} findings
+                      </span>
+                      {scan.comparison.delta.critical !== 0 && (
+                        <span className={scan.comparison.delta.critical < 0 ? "text-green-400" : "text-red-400"}>
+                          {scan.comparison.delta.critical > 0 ? "+" : ""}{scan.comparison.delta.critical} critical
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
               {scan.summary.total > 0 && (
