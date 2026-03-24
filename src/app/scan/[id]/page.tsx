@@ -325,7 +325,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         {/* Completion banner */}
         {!isRunning && scan.status === "completed" && (
           <div className={`mb-6 ${gradeConf.bg} border ${gradeConf.border} rounded-xl p-4`}>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-4">
                 <div className={`text-3xl font-black ${gradeConf.color}`}>{scan.grade}</div>
                 <div>
@@ -342,6 +342,23 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   </div>
                 </div>
               </div>
+              {scan.summary.total > 0 && (
+                <button
+                  onClick={() => {
+                    const criticalAndHigh = scan.findings.filter((f) => f.severity === "critical" || f.severity === "high");
+                    const medium = scan.findings.filter((f) => f.severity === "medium");
+                    const items = [...criticalAndHigh, ...medium.slice(0, 5)];
+                    const prompt = `Fix these security vulnerabilities found in ${scan.target}:\n\n${items.map((f, i) => `${i + 1}. [${f.severity.toUpperCase()}] ${f.title}\n   ${f.remediation}`).join("\n\n")}${medium.length > 5 ? `\n\n...and ${medium.length - 5} more medium findings (download full report for details)` : ""}`;
+                    navigator.clipboard.writeText(prompt);
+                    const btn = document.getElementById("fix-all-btn");
+                    if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy Fix-All Prompt"; }, 2000); }
+                  }}
+                  id="fix-all-btn"
+                  className="text-xs bg-zinc-950/50 border border-zinc-700/50 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg transition-colors shrink-0"
+                >
+                  Copy Fix-All Prompt
+                </button>
+              )}
             </div>
           </div>
         )}
