@@ -27,6 +27,7 @@ interface ScanResult {
   id: string;
   target: string;
   status: "queued" | "scanning" | "completed" | "failed";
+  mode?: "full" | "security";
   startedAt: string;
   completedAt?: string;
   findings: Finding[];
@@ -359,6 +360,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
           </a>
           <div className="flex items-center gap-3 min-w-0">
             <span className="text-sm text-zinc-500 truncate">{scan.target}</span>
+            {scan.mode && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-500 shrink-0">
+                {scan.mode === "full" ? "Full" : "Security only"}
+              </span>
+            )}
             {!isRunning && (
               <div className="flex items-center gap-2 shrink-0">
                 <button

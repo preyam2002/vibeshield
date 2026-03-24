@@ -47,17 +47,26 @@ export const csrfModule: ScanModule = async (target) => {
       if (res.ok) {
         const acao = res.headers.get("access-control-allow-origin");
         if (acao === "*" || acao === "https://evil.com") {
-          findings.push({
-            id: `csrf-api-${findings.length}`,
-            module: "CSRF",
-            severity: "high",
-            title: `API endpoint vulnerable to CSRF: ${new URL(endpoint).pathname}`,
-            description: "This endpoint accepts POST requests from any origin and CORS allows cross-origin access. A malicious website can make authenticated requests on behalf of users.",
-            evidence: `POST ${endpoint} with Origin: https://evil.com\nStatus: ${res.status}\nACAO: ${acao}`,
-            remediation: "Validate the Origin header on state-changing endpoints. Reject requests from unknown origins.",
-            cwe: "CWE-352",
-            owasp: "A01:2021",
+          // Check if the endpoint requires a custom header (valid CSRF defense)
+          // Try without Content-Type (simple request) — if it still works, no custom header required
+          const simpleRes = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { Origin: "https://evil.com" },
+            body: "test=true",
           });
+          if (simpleRes.ok && !hasSameSiteCookie) {
+            findings.push({
+              id: `csrf-api-${findings.length}`,
+              module: "CSRF",
+              severity: "high",
+              title: `API endpoint vulnerable to CSRF: ${new URL(endpoint).pathname}`,
+              description: "This endpoint accepts simple cross-origin POST requests without CSRF protection. A malicious website can make authenticated requests on behalf of users.",
+              evidence: `POST ${endpoint} with Origin: https://evil.com\nStatus: ${simpleRes.status}\nACAO: ${acao}`,
+              remediation: "Validate the Origin header on state-changing endpoints. Require a custom Content-Type or header that triggers CORS preflight. Set SameSite cookies.",
+              cwe: "CWE-352",
+              owasp: "A01:2021",
+            });
+          }
         }
       }
     } catch {
