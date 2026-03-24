@@ -69,6 +69,7 @@ export default function Home() {
   const [mode, setMode] = useState<"full" | "security">("full");
   const [visibleModules, setVisibleModules] = useState(0);
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
+  const [stats, setStats] = useState<{ totalScans: number; totalFindings: number; uniqueTargets: number } | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -76,6 +77,10 @@ export default function Home() {
       setVisibleModules((prev) => (prev < ATTACK_MODULES.length ? prev + 1 : prev));
     }, 40);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/stats").then((r) => r.json()).then(setStats).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -178,6 +183,14 @@ export default function Home() {
             Paste a URL. We run {ATTACK_MODULES.length} attack modules against your live app.
             No code access needed. Results in minutes.
           </p>
+
+          {stats && stats.totalScans > 0 && (
+            <div className="flex items-center justify-center gap-6 text-xs text-zinc-600">
+              <span><span className="text-zinc-400 font-medium tabular-nums">{stats.totalScans}</span> scans run</span>
+              <span><span className="text-zinc-400 font-medium tabular-nums">{stats.totalFindings}</span> vulnerabilities found</span>
+              <span><span className="text-zinc-400 font-medium tabular-nums">{stats.uniqueTargets}</span> apps tested</span>
+            </div>
+          )}
 
           {/* Scan form */}
           <form onSubmit={handleSubmit} className="mt-8 max-w-xl mx-auto">

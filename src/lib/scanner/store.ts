@@ -87,6 +87,20 @@ export const setSurface = (id: string, surface: NonNullable<ScanResult["surface"
   if (scan) scan.surface = surface;
 };
 
+export const getStats = () => {
+  const all = Array.from(scans.values());
+  const completed = all.filter((s) => s.status === "completed");
+  const totalFindings = completed.reduce((sum, s) => sum + s.summary.total, 0);
+  const totalCritical = completed.reduce((sum, s) => sum + s.summary.critical, 0);
+  return {
+    totalScans: all.length,
+    completedScans: completed.length,
+    totalFindings,
+    totalCritical,
+    uniqueTargets: new Set(all.map((s) => new URL(s.target).hostname)).size,
+  };
+};
+
 const recalcSummary = (scan: ScanResult) => {
   const s = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
   for (const f of scan.findings) {
