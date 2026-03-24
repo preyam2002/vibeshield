@@ -161,6 +161,24 @@ const SECRET_PATTERNS: SecretPattern[] = [
   },
 ];
 
+// Placeholder/test values that look like secrets but aren't
+const PLACEHOLDER_PATTERNS = [
+  /^(test|example|placeholder|demo|dummy|fake|mock|sample|your[_-])/i,
+  /^(xxx|aaa|123|000|foo|bar|baz|todo|fixme)/i,
+  /^(password|secret|token|key|auth)/i,  // Value IS the key name (common in minified code)
+  /%/,  // CSS/URL-encoded values
+  /\.\.\./,  // Ellipsis/placeholder
+  /^[a-z]{1,3}[_-][a-z]{1,3}$/i,  // Very short like "a-key", "au-tok"
+];
+
+const isPlaceholderValue = (match: string): boolean => {
+  // Extract the value part (after = or :)
+  const valueMatch = match.match(/[=:]\s*["']([^"']+)["']/);
+  if (!valueMatch) return false;
+  const value = valueMatch[1];
+  return value.length < 12 || PLACEHOLDER_PATTERNS.some((p) => p.test(value));
+};
+
 export const secretsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
   const allJs = Array.from(target.jsContents.values()).join("\n");
@@ -170,6 +188,8 @@ export const secretsModule: ScanModule = async (target) => {
     if (matches) {
       const unique = [...new Set(matches)];
       for (const match of unique.slice(0, 3)) {
+        // For generic patterns, filter out placeholder/test values
+        if (pat.name === "Generic Secret/Password in Code" && isPlaceholderValue(match)) continue;
         const redacted = match.length > 20
           ? match.substring(0, 10) + "..." + match.substring(match.length - 5)
           : match.substring(0, 8) + "...";
