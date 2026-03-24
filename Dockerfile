@@ -9,6 +9,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ENV STANDALONE=1
 RUN npm run build
 
 FROM base AS runner
