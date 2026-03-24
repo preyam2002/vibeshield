@@ -79,7 +79,7 @@ const TOOL_CHECKS: ToolCheck[] = [
   {
     path: "/docs",
     name: "API Docs (FastAPI/Redoc)",
-    contentPatterns: [/swagger/i, /openapi/i, /redoc/i, /fastapi/i],
+    contentPatterns: [/swagger-ui/i, /openapi.*version/i, /redoc/i, /fastapi/i],
     severity: "medium",
     description: "API documentation endpoint is publicly accessible.",
     remediation: "Disable the docs endpoint in production or restrict access.",
@@ -176,10 +176,8 @@ export const exposedToolsModule: ScanModule = async (target) => {
       // For HTML responses, require content patterns to confirm it's a real tool page
       if (looksLikeHtml(text)) {
         const matchCount = check.contentPatterns.filter((p) => p.test(text)).length;
-        // For SPAs, require at least 2 pattern matches to avoid false positives from SPA shells
-        // For non-SPAs, require at least 1 match
-        const threshold = target.isSpa ? 2 : 1;
-        if (matchCount < threshold) continue;
+        // Require at least 2 pattern matches to avoid false positives from generic pages
+        if (matchCount < 2) continue;
       }
 
       // For JSON responses, verify it's not empty/trivial
