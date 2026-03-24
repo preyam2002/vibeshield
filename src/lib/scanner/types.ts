@@ -59,6 +59,7 @@ export interface ScanResult {
   id: string;
   target: string;
   status: "queued" | "scanning" | "completed" | "failed";
+  mode: "full" | "security";
   startedAt: string;
   completedAt?: string;
   findings: Finding[];

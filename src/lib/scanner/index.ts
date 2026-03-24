@@ -99,7 +99,7 @@ const ALL_MODULES = [...SECURITY_MODULES, ...STRESS_MODULES];
 export type ScanMode = "full" | "security";
 
 export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string, mode: ScanMode = "full") => {
-  createScan(scanId, targetUrl);
+  createScan(scanId, targetUrl, mode);
 
   const activeModules = mode === "security" ? SECURITY_MODULES : ALL_MODULES;
   const moduleStatuses = [
@@ -147,12 +147,19 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
     return;
   }
 
+  const MODULE_TIMEOUT = 120_000; // 2 minutes per module max
+
   const runModule = async (mod: ScanModuleDefinition) => {
     updateModule(scanId, mod.name, { status: "running" });
     const start = Date.now();
     try {
       const MAX_PER_MODULE = 8;
-      const findings = await mod.run(target);
+      const findings = await Promise.race([
+        mod.run(target),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Module timed out after ${MODULE_TIMEOUT / 1000}s`)), MODULE_TIMEOUT),
+        ),
+      ]);
       addFindings(scanId, findings.slice(0, MAX_PER_MODULE));
       updateModule(scanId, mod.name, {
         status: "completed",

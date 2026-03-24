@@ -134,12 +134,16 @@ const isSSRFIndicator = (text: string, payloadName: string): boolean => {
   if (payloadName === "Apache server-status") {
     return /Apache Server Status|scoreboard/i.test(text);
   }
-  // For localhost/zero-address: require strong evidence of internal service content
+  // For localhost/zero-address: require strong evidence of actual internal service content
   if (/localhost|zero address|IPv6/.test(payloadName)) {
     if (text.includes("ECONNREFUSED") || text.includes("fetch failed") || text.length < 50) return false;
-    // Must contain indicators of actual internal service content, not just a generic response
-    return /localhost|127\.0\.0\.1|\[::1\]|internal|server-status|phpinfo|<title>|admin|dashboard|version|port/i.test(text) &&
-      !/{}\s*$/.test(text.trim()) && !/not found|404|error/i.test(text.substring(0, 100));
+    // Reject error messages that merely mention localhost/127.0.0.1
+    if (/cannot|couldn't|unable|failed|refused|error|timeout|unreachable/i.test(text.substring(0, 200))) return false;
+    // Must contain structural indicators of an internal service response (HTML page or JSON data)
+    const hasStructure = (text.includes("<title>") && text.includes("</title>")) ||
+      (text.startsWith("{") && text.length > 100) ||
+      /server-status|phpinfo|admin|dashboard/i.test(text);
+    return hasStructure;
   }
   return false;
 };

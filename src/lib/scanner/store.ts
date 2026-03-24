@@ -2,11 +2,12 @@ import type { ScanResult, Finding, ModuleStatus } from "./types";
 
 const scans = new Map<string, ScanResult>();
 
-export const createScan = (id: string, target: string): ScanResult => {
+export const createScan = (id: string, target: string, mode: "full" | "security" = "full"): ScanResult => {
   const result: ScanResult = {
     id,
     target,
     status: "queued",
+    mode,
     startedAt: new Date().toISOString(),
     findings: [],
     modules: [],

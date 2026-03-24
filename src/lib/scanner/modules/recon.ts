@@ -14,6 +14,9 @@ const COMMON_API_PATHS = [
   "/api/trpc", "/api/v1", "/api/v2",
   "/rest/v1", "/auth/v1", "/storage/v1", // Supabase
   "/graphql", "/_next/data",
+  "/.well-known/openid-configuration", "/.well-known/security.txt",
+  "/.well-known/jwks.json", "/.well-known/assetlinks.json",
+  "/v1", "/v2", "/v3", "/gql", "/rpc",
 ];
 
 const TECH_SIGNATURES: Record<string, RegExp[]> = {
@@ -165,6 +168,9 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     /["'`](\/rest\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
     /["'`](\/auth\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
     /["'`](\/graphql)["'`]/g,
+    /["'`](\/v[1-3]\/[a-zA-Z0-9/_-]{2,})["'`]/g,
+    /["'`](\/rpc\/[a-zA-Z0-9/_-]{2,})["'`]/g,
+    /["'`](\/gql)["'`]/g,
   ];
   for (const pat of apiPatterns) {
     for (const m of allJs.matchAll(pat)) {
