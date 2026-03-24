@@ -90,16 +90,20 @@ export const graphqlModule: ScanModule = async (target) => {
         body: deepQuery,
       });
       if (res.ok) {
-        findings.push({
-          id: `graphql-no-depth-limit-${findings.length}`,
-          module: "GraphQL",
-          severity: "medium",
-          title: "No GraphQL query depth limit",
-          description: "Deeply nested queries are accepted. Attackers can craft expensive queries that cause denial of service.",
-          evidence: `Deeply nested query accepted at ${endpoint}`,
-          remediation: "Implement query depth limiting (max depth 7-10). Use graphql-depth-limit or similar.",
-          cwe: "CWE-400",
-        });
+        const data = await res.json() as { data?: unknown; errors?: unknown[] };
+        // Only flag if the deep query actually succeeded (not rejected by depth limiter)
+        if (data?.data && !data?.errors) {
+          findings.push({
+            id: `graphql-no-depth-limit-${findings.length}`,
+            module: "GraphQL",
+            severity: "medium",
+            title: "No GraphQL query depth limit",
+            description: "Deeply nested queries are accepted. Attackers can craft expensive queries that cause denial of service.",
+            evidence: `Deeply nested query accepted at ${endpoint}`,
+            remediation: "Implement query depth limiting (max depth 7-10). Use graphql-depth-limit or similar.",
+            cwe: "CWE-400",
+          });
+        }
       }
     } catch {
       // skip

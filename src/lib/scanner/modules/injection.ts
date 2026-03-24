@@ -202,15 +202,17 @@ export const injectionModule: ScanModule = async (target) => {
         }
 
         const text = await res.text();
-        // Check if payload is reflected unescaped
-        if (text.includes(payload)) {
+        const ct = res.headers.get("content-type") || "";
+        // Check if payload is reflected unescaped in HTML context
+        // JSON responses that echo input are not XSS-vulnerable
+        if (text.includes(payload) && !ct.includes("application/json")) {
           findings.push({
             id: `injection-xss-${findings.length}`,
             module: "XSS",
             severity: "high",
             title: `Reflected XSS on ${new URL(t.url).pathname} (param: ${t.paramName})`,
             description: "An XSS payload was reflected in the response without sanitization. Attackers can inject scripts that steal cookies, redirect users, or perform actions as the victim.",
-            evidence: `Payload: ${payload}\nParam: ${t.paramName}\nPayload reflected in response body`,
+            evidence: `Payload: ${payload}\nParam: ${t.paramName}\nContent-Type: ${ct}\nPayload reflected in response body`,
             remediation: "Sanitize all user input before rendering. Use framework auto-escaping (React does this by default for JSX, but dangerouslySetInnerHTML bypasses it).",
             cwe: "CWE-79",
             owasp: "A03:2021",

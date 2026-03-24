@@ -78,7 +78,7 @@ export const authModule: ScanModule = async (target) => {
       if (looksLikeHtml(text)) {
         const hasAdminUI = (/(<table|<form|<input|data-admin|admin-panel)/i.test(text)) &&
           (/<title[^>]*>.*(?:admin|dashboard|manage|panel)/i.test(text)) &&
-          !/login|sign.?in|unauthorized|403|forbidden/i.test(text.substring(0, 2000));
+          !/login|sign.?in|unauthorized|403|forbidden/i.test(text);
         if (!hasAdminUI) continue;
       }
 
