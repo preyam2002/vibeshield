@@ -491,21 +491,47 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 </div>
               </div>
               {scan.summary.total > 0 && (
-                <button
-                  onClick={() => {
-                    const criticalAndHigh = scan.findings.filter((f) => f.severity === "critical" || f.severity === "high");
-                    const medium = scan.findings.filter((f) => f.severity === "medium");
-                    const items = [...criticalAndHigh, ...medium.slice(0, 5)];
-                    const prompt = `Fix these security vulnerabilities found in ${scan.target}:\n\n${items.map((f, i) => `${i + 1}. [${f.severity.toUpperCase()}] ${f.title}\n   ${f.remediation}`).join("\n\n")}${medium.length > 5 ? `\n\n...and ${medium.length - 5} more medium findings (download full report for details)` : ""}`;
-                    navigator.clipboard.writeText(prompt);
-                    const btn = document.getElementById("fix-all-btn");
-                    if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy Fix-All Prompt"; }, 2000); }
-                  }}
-                  id="fix-all-btn"
-                  className="text-xs bg-zinc-950/50 border border-zinc-700/50 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg transition-colors shrink-0"
-                >
-                  Copy Fix-All Prompt
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => {
+                      const criticalAndHigh = scan.findings.filter((f) => f.severity === "critical" || f.severity === "high");
+                      const medium = scan.findings.filter((f) => f.severity === "medium");
+                      const items = [...criticalAndHigh, ...medium.slice(0, 5)];
+                      const prompt = `Fix these security vulnerabilities found in ${scan.target}:\n\n${items.map((f, i) => `${i + 1}. [${f.severity.toUpperCase()}] ${f.title}\n   ${f.remediation}`).join("\n\n")}${medium.length > 5 ? `\n\n...and ${medium.length - 5} more medium findings (download full report for details)` : ""}`;
+                      navigator.clipboard.writeText(prompt);
+                      const btn = document.getElementById("fix-all-btn");
+                      if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy Fix-All Prompt"; }, 2000); }
+                    }}
+                    id="fix-all-btn"
+                    className="text-xs bg-zinc-950/50 border border-zinc-700/50 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg transition-colors"
+                  >
+                    Copy Fix-All Prompt
+                  </button>
+                  <button
+                    onClick={() => {
+                      const hostname = (() => { try { return new URL(scan.target).hostname; } catch { return scan.target; } })();
+                      const emoji = scan.score >= 75 ? "🟢" : scan.score >= 50 ? "🟡" : "🔴";
+                      const lines = [
+                        `${emoji} VibeShield Scan: ${hostname}`,
+                        `Grade: ${scan.grade} (${scan.score}/100)`,
+                        `Findings: ${scan.summary.total} total`,
+                        scan.summary.critical > 0 ? `  🔴 ${scan.summary.critical} critical` : "",
+                        scan.summary.high > 0 ? `  🟠 ${scan.summary.high} high` : "",
+                        scan.summary.medium > 0 ? `  🟡 ${scan.summary.medium} medium` : "",
+                        scan.summary.low > 0 ? `  🔵 ${scan.summary.low} low` : "",
+                        "",
+                        `Full report: ${window.location.href}`,
+                      ].filter(Boolean).join("\n");
+                      navigator.clipboard.writeText(lines);
+                      const btn = document.getElementById("share-summary-btn");
+                      if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy Summary"; }, 2000); }
+                    }}
+                    id="share-summary-btn"
+                    className="text-xs bg-zinc-950/50 border border-zinc-700/50 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg transition-colors"
+                  >
+                    Copy Summary
+                  </button>
+                </div>
               )}
             </div>
           </div>
