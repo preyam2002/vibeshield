@@ -757,6 +757,37 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </div>
             )}
 
+            {/* Tech-specific tips */}
+            {!isRunning && scan.technologies.length > 0 && (() => {
+              const tips: { tech: string; tip: string }[] = [];
+              const techs = scan.technologies.map((t) => t.toLowerCase());
+              if (techs.some((t) => t.includes("next"))) tips.push({ tech: "Next.js", tip: "Set NEXTAUTH_SECRET, enable CSP in next.config, use middleware for auth" });
+              if (techs.some((t) => t.includes("react"))) tips.push({ tech: "React", tip: "Avoid dangerouslySetInnerHTML, sanitize props from URL params" });
+              if (techs.some((t) => t.includes("supabase"))) tips.push({ tech: "Supabase", tip: "Enable RLS on all tables, never expose service_role key client-side" });
+              if (techs.some((t) => t.includes("firebase"))) tips.push({ tech: "Firebase", tip: "Set Firestore security rules, restrict API key to your domain" });
+              if (techs.some((t) => t.includes("stripe"))) tips.push({ tech: "Stripe", tip: "Verify webhook signatures, validate prices server-side" });
+              if (techs.some((t) => t.includes("vercel"))) tips.push({ tech: "Vercel", tip: "Enable Vercel Firewall, set security headers in vercel.json" });
+              if (techs.some((t) => t.includes("tailwind"))) tips.push({ tech: "Tailwind", tip: "CSP may need unsafe-inline for styles — use nonce-based CSP" });
+              if (techs.some((t) => t.includes("graphql"))) tips.push({ tech: "GraphQL", tip: "Disable introspection in production, set query depth limits" });
+              if (techs.some((t) => t.includes("socket"))) tips.push({ tech: "WebSocket", tip: "Use wss://, authenticate connections, validate message schemas" });
+              if (tips.length === 0) return null;
+              return (
+                <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                    Security Tips
+                  </h3>
+                  <div className="space-y-2">
+                    {tips.slice(0, 4).map((t) => (
+                      <div key={t.tech} className="text-xs">
+                        <span className="text-zinc-400 font-medium">{t.tech}:</span>{" "}
+                        <span className="text-zinc-600">{t.tip}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Attack surface */}
             {scan.surface && (
               <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">

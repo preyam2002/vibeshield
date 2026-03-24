@@ -9,6 +9,7 @@ import {
   setTechInfo,
   setSurface,
 } from "./store";
+import { clearScanCache } from "./fetch";
 import { runRecon } from "./modules/recon";
 import { headersModule } from "./modules/headers";
 import { sslModule } from "./modules/ssl";
@@ -122,6 +123,7 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
 };
 
 const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full") => {
+  clearScanCache();
   // Phase 1: Recon
   updateModule(scanId, "Recon", { status: "running" });
   let target: ScanTarget;
