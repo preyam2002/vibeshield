@@ -551,6 +551,34 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </div>
             )}
 
+            {/* Top priorities */}
+            {!isRunning && scan.findings.length > 0 && (
+              <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                  Top Priorities
+                </h3>
+                <div className="space-y-2.5">
+                  {scan.findings
+                    .filter((f) => f.severity !== "info")
+                    .slice(0, 3)
+                    .map((f, i) => {
+                      const sConf = SEVERITY_CONFIG[f.severity];
+                      return (
+                        <div key={f.id} className="text-xs">
+                          <div className="flex items-start gap-2">
+                            <span className={`font-bold ${sConf.color} shrink-0`}>{i + 1}.</span>
+                            <div>
+                              <div className="text-zinc-300 font-medium leading-snug">{f.title}</div>
+                              <div className="text-zinc-600 mt-0.5">{f.remediation.split(".")[0]}.</div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
             {/* Scan info */}
             {!isRunning && (
               <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
