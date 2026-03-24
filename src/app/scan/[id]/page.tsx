@@ -309,6 +309,13 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 >
                   JSON
                 </a>
+                <a
+                  href={`/api/scan/${id}/sarif`}
+                  download
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  SARIF
+                </a>
                 <button
                   onClick={handleRescan}
                   disabled={rescanning}

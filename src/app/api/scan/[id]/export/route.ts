@@ -14,6 +14,7 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
       exportedAt: new Date().toISOString(),
       target: scan.target,
       grade: scan.grade,
+      score: scan.score,
       status: scan.status,
       startedAt: scan.startedAt,
       completedAt: scan.completedAt,
