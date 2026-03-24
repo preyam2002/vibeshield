@@ -14,18 +14,29 @@ export async function GET(
 
   // Include comparison data if there's a previous scan of the same target
   const prev = findPreviousScan(scan.target, scan.id);
-  const comparison = prev ? {
-    previousId: prev.id,
-    previousGrade: prev.grade,
-    previousScore: prev.score,
-    previousFindings: prev.summary.total,
-    delta: {
-      score: scan.score - prev.score,
-      findings: scan.summary.total - prev.summary.total,
-      critical: scan.summary.critical - prev.summary.critical,
-      high: scan.summary.high - prev.summary.high,
-    },
-  } : undefined;
+  let comparison;
+  if (prev && scan.status === "completed") {
+    // Finding-level diff: match by module+title for stability
+    const prevKeys = new Set(prev.findings.map((f) => `${f.module}::${f.title}`));
+    const currKeys = new Set(scan.findings.map((f) => `${f.module}::${f.title}`));
+    const newFindings = scan.findings.filter((f) => !prevKeys.has(`${f.module}::${f.title}`)).map((f) => ({ title: f.title, severity: f.severity, module: f.module }));
+    const fixedFindings = prev.findings.filter((f) => !currKeys.has(`${f.module}::${f.title}`)).map((f) => ({ title: f.title, severity: f.severity, module: f.module }));
+
+    comparison = {
+      previousId: prev.id,
+      previousGrade: prev.grade,
+      previousScore: prev.score,
+      previousFindings: prev.summary.total,
+      delta: {
+        score: scan.score - prev.score,
+        findings: scan.summary.total - prev.summary.total,
+        critical: scan.summary.critical - prev.summary.critical,
+        high: scan.summary.high - prev.summary.high,
+      },
+      newFindings,
+      fixedFindings,
+    };
+  }
 
   return NextResponse.json({ ...scan, comparison });
 }

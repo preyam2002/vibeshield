@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { startScan } from "@/lib/scanner";
 
+// Simple in-memory rate limiter: max 3 scans per target per 5 minutes
+const recentScans = new Map<string, number[]>();
+const RATE_LIMIT_WINDOW = 5 * 60 * 1000;
+const RATE_LIMIT_MAX = 3;
+
 export async function POST(req: Request) {
   const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" };
   const url = body.url?.trim();
@@ -35,6 +40,19 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
+
+  // Rate limit per target hostname
+  const targetHost = parsed.hostname;
+  const now = Date.now();
+  const timestamps = (recentScans.get(targetHost) || []).filter((t) => now - t < RATE_LIMIT_WINDOW);
+  if (timestamps.length >= RATE_LIMIT_MAX) {
+    return NextResponse.json(
+      { error: `Rate limited: max ${RATE_LIMIT_MAX} scans per target every 5 minutes. Try again later.` },
+      { status: 429 },
+    );
+  }
+  timestamps.push(now);
+  recentScans.set(targetHost, timestamps);
 
   const scanId = crypto.randomUUID();
   startScan(scanId, parsed.href, callbackUrl, mode);

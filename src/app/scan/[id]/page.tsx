@@ -55,6 +55,8 @@ interface ScanResult {
     previousScore: number;
     previousFindings: number;
     delta: { score: number; findings: number; critical: number; high: number };
+    newFindings?: { title: string; severity: string; module: string }[];
+    fixedFindings?: { title: string; severity: string; module: string }[];
   };
 }
 
@@ -453,18 +455,36 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     <ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /> scan time
                   </div>
                   {scan.comparison && (
-                    <div className="text-xs text-zinc-500 mt-1 flex items-center gap-2">
-                      vs previous scan:
-                      <span className={scan.comparison.delta.score > 0 ? "text-green-400" : scan.comparison.delta.score < 0 ? "text-red-400" : "text-zinc-400"}>
-                        {scan.comparison.delta.score > 0 ? "+" : ""}{scan.comparison.delta.score} score
-                      </span>
-                      <span className={scan.comparison.delta.findings < 0 ? "text-green-400" : scan.comparison.delta.findings > 0 ? "text-red-400" : "text-zinc-400"}>
-                        {scan.comparison.delta.findings > 0 ? "+" : ""}{scan.comparison.delta.findings} findings
-                      </span>
-                      {scan.comparison.delta.critical !== 0 && (
-                        <span className={scan.comparison.delta.critical < 0 ? "text-green-400" : "text-red-400"}>
-                          {scan.comparison.delta.critical > 0 ? "+" : ""}{scan.comparison.delta.critical} critical
+                    <div className="mt-1 space-y-1">
+                      <div className="text-xs text-zinc-500 flex items-center gap-2">
+                        vs previous scan:
+                        <span className={scan.comparison.delta.score > 0 ? "text-green-400" : scan.comparison.delta.score < 0 ? "text-red-400" : "text-zinc-400"}>
+                          {scan.comparison.delta.score > 0 ? "+" : ""}{scan.comparison.delta.score} score
                         </span>
+                        <span className={scan.comparison.delta.findings < 0 ? "text-green-400" : scan.comparison.delta.findings > 0 ? "text-red-400" : "text-zinc-400"}>
+                          {scan.comparison.delta.findings > 0 ? "+" : ""}{scan.comparison.delta.findings} findings
+                        </span>
+                        {scan.comparison.delta.critical !== 0 && (
+                          <span className={scan.comparison.delta.critical < 0 ? "text-green-400" : "text-red-400"}>
+                            {scan.comparison.delta.critical > 0 ? "+" : ""}{scan.comparison.delta.critical} critical
+                          </span>
+                        )}
+                      </div>
+                      {(scan.comparison.fixedFindings?.length ?? 0) > 0 && (
+                        <div className="text-xs text-green-400/80 flex items-center gap-1.5">
+                          <span>Fixed:</span>
+                          {scan.comparison.fixedFindings!.map((f, i) => (
+                            <span key={i} className="bg-green-500/10 border border-green-500/20 rounded px-1.5 py-0.5">{f.title.length > 40 ? f.title.slice(0, 40) + "…" : f.title}</span>
+                          ))}
+                        </div>
+                      )}
+                      {(scan.comparison.newFindings?.length ?? 0) > 0 && (
+                        <div className="text-xs text-red-400/80 flex items-center gap-1.5">
+                          <span>New:</span>
+                          {scan.comparison.newFindings!.map((f, i) => (
+                            <span key={i} className="bg-red-500/10 border border-red-500/20 rounded px-1.5 py-0.5">{f.title.length > 40 ? f.title.slice(0, 40) + "…" : f.title}</span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   )}
@@ -593,6 +613,27 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             <div className="text-[10px] text-zinc-600 mt-0.5">Total</div>
           </div>
         </div>
+
+        {/* Severity distribution bar */}
+        {!isRunning && scan.summary.total > 0 && (
+          <div className="mb-6 flex h-2 rounded-full overflow-hidden bg-zinc-800/50">
+            {(["critical", "high", "medium", "low", "info"] as const).map((sev) => {
+              const count = scan.summary[sev];
+              if (count === 0) return null;
+              const pct = (count / scan.summary.total) * 100;
+              const colors = { critical: "bg-red-500", high: "bg-orange-500", medium: "bg-yellow-500", low: "bg-blue-500", info: "bg-zinc-500" };
+              return (
+                <div
+                  key={sev}
+                  className={`${colors[sev]} transition-all duration-500 cursor-pointer hover:opacity-80`}
+                  style={{ width: `${pct}%` }}
+                  title={`${count} ${sev}`}
+                  onClick={() => setFilter(filter === sev ? "all" : sev)}
+                />
+              );
+            })}
+          </div>
+        )}
 
         {/* Security summary */}
         {!isRunning && scan.status === "completed" && scan.findings.length > 0 && (
