@@ -32,44 +32,44 @@ export const openRedirectModule: ScanModule = async (target) => {
     const pathname = new URL(baseUrl).pathname;
     if (foundPaths.has(pathname)) continue;
 
-    for (const param of REDIRECT_PARAMS.slice(0, 10)) {
-      if (foundPaths.has(pathname)) break;
-      for (const evil of EVIL_URLS.slice(0, 3)) {
-        try {
-          const url = new URL(baseUrl);
-          url.searchParams.set(param, evil);
-          const res = await scanFetch(url.href, { redirect: "manual" });
+    // Test all params with the first payload in parallel, then try more payloads on hits
+    const firstEvil = EVIL_URLS[0];
+    const paramTests = await Promise.allSettled(
+      REDIRECT_PARAMS.slice(0, 10).map(async (param) => {
+        const url = new URL(baseUrl);
+        url.searchParams.set(param, firstEvil);
+        const res = await scanFetch(url.href, { redirect: "manual", timeoutMs: 5000 });
+        return { param, status: res.status, location: res.headers.get("location") || "", url: url.href };
+      }),
+    );
 
-          if (res.status >= 300 && res.status < 400) {
-            const location = res.headers.get("location") || "";
-            // The redirect must go TO evil.com as the host, not just preserve the param in a same-site redirect
-            const isExternalRedirect = (() => {
-              try {
-                const loc = new URL(location, url.origin);
-                return loc.hostname === "evil.com";
-              } catch {
-                return location.startsWith("//evil.com") || location.startsWith("https://evil.com") || location.startsWith("http://evil.com");
-              }
-            })();
-            if (isExternalRedirect) {
-              foundPaths.add(pathname);
-              findings.push({
-                id: `openredirect-${findings.length}`,
-                module: "Open Redirect",
-                severity: "medium",
-                title: `Open redirect via "${param}" parameter on ${pathname}`,
-                description: "This endpoint redirects to arbitrary external URLs. Attackers can craft phishing links using your domain that redirect to malicious sites.",
-                evidence: `GET ${url.href}\nLocation: ${location}`,
-                remediation: "Validate redirect URLs against a whitelist of allowed domains. Never redirect to user-controlled URLs.",
-                cwe: "CWE-601",
-                owasp: "A01:2021",
-              });
-              break;
-            }
-          }
+    for (const r of paramTests) {
+      if (r.status !== "fulfilled" || foundPaths.has(pathname)) continue;
+      const { param, status, location, url: testUrl } = r.value;
+      if (status < 300 || status >= 400) continue;
+
+      const isExternalRedirect = (() => {
+        try {
+          return new URL(location, new URL(baseUrl).origin).hostname === "evil.com";
         } catch {
-          // skip
+          return /^(https?:)?\/\/evil\.com/i.test(location);
         }
+      })();
+
+      if (isExternalRedirect) {
+        foundPaths.add(pathname);
+        findings.push({
+          id: `openredirect-${findings.length}`,
+          module: "Open Redirect",
+          severity: "medium",
+          title: `Open redirect via "${param}" parameter on ${pathname}`,
+          description: "This endpoint redirects to arbitrary external URLs. Attackers can craft phishing links using your domain that redirect to malicious sites.",
+          evidence: `GET ${testUrl}\nLocation: ${location}`,
+          remediation: "Validate redirect URLs against a whitelist of allowed domains. Never redirect to user-controlled URLs.",
+          cwe: "CWE-601",
+          owasp: "A01:2021",
+        });
+        break;
       }
     }
   }
