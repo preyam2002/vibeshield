@@ -22,6 +22,36 @@ const LARGE_ARRAY_THRESHOLD = 50; // arrays with 50+ items suggest missing pagin
 export const apiSecurityModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
+  // Check for MIME type mismatches on API endpoints (JSON body with text/html content-type)
+  const mismatchEndpoints: string[] = [];
+  for (const endpoint of target.apiEndpoints.slice(0, 20)) {
+    try {
+      const res = await scanFetch(endpoint);
+      if (!res.ok) continue;
+      const ct = res.headers.get("content-type") || "";
+      const text = await res.text();
+      if (text.startsWith("{") || text.startsWith("[")) {
+        try { JSON.parse(text); } catch { continue; }
+        if (ct.includes("text/html") || ct.includes("text/plain")) {
+          mismatchEndpoints.push(`${new URL(endpoint).pathname} (returns JSON, served as ${ct.split(";")[0]})`);
+        }
+      }
+    } catch { /* skip */ }
+  }
+  if (mismatchEndpoints.length > 0) {
+    findings.push({
+      id: "api-mime-mismatch",
+      module: "API Security",
+      severity: "low",
+      title: `${mismatchEndpoints.length} API endpoint${mismatchEndpoints.length > 1 ? "s" : ""} with Content-Type mismatch`,
+      description: "API endpoints return JSON data but with an incorrect Content-Type header. Combined with missing X-Content-Type-Options, this enables MIME-sniffing attacks where browsers may interpret JSON as HTML.",
+      evidence: mismatchEndpoints.slice(0, 5).join("\n"),
+      remediation: "Set Content-Type: application/json for all JSON API responses. Ensure X-Content-Type-Options: nosniff is set.",
+      cwe: "CWE-436",
+      owasp: "A05:2021",
+    });
+  }
+
   for (const endpoint of target.apiEndpoints.slice(0, 15)) {
     const contentType = await getContentType(endpoint);
     if (!contentType?.includes("json")) continue;
