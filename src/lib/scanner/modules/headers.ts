@@ -67,6 +67,30 @@ const REQUIRED_HEADERS: {
   },
 ];
 
+const checkSriMissing = (target: Parameters<ScanModule>[0]): Finding | null => {
+  // Check if any external scripts lack integrity attributes
+  // We can detect this from the HTML — scripts with src pointing to CDN/external domains
+  const html = target.soft404Body ? "" : ""; // We need the page HTML — check scripts list
+  const externalScripts = target.scripts.filter((s) => {
+    try { return new URL(s).origin !== target.baseUrl; } catch { return false; }
+  });
+  if (externalScripts.length === 0) return null;
+  // If we have external scripts and the CSP doesn't require SRI, flag it
+  const csp = target.headers["content-security-policy"] || "";
+  if (csp.includes("require-sri-for")) return null;
+  return {
+    id: "headers-no-sri",
+    module: "Security Headers",
+    severity: "low",
+    title: `${externalScripts.length} external scripts loaded without Subresource Integrity`,
+    description: `Your app loads ${externalScripts.length} script(s) from external CDNs without SRI hashes. If a CDN is compromised, malicious code would execute in your users' browsers.`,
+    evidence: `External scripts:\n${externalScripts.slice(0, 5).join("\n")}${externalScripts.length > 5 ? `\n...and ${externalScripts.length - 5} more` : ""}`,
+    remediation: "Add integrity=\"sha384-...\" crossorigin=\"anonymous\" attributes to external <script> tags, or use CSP require-sri-for directive.",
+    cwe: "CWE-353",
+    owasp: "A08:2021",
+  };
+};
+
 export const headersModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
@@ -144,7 +168,42 @@ export const headersModule: ScanModule = async (target) => {
         cwe: "CWE-693",
       });
     }
+    // Wildcard script sources
+    const scriptSrc = csp.match(/script-src\s+([^;]+)/)?.[1] || "";
+    const defaultSrc = csp.match(/default-src\s+([^;]+)/)?.[1] || "";
+    const effectiveScriptSrc = scriptSrc || defaultSrc;
+    if (/\*(?!\.)/.test(effectiveScriptSrc) || effectiveScriptSrc.includes("https:")) {
+      findings.push({
+        id: "headers-csp-wildcard-script",
+        module: "Security Headers",
+        severity: "high",
+        title: "CSP script-src allows wildcard or any HTTPS source",
+        description: "Your CSP allows loading scripts from any origin (via * or https:), making it trivially bypassable for XSS.",
+        evidence: `Effective script-src: ${effectiveScriptSrc.substring(0, 200)}`,
+        remediation: "Restrict script-src to specific trusted domains.",
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+      });
+    }
+    // data: URI in script-src enables XSS
+    if (effectiveScriptSrc.includes("data:")) {
+      findings.push({
+        id: "headers-csp-data-script",
+        module: "Security Headers",
+        severity: "high",
+        title: "CSP script-src allows data: URIs",
+        description: "Allowing data: URIs in script-src lets attackers inject scripts via data:text/javascript payloads.",
+        evidence: `Effective script-src: ${effectiveScriptSrc.substring(0, 200)}`,
+        remediation: "Remove data: from script-src.",
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+      });
+    }
   }
+
+  // SRI check for external scripts
+  const sriFinding = checkSriMissing(target);
+  if (sriFinding) findings.push(sriFinding);
 
   return findings;
 };

@@ -46,25 +46,22 @@ export const costAttackModule: ScanModule = async (target) => {
     }
   }
 
-  // Detect Vercel serverless
-  if (target.technologies.includes("Vercel")) {
-    // Vercel: ~$0.40 per 1M function invocations + execution time
-    const functionCost = 0.0000004; // per invocation
-    const execTimeCost = 0.000018;  // per GB-second
+  // Detect Vercel serverless — single consolidated finding
+  if (target.technologies.includes("Vercel") && target.apiEndpoints.length > 0) {
+    const functionCost = 0.0000004;
+    const execTimeCost = 0.000018;
     const avgExecSeconds = 0.5;
     const costPerReq = functionCost + (execTimeCost * avgExecSeconds);
     const rps = 1000;
-
-    for (const ep of target.apiEndpoints.slice(0, 3)) {
-      estimates.push({
-        service: "Vercel Functions",
-        endpoint: ep,
-        costPerRequest: costPerReq,
-        costPerHour: costPerReq * rps * 3600,
-        costPerDay: costPerReq * rps * 86400,
-        requestRate: rps,
-      });
-    }
+    const ep = target.apiEndpoints[0];
+    estimates.push({
+      service: `Vercel Functions (${target.apiEndpoints.length} endpoints)`,
+      endpoint: ep,
+      costPerRequest: costPerReq,
+      costPerHour: costPerReq * rps * 3600,
+      costPerDay: costPerReq * rps * 86400,
+      requestRate: rps,
+    });
   }
 
   // Detect Supabase

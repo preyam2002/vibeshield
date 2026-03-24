@@ -386,6 +386,28 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
           </div>
         )}
 
+        {/* Badge embed */}
+        {!isRunning && scan.status === "completed" && (
+          <div className="mb-6 flex items-center gap-3 text-xs">
+            <span className="text-zinc-600">Embed badge:</span>
+            <code className="bg-zinc-900/80 border border-zinc-800/50 rounded px-2 py-1 text-zinc-500 font-mono text-[11px] truncate max-w-md">
+              {`![VibeShield](${typeof window !== "undefined" ? window.location.origin : ""}/api/scan/${scan.id}/badge)`}
+            </code>
+            <button
+              onClick={() => {
+                const badgeUrl = `${window.location.origin}/api/scan/${scan.id}/badge`;
+                navigator.clipboard.writeText(`![VibeShield](${badgeUrl})`);
+                const el = document.getElementById("badge-copy-btn");
+                if (el) { el.textContent = "Copied!"; setTimeout(() => { el.textContent = "Copy"; }, 2000); }
+              }}
+              id="badge-copy-btn"
+              className="text-zinc-500 hover:text-zinc-300 transition-colors shrink-0"
+            >
+              Copy
+            </button>
+          </div>
+        )}
+
         {/* Progress bar */}
         {isRunning && (
           <div className="mb-6 bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4">

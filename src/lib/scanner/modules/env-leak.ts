@@ -15,15 +15,15 @@ const ENV_ENDPOINTS = [
 
 /** NEXT_PUBLIC_ vars that should never be public — they indicate a misconfigured build or copy-paste mistake */
 const DANGEROUS_PUBLIC_VARS = [
-  /NEXT_PUBLIC_.*(?:DATABASE|DB)_URL/i,
-  /NEXT_PUBLIC_.*PRIVATE.?KEY/i,
-  /NEXT_PUBLIC_.*SECRET/i,
-  /NEXT_PUBLIC_.*WEBHOOK/i,
-  /NEXT_PUBLIC_.*SERVICE.?ROLE/i,
-  /NEXT_PUBLIC_.*PASSWORD/i,
-  /NEXT_PUBLIC_.*ADMIN/i,
-  /NEXT_PUBLIC_.*SMTP/i,
-  /NEXT_PUBLIC_.*REDIS/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}(?:DATABASE|DB)_URL/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}PRIVATE.?KEY/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}SECRET/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}WEBHOOK/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}SERVICE.?ROLE/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}PASSWORD/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}ADMIN/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}SMTP/i,
+  /NEXT_PUBLIC_[A-Z_]{0,30}REDIS/i,
 ];
 
 /** Patterns to find in JS bundles that indicate env leaks */

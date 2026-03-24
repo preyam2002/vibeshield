@@ -10,6 +10,8 @@ interface ToolCheck {
   severity: Finding["severity"];
   description: string;
   remediation: string;
+  /** If true, response must have JSON content-type to be a real finding */
+  requireJson?: boolean;
 }
 
 const TOOL_CHECKS: ToolCheck[] = [
@@ -63,6 +65,7 @@ const TOOL_CHECKS: ToolCheck[] = [
     severity: "medium",
     description: "Swagger/OpenAPI JSON specification is publicly accessible.",
     remediation: "Remove or restrict access to the API specification file in production.",
+    requireJson: true,
   },
   {
     path: "/openapi.json",
@@ -71,6 +74,7 @@ const TOOL_CHECKS: ToolCheck[] = [
     severity: "medium",
     description: "OpenAPI specification file is publicly accessible, revealing your complete API schema.",
     remediation: "Remove or restrict access to the OpenAPI spec in production.",
+    requireJson: true,
   },
   {
     path: "/docs",
@@ -130,6 +134,7 @@ const TOOL_CHECKS: ToolCheck[] = [
     severity: "low",
     description: "Health check endpoint exposes detailed system information beyond a simple OK/healthy status.",
     remediation: "Limit health check responses to a simple status. Move detailed diagnostics behind authentication.",
+    requireJson: true,
   },
   {
     path: "/health",
@@ -138,6 +143,7 @@ const TOOL_CHECKS: ToolCheck[] = [
     severity: "low",
     description: "Health check endpoint exposes detailed system information.",
     remediation: "Return only a simple status from public health endpoints.",
+    requireJson: true,
   },
   {
     path: "/status",
@@ -146,6 +152,7 @@ const TOOL_CHECKS: ToolCheck[] = [
     severity: "low",
     description: "Status endpoint exposes detailed system information.",
     remediation: "Limit public status information. Move detailed diagnostics behind authentication.",
+    requireJson: true,
   },
 ];
 
@@ -163,23 +170,22 @@ export const exposedToolsModule: ScanModule = async (target) => {
       // Skip SPA soft 404s
       if (isSoft404(text, target)) continue;
 
-      // For non-JSON responses, check if it's just generic HTML with no tool content
-      if (looksLikeHtml(text) && target.isSpa) {
-        // Must match at least one content pattern to confirm real tool
-        const hasToolContent = check.contentPatterns.some((p) => p.test(text));
-        if (!hasToolContent) continue;
+      // If this check requires JSON response, reject HTML
+      if (check.requireJson && looksLikeHtml(text)) continue;
+
+      // For HTML responses, require content patterns to confirm it's a real tool page
+      if (looksLikeHtml(text)) {
+        const matchCount = check.contentPatterns.filter((p) => p.test(text)).length;
+        // For SPAs, require at least 2 pattern matches to avoid false positives from SPA shells
+        // For non-SPAs, require at least 1 match
+        const threshold = target.isSpa ? 2 : 1;
+        if (matchCount < threshold) continue;
       }
 
       // For JSON responses, verify it's not empty/trivial
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("json")) {
         if (text.length < 10) continue;
-        const hasToolContent = check.contentPatterns.some((p) => p.test(text));
-        if (!hasToolContent) continue;
-      }
-
-      // For non-SPA HTML responses, still verify tool content
-      if (looksLikeHtml(text) && !target.isSpa) {
         const hasToolContent = check.contentPatterns.some((p) => p.test(text));
         if (!hasToolContent) continue;
       }

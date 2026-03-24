@@ -77,6 +77,10 @@ export const rateLimitModule: ScanModule = async (target) => {
     const hasRateLimitHeaders = results.some((r) => r.rateLimitHeaders);
     const requestsSent = results.length;
 
+    // If every response is an error (401, 403, 404, 405), the endpoint isn't really handling requests
+    const allErrors = results.every((r) => [401, 403, 404, 405, 500, 502, 503].includes(r.status));
+    if (allErrors) continue;
+
     if (!rateLimited && !hasRateLimitHeaders) {
       findings.push({
         id: `ratelimit-none-${findings.length}`,
