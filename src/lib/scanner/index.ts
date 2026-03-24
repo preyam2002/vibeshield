@@ -48,6 +48,7 @@ import { ssrfModule } from "./modules/ssrf";
 import { fileUploadModule } from "./modules/file-upload";
 import { crlfModule } from "./modules/crlf";
 import { hostHeaderModule } from "./modules/host-header";
+import { subdomainModule } from "./modules/subdomain";
 
 const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
@@ -81,6 +82,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "File Upload", description: "Test file upload security and type validation", category: "security", run: fileUploadModule },
   { name: "CRLF Injection", description: "Test for HTTP header injection via CRLF characters", category: "security", run: crlfModule },
   { name: "Host Header", description: "Test for Host header injection and password reset poisoning", category: "security", run: hostHeaderModule },
+  { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [

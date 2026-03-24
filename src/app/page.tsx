@@ -43,6 +43,7 @@ const ATTACK_MODULES = [
   { name: "File Upload", desc: "Unrestricted file types, SVG XSS, path traversal", icon: "📤" },
   { name: "CRLF Injection", desc: "HTTP header injection via CRLF in parameters", icon: "↵" },
   { name: "Host Header", desc: "Host injection, password reset poisoning", icon: "🏠" },
+  { name: "Subdomain Takeover", desc: "CT log discovery, dangling DNS detection", icon: "🌐" },
 ];
 
 interface RecentScan {

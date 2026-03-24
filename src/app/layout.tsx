@@ -3,16 +3,16 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "VibeShield — Pentest Your Vibe-Coded App",
-  description: "Black-box security scanner for vibe-coded apps. Paste a URL, run 39 attack modules, get a severity-ranked report with fix instructions. No code access needed.",
+  description: "Black-box security scanner for vibe-coded apps. Paste a URL, run 40 attack modules, get a severity-ranked report with fix instructions. No code access needed.",
   openGraph: {
     title: "VibeShield — Pentest Your Vibe-Coded App",
-    description: "39 attack modules. No code access needed. Results in minutes.",
+    description: "40 attack modules. No code access needed. Results in minutes.",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "VibeShield — Pentest Your Vibe-Coded App",
-    description: "39 attack modules. No code access needed. Results in minutes.",
+    description: "40 attack modules. No code access needed. Results in minutes.",
   },
 };
 

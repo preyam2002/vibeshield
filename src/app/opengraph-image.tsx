@@ -26,7 +26,7 @@ export default function Image() {
           Pentest your vibe-coded app
         </div>
         <div style={{ display: "flex", fontSize: 20, color: "#71717a", marginTop: 20, textAlign: "center", maxWidth: 700 }}>
-          39 attack modules. No code access needed. Results in minutes.
+          40 attack modules. No code access needed. Results in minutes.
         </div>
         <div style={{ display: "flex", gap: 16, marginTop: 40 }}>
           {["SQLi", "XSS", "SSRF", "IDOR", "CORS", "JWT", "RLS", "CSRF"].map((tag) => (
