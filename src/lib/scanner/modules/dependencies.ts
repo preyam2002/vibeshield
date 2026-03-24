@@ -40,8 +40,8 @@ const VULNERABLE_LIBS: {
   },
   {
     name: "React",
-    detect: /react[.-]dom[./]|"react-dom"|react\.production/,
-    versionExtract: /react(?:-dom)?[./\s]*v?(\d+\.\d+\.\d+)/i,
+    detect: /react[.-]dom[./]|"react-dom"|react\.production\.min/,
+    versionExtract: /react(?:-dom)?[\s./@]*v?(1[0-9]\.\d+\.\d+)/i,
     vulnerableBelow: "16.13.0",
     severity: "medium",
     cve: "CVE-2020-7919",

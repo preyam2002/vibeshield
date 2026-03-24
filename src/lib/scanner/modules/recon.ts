@@ -104,10 +104,30 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     }
   });
 
-  // Extract inline script content for tech detection
+  // Extract inline script content for tech detection + dynamic imports
   let inlineJs = "";
   $("script:not([src])").each((_, el) => {
-    inlineJs += $(el).text() + "\n";
+    const text = $(el).text();
+    inlineJs += text + "\n";
+    // Extract dynamic import() URLs from inline scripts
+    const importMatches = text.matchAll(/import\s*\(\s*["']([^"']+\.(?:js|mjs|ts))["']\s*\)/g);
+    for (const m of importMatches) {
+      const resolved = resolveUrl(m[1], baseUrl);
+      if (resolved && !target.scripts.includes(resolved)) {
+        target.scripts.push(resolved);
+      }
+    }
+  });
+
+  // Extract modulepreload links (modern bundlers like Vite use these)
+  $('link[rel="modulepreload"][href]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (href) {
+      const resolved = resolveUrl(href, baseUrl);
+      if (resolved && !target.scripts.includes(resolved)) {
+        target.scripts.push(resolved);
+      }
+    }
   });
 
   // Extract forms
