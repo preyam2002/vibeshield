@@ -48,46 +48,49 @@ export const ssrfModule: ScanModule = async (target) => {
   const MAX_FINDINGS = 3;
   const testedEndpoints = [...fetchEndpoints].slice(0, 10);
 
+  let ssrfCount = 0;
+
   for (const endpoint of testedEndpoints) {
     if (findings.length >= MAX_FINDINGS) break;
 
-    // Test GET with URL params
-    for (const param of SSRF_PARAMS.slice(0, 8)) {
-      if (findings.length >= MAX_FINDINGS) break;
-      for (const { payload, name } of SSRF_PAYLOADS.slice(0, 3)) {
-        try {
-          const testUrl = new URL(endpoint);
-          testUrl.searchParams.set(param, payload);
-          const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
-          const text = await res.text();
+    // Test GET: parallelize all param+payload combinations for this endpoint
+    const getTests = SSRF_PARAMS.slice(0, 8).flatMap((param) =>
+      SSRF_PAYLOADS.slice(0, 3).map(({ payload, name }) => ({ param, payload, name })),
+    );
 
-          if (res.ok && text.length > 10 && !looksLikeHtml(text)) {
-            // Check if response contains metadata-like content
-            if (isSSRFIndicator(text, name)) {
-              findings.push({
-                id: `ssrf-get-${findings.length}`,
-                module: "SSRF",
-                severity: "critical",
-                title: `SSRF: ${name} accessible via ${param} parameter on ${new URL(endpoint).pathname}`,
-                description: `The endpoint fetches user-supplied URLs server-side without validating the target. An attacker can access internal services, cloud metadata, and private networks.`,
-                evidence: `GET ${testUrl.href}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
-                remediation: "Validate and sanitize URLs before fetching. Block requests to internal IP ranges (127.0.0.0/8, 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16). Use an allowlist of permitted domains.",
-                cwe: "CWE-918",
-                owasp: "A10:2021",
-              });
-              break;
-            }
-          }
-        } catch {
-          // skip
-        }
+    const getResults = await Promise.allSettled(
+      getTests.map(async ({ param, payload, name }) => {
+        const testUrl = new URL(endpoint);
+        testUrl.searchParams.set(param, payload);
+        const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+        const text = await res.text();
+        return { param, payload, name, testUrl, res, text };
+      }),
+    );
+
+    for (const result of getResults) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (result.status !== "fulfilled") continue;
+      const { param, name, testUrl, res, text } = result.value;
+      if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, name)) {
+        findings.push({
+          id: `ssrf-get-${ssrfCount++}`,
+          module: "SSRF",
+          severity: "critical",
+          title: `SSRF: ${name} accessible via ${param} parameter on ${new URL(endpoint).pathname}`,
+          description: `The endpoint fetches user-supplied URLs server-side without validating the target. An attacker can access internal services, cloud metadata, and private networks.`,
+          evidence: `GET ${testUrl.href}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
+          remediation: "Validate and sanitize URLs before fetching. Block requests to internal IP ranges (127.0.0.0/8, 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16). Use an allowlist of permitted domains.",
+          cwe: "CWE-918",
+          owasp: "A10:2021",
+        });
       }
     }
 
-    // Test POST with URL in body
+    // Test POST with URL in body — parallelize payloads
     if (findings.length >= MAX_FINDINGS) break;
-    for (const { payload, name } of SSRF_PAYLOADS.slice(0, 3)) {
-      try {
+    const postResults = await Promise.allSettled(
+      SSRF_PAYLOADS.slice(0, 3).map(async ({ payload, name }) => {
         const res = await scanFetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -95,25 +98,26 @@ export const ssrfModule: ScanModule = async (target) => {
           timeoutMs: 5000,
         });
         const text = await res.text();
+        return { payload, name, res, text };
+      }),
+    );
 
-        if (res.ok && text.length > 10 && !looksLikeHtml(text)) {
-          if (isSSRFIndicator(text, name)) {
-            findings.push({
-              id: `ssrf-post-${findings.length}`,
-              module: "SSRF",
-              severity: "critical",
-              title: `SSRF: ${name} accessible via POST body on ${new URL(endpoint).pathname}`,
-              description: `The endpoint fetches user-supplied URLs from POST body without validation. An attacker can access internal services and cloud metadata.`,
-              evidence: `POST ${endpoint} with url: ${payload}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
-              remediation: "Validate and sanitize URLs before fetching. Block internal IP ranges. Use domain allowlists.",
-              cwe: "CWE-918",
-              owasp: "A10:2021",
-            });
-            break;
-          }
-        }
-      } catch {
-        // skip
+    for (const result of postResults) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (result.status !== "fulfilled") continue;
+      const { payload, name, res, text } = result.value;
+      if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, name)) {
+        findings.push({
+          id: `ssrf-post-${ssrfCount++}`,
+          module: "SSRF",
+          severity: "critical",
+          title: `SSRF: ${name} accessible via POST body on ${new URL(endpoint).pathname}`,
+          description: `The endpoint fetches user-supplied URLs from POST body without validation. An attacker can access internal services and cloud metadata.`,
+          evidence: `POST ${endpoint} with url: ${payload}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
+          remediation: "Validate and sanitize URLs before fetching. Block internal IP ranges. Use domain allowlists.",
+          cwe: "CWE-918",
+          owasp: "A10:2021",
+        });
       }
     }
   }

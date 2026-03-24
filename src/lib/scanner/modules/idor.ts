@@ -21,6 +21,9 @@ const MAX_IDOR_FINDINGS = 3;
 export const idorModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
+  let seqCount = 0;
+  let paramCount = 0;
+
   // Find endpoints that look like they use sequential IDs
   const idEndpoints: { base: string; currentId: number }[] = [];
   const seenBases = new Set<string>();
@@ -111,7 +114,7 @@ export const idorModule: ScanModule = async (target) => {
       const severity = hasPrivateData ? "high" : "medium";
 
       findings.push({
-        id: `idor-sequential-${findings.length}`,
+        id: `idor-sequential-${seqCount++}`,
         module: "IDOR",
         severity,
         title: `Sequential ID enumeration on ${ep.base}/[id]`,
@@ -148,7 +151,7 @@ export const idorModule: ScanModule = async (target) => {
 
       if (success >= 2) {
         findings.push({
-          id: `idor-param-${findings.length}`,
+          id: `idor-param-${paramCount++}`,
           module: "IDOR",
           severity: "high",
           title: `IDOR via ${paramName} parameter on ${url.pathname}`,

@@ -31,16 +31,27 @@ const SQLI_ERROR_PATTERNS = [
   /unterminated string/i,
 ];
 
-const XSS_PAYLOADS = [
-  '<script>alert("XSS")</script>',
-  '"><img src=x onerror=alert(1)>',
-  "javascript:alert(1)",
-  '<svg onload=alert(1)>',
-  "'-alert(1)-'",
-  '<img src="x" onerror="alert(1)">',
-  '{{constructor.constructor("alert(1)")()}}',
-  "${alert(1)}",
-  '<iframe src="javascript:alert(1)">',
+const XSS_PAYLOADS: { payload: string; check: (text: string) => boolean }[] = [
+  {
+    payload: '<script>alert("XSS")</script>',
+    check: (t) => t.includes('<script>alert("XSS")</script>'),
+  },
+  {
+    payload: '"><img src=x onerror=alert(1)>',
+    check: (t) => t.includes("<img src=x onerror=alert(1)>"),
+  },
+  {
+    payload: "<svg onload=alert(1)>",
+    check: (t) => t.includes("<svg onload=alert(1)>"),
+  },
+  {
+    payload: '<img src="x" onerror="alert(1)">',
+    check: (t) => t.includes('<img src="x" onerror="alert(1)">'),
+  },
+  {
+    payload: '<iframe src="javascript:alert(1)">',
+    check: (t) => t.includes('<iframe src="javascript:alert(1)">'),
+  },
 ];
 
 const SSTI_PAYLOADS = [
@@ -110,6 +121,11 @@ export const injectionModule: ScanModule = async (target) => {
     return true;
   });
 
+  // Counters per finding type to avoid ID collisions
+  let sqliCount = 0;
+  let xssCount = 0;
+  let sstiCount = 0;
+
   // SQL Injection testing — deduplicate by pathname+param
   const sqliFound = new Set<string>();
   for (const t of dedupedTargets.slice(0, 15)) {
@@ -137,7 +153,7 @@ export const injectionModule: ScanModule = async (target) => {
           if (pattern.test(text)) {
             sqliFound.add(sqliKey);
             findings.push({
-              id: `injection-sqli-${findings.length}`,
+              id: `injection-sqli-${sqliCount++}`,
               module: "SQL Injection",
               severity: "critical",
               title: `SQL injection on ${new URL(t.url).pathname} (param: ${t.paramName})`,
@@ -180,7 +196,7 @@ export const injectionModule: ScanModule = async (target) => {
           if (elapsed >= 1800 && elapsed >= baseline * 2) {
             sqliFound.add(sqliKey);
             findings.push({
-              id: `injection-sqli-blind-${findings.length}`,
+              id: `injection-sqli-blind-${sqliCount++}`,
               module: "SQL Injection",
               severity: "critical",
               title: `Blind SQL injection (time-based) on ${new URL(t.url).pathname}`,
@@ -199,6 +215,8 @@ export const injectionModule: ScanModule = async (target) => {
   }
 
   // XSS testing — deduplicate by pathname+param
+  // Only flag when the payload appears as actual unescaped HTML (executable context),
+  // not inside JSON, RSC payloads, or HTML-escaped text
   const xssFound = new Set<string>();
   const MAX_XSS = 3;
   for (const t of dedupedTargets.slice(0, 10)) {
@@ -206,7 +224,7 @@ export const injectionModule: ScanModule = async (target) => {
     const key = `${pathname}:${t.paramName}`;
     if (xssFound.has(key) || xssFound.size >= MAX_XSS) continue;
 
-    for (const payload of XSS_PAYLOADS.slice(0, 4)) {
+    for (const { payload, check } of XSS_PAYLOADS.slice(0, 4)) {
       try {
         let res: Response;
         if (t.method === "GET") {
@@ -223,15 +241,26 @@ export const injectionModule: ScanModule = async (target) => {
 
         const text = await res.text();
         const ct = res.headers.get("content-type") || "";
-        if (text.includes(payload) && !ct.includes("application/json")) {
+
+        // Skip non-HTML responses — JSON, RSC streams, etc. can't execute scripts
+        if (ct.includes("application/json") || ct.includes("text/x-component") || ct.includes("application/rsc")) continue;
+
+        // Check if the payload appears unescaped in the HTML
+        // The check function verifies the actual HTML tag/attribute is present (not escaped)
+        if (check(text)) {
+          // Extra guard: make sure it's not inside a JSON blob or escaped string
+          const escaped = text.includes("&lt;") && text.includes("&gt;");
+          const inJsonStr = text.includes(JSON.stringify(payload));
+          if (escaped || inJsonStr) continue;
+
           xssFound.add(key);
           findings.push({
-            id: `injection-xss-${findings.length}`,
+            id: `injection-xss-${xssCount++}`,
             module: "XSS",
             severity: "high",
             title: `Reflected XSS on ${pathname} (param: ${t.paramName})`,
-            description: "An XSS payload was reflected in the response without sanitization. Attackers can inject scripts that steal cookies, redirect users, or perform actions as the victim.",
-            evidence: `Payload: ${payload}\nParam: ${t.paramName}\nContent-Type: ${ct}\nPayload reflected in response body`,
+            description: "An XSS payload was reflected unescaped in the HTML response. Attackers can inject scripts that steal cookies, redirect users, or perform actions as the victim.",
+            evidence: `Payload: ${payload}\nParam: ${t.paramName}\nContent-Type: ${ct}\nPayload reflected unescaped in response body`,
             remediation: "Sanitize all user input before rendering. Use framework auto-escaping (React does this by default for JSX, but dangerouslySetInnerHTML bypasses it).",
             cwe: "CWE-79",
             owasp: "A03:2021",
@@ -282,7 +311,7 @@ export const injectionModule: ScanModule = async (target) => {
         if (text2.includes("64") && !text2.includes("{{8*8}}")) {
           sstiFound.add(pathname);
           findings.push({
-            id: `injection-ssti-${findings.length}`,
+            id: `injection-ssti-${sstiCount++}`,
             module: "SSTI",
             severity: "critical",
             title: `Server-Side Template Injection on ${pathname}`,
