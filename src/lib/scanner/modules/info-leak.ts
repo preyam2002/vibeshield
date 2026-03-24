@@ -36,8 +36,13 @@ export const infoLeakModule: ScanModule = async (target) => {
     { suffix: "/%00", desc: "null byte" },
   ];
 
+  const seenEndpoints = new Set<string>();
   for (const endpoint of target.apiEndpoints.slice(0, 8)) {
+    const pathname = new URL(endpoint).pathname;
+    if (seenEndpoints.has(pathname)) continue;
+
     for (const payload of errorPayloads) {
+      if (seenEndpoints.has(pathname)) break;
       try {
         const url = endpoint + payload.suffix;
         const res = await scanFetch(url);
@@ -46,11 +51,12 @@ export const infoLeakModule: ScanModule = async (target) => {
         // Check for stack traces
         for (const ep of ERROR_PATTERNS) {
           if (ep.pattern.test(text)) {
+            seenEndpoints.add(pathname);
             findings.push({
               id: `infoleak-stacktrace-${findings.length}`,
               module: "Information Leakage",
               severity: "medium",
-              title: `Stack trace leaked (${ep.tech}) on ${new URL(endpoint).pathname}`,
+              title: `Stack trace leaked (${ep.tech}) on ${pathname}`,
               description: `A ${ep.tech} stack trace was returned when sending ${payload.desc}. Stack traces reveal internal file paths, function names, and application structure.`,
               evidence: `URL: ${url}\nTech: ${ep.tech}\nResponse excerpt: ${text.substring(0, 400)}`,
               remediation: "Implement proper error handling that returns generic error messages in production. Never expose stack traces to users.",
@@ -61,19 +67,23 @@ export const infoLeakModule: ScanModule = async (target) => {
           }
         }
 
-        // Check for sensitive info patterns
-        for (const si of SENSITIVE_INFO_PATTERNS) {
-          if (si.pattern.test(text)) {
-            findings.push({
-              id: `infoleak-sensitive-${findings.length}`,
-              module: "Information Leakage",
-              severity: "low",
-              title: `${si.description} leaked on ${new URL(endpoint).pathname}`,
-              description: `Sensitive information (${si.description}) was found in the response.`,
-              evidence: `URL: ${url}\nPattern: ${si.description}`,
-              remediation: "Sanitize error responses in production. Use a global error handler.",
-              cwe: "CWE-200",
-            });
+        // Check for sensitive info patterns (only if no stack trace found)
+        if (!seenEndpoints.has(pathname)) {
+          for (const si of SENSITIVE_INFO_PATTERNS) {
+            if (si.pattern.test(text)) {
+              seenEndpoints.add(pathname);
+              findings.push({
+                id: `infoleak-sensitive-${findings.length}`,
+                module: "Information Leakage",
+                severity: "low",
+                title: `${si.description} leaked on ${pathname}`,
+                description: `Sensitive information (${si.description}) was found in the response.`,
+                evidence: `URL: ${url}\nPattern: ${si.description}`,
+                remediation: "Sanitize error responses in production. Use a global error handler.",
+                cwe: "CWE-200",
+              });
+              break;
+            }
           }
         }
       } catch {
