@@ -146,6 +146,26 @@ jobs:
           </pre>
         </section>
 
+        {/* One-liner */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">One-Liner CLI</h2>
+          <p className="text-sm text-zinc-500 mb-4">Scan and gate deployments from your terminal:</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Scan and fail if score < 50
+ID=$(curl -s -X POST ${baseUrl}/api/scan \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://your-app.vercel.app"}' | jq -r .id) && \\
+while true; do
+  R=$(curl -s ${baseUrl}/api/scan/$ID)
+  S=$(echo $R | jq -r .status)
+  [ "$S" = "completed" ] || [ "$S" = "failed" ] && break
+  sleep 5
+done && \\
+echo $R | jq '{grade, score, summary}' && \\
+[ "$(echo $R | jq .score)" -ge 50 ] || (echo "FAIL: score below threshold" && exit 1)`}
+          </pre>
+        </section>
+
         {/* Badge */}
         <section className="mb-12">
           <h2 className="text-lg font-bold text-zinc-200 mb-4">README Badge</h2>
