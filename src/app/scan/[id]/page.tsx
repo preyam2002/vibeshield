@@ -82,7 +82,7 @@ const GRADE_CONFIG: Record<string, { color: string; bg: string; border: string; 
 const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: boolean; onToggle: () => void }) => {
   const sev = SEVERITY_CONFIG[finding.severity];
   return (
-    <div className={`border ${sev.border} rounded-lg overflow-hidden bg-zinc-950/50`}>
+    <div id={`finding-${finding.id}`} className={`border ${sev.border} rounded-lg overflow-hidden bg-zinc-950/50`}>
       <button
         onClick={onToggle}
         className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-zinc-900/50 transition-colors"
@@ -185,6 +185,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const [rescanning, setRescanning] = useState(false);
   const [openFindings, setOpenFindings] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
   const [groupBy, setGroupBy] = useState<"severity" | "module">("severity");
   const [expandAll, setExpandAll] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -236,6 +237,23 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     intervalRef.current = setInterval(fetchScan, 2000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchScan]);
+
+  // Keyboard shortcuts: / to focus search, Escape to clear
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        if (e.key === "Escape") { setSearch(""); setFilter("all"); (e.target as HTMLElement).blur(); }
+        return;
+      }
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const input = document.querySelector<HTMLInputElement>('input[placeholder="Search findings..."]');
+        input?.focus();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Auto-expand first critical/high finding when scan completes
   useEffect(() => {
@@ -315,11 +333,13 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const progress = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
   const currentModule = scan.modules.find((m) => m.status === "running");
 
-  const filteredFindings = filter === "all"
-    ? scan.findings
-    : scan.findings.filter((f) => f.severity === filter);
-
   const severityOrder = ["critical", "high", "medium", "low", "info"] as const;
+  const searchLower = search.toLowerCase();
+  const filteredFindings = scan.findings.filter((f) => {
+    if (filter !== "all" && f.severity !== filter) return false;
+    if (search && !f.title.toLowerCase().includes(searchLower) && !f.module.toLowerCase().includes(searchLower) && !f.remediation.toLowerCase().includes(searchLower)) return false;
+    return true;
+  });
   const sortedFindings = [...filteredFindings].sort(
     (a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity),
   );
@@ -695,7 +715,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     .map((f, i) => {
                       const sConf = SEVERITY_CONFIG[f.severity];
                       return (
-                        <div key={f.id} className="text-xs">
+                        <button
+                          key={f.id}
+                          className="text-xs text-left w-full hover:bg-zinc-800/30 rounded-md p-1 -m-1 transition-colors"
+                          onClick={() => {
+                            setOpenFindings((prev) => new Set([...prev, f.id]));
+                            document.getElementById(`finding-${f.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          }}
+                        >
                           <div className="flex items-start gap-2">
                             <span className={`font-bold ${sConf.color} shrink-0`}>{i + 1}.</span>
                             <div>
@@ -703,7 +730,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                               <div className="text-zinc-600 mt-0.5">{f.remediation.split(".")[0]}.</div>
                             </div>
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
                 </div>
@@ -748,18 +775,29 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
 
           {/* Findings */}
           <div className="lg:col-span-3">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
-                Findings{filter !== "all" ? ` — ${filter}` : ""}
-                {filteredFindings.length > 0 && ` (${filteredFindings.length})`}
-              </h3>
+            <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider shrink-0">
+                  Findings{filter !== "all" ? ` — ${filter}` : ""}
+                  {filteredFindings.length > 0 && ` (${filteredFindings.length})`}
+                </h3>
+                {scan.findings.length > 3 && (
+                  <input
+                    type="text"
+                    placeholder="Search findings..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="text-xs bg-zinc-900/50 border border-zinc-800/50 rounded-lg px-3 py-1.5 text-zinc-300 placeholder:text-zinc-700 focus:outline-none focus:border-zinc-700 w-full max-w-[200px]"
+                  />
+                )}
+              </div>
               <div className="flex items-center gap-3">
-                {filter !== "all" && (
+                {(filter !== "all" || search) && (
                   <button
-                    onClick={() => setFilter("all")}
+                    onClick={() => { setFilter("all"); setSearch(""); }}
                     className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
                   >
-                    Clear filter
+                    Clear filters
                   </button>
                 )}
                 <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
