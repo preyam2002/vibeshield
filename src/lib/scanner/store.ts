@@ -29,16 +29,15 @@ export const findPreviousScan = (target: string, excludeId: string): ScanResult 
     [0];
 };
 
-export const getRecentScans = (): { id: string; target: string; grade: string; status: string; findings: number; summary: ScanResult["summary"] }[] => {
+export const getRecentScans = (): { id: string; target: string; grade: string; score: number; status: string; findings: number; summary: ScanResult["summary"]; startedAt: string; completedAt?: string }[] => {
   return Array.from(scans.values())
     .sort((a, b) => {
-      // Running scans first, then by completion time
       if (a.status === "scanning" && b.status !== "scanning") return -1;
       if (b.status === "scanning" && a.status !== "scanning") return 1;
       return (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt);
     })
-    .slice(0, 20)
-    .map((s) => ({ id: s.id, target: s.target, grade: s.grade, status: s.status, findings: s.summary.total, summary: s.summary }));
+    .slice(0, 50)
+    .map((s) => ({ id: s.id, target: s.target, grade: s.grade, score: s.score, status: s.status, findings: s.summary.total, summary: s.summary, startedAt: s.startedAt, completedAt: s.completedAt }));
 };
 
 export const updateScanStatus = (id: string, status: ScanResult["status"]) => {

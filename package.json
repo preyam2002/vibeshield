@@ -1,12 +1,13 @@
 {
   "name": "vibeshield",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Black-box security scanner for vibe-coded apps",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "type-check": "tsc --noEmit",
+    "lint": "next lint"
   },
   "keywords": [],
   "author": "",
