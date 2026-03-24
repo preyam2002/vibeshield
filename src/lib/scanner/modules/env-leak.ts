@@ -83,6 +83,20 @@ const JS_ENV_PATTERNS: {
     description: "Email/SMTP credentials were found in client-side JavaScript.",
     remediation: "Move email sending to server-side. Never expose SMTP credentials in the browser.",
   },
+  {
+    name: "Non-production environment detected",
+    pattern: /["']?(?:ENVIRONMENT|APP_ENV|DEPLOY_ENV|STAGE)["']?\s*[:=]\s*["'](staging|test|dev|development|local|sandbox)["']/gi,
+    severity: "medium",
+    description: "The JavaScript bundle indicates this may be a staging/test environment exposed to the public internet.",
+    remediation: "Restrict non-production environments to internal networks. Use IP allowlists or VPN access.",
+  },
+  {
+    name: "Internal API URL in bundle",
+    pattern: /https?:\/\/(?:internal|staging|dev|test|sandbox)[.-][^\s"']{5,}/gi,
+    severity: "medium",
+    description: "An internal or staging API URL was found in the production bundle, revealing infrastructure details.",
+    remediation: "Use environment variables for API URLs. Ensure production builds only reference production endpoints.",
+  },
 ];
 
 const ENV_LEAK_HEADERS = [
