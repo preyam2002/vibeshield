@@ -151,24 +151,19 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Sentry DSN found. While Sentry DSNs are semi-public, attackers can flood your error tracking with fake errors.",
     remediation: "Configure allowed origins in Sentry to prevent abuse.",
   },
-  // Supabase URL patterns (info, not secret, but useful context)
-  {
-    name: "Exposed .env Reference",
-    pattern: /process\.env\.[A-Z_]{5,}/g,
-    severity: "info",
-    description: "References to environment variables found in client bundle. If the build isn't configured correctly, these could be undefined instead of populated.",
-    remediation: "Verify these env vars are correctly prefixed (NEXT_PUBLIC_ for Next.js) and don't contain secrets.",
-  },
 ];
 
 // Placeholder/test values that look like secrets but aren't
 const PLACEHOLDER_PATTERNS = [
   /^(test|example|placeholder|demo|dummy|fake|mock|sample|your[_-])/i,
   /^(xxx|aaa|123|000|foo|bar|baz|todo|fixme)/i,
-  /^(password|secret|token|key|auth)/i,  // Value IS the key name (common in minified code)
+  /^(password|passwd|secret|token|key|auth|api[_-]?key|csrf|client)/i,  // Value IS the key name
   /%/,  // CSS/URL-encoded values
   /\.\.\./,  // Ellipsis/placeholder
   /^[a-z]{1,3}[_-][a-z]{1,3}$/i,  // Very short like "a-key", "au-tok"
+  /^[a-z_-]+$/i,  // All-alpha values like "required", "enabled", "hidden"
+  /^\d+$/,  // Pure numeric like "12345678"
+  /^(true|false|null|undefined|none|empty|default|required|enabled|disabled)/i,
 ];
 
 const isPlaceholderValue = (match: string): boolean => {

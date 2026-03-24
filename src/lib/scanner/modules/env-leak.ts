@@ -50,9 +50,9 @@ const JS_ENV_PATTERNS: {
   },
   {
     name: "Localhost/dev backend URL",
-    pattern: /https?:\/\/(?:localhost|127\.0\.0\.1):\d{4,5}(?:\/[^\s"']*)?/g,
+    pattern: /https?:\/\/(?:localhost|127\.0\.0\.1):\d{4,5}\/api\/[^\s"']+/g,
     severity: "medium",
-    description: "A localhost URL with port was found in the production JavaScript bundle. This indicates development backend URLs were left in the code, which can expose internal architecture and cause functionality issues.",
+    description: "A localhost API URL was found in the production JavaScript bundle. This indicates development backend URLs were left in the code, which can expose internal architecture and cause functionality issues.",
     remediation: "Use environment variables for API base URLs. Ensure build configuration replaces development URLs with production ones.",
   },
   {
