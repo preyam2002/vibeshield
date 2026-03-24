@@ -4,15 +4,13 @@ import { scanFetch } from "../../fetch";
 export const raceConditionModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // Find state-changing endpoints that might be vulnerable to race conditions
+  // Only test endpoints that look like one-time actions — generic POSTs cause too many false positives
   const stateEndpoints = target.apiEndpoints.filter((ep) =>
-    /coupon|redeem|claim|transfer|withdraw|vote|like|follow|subscribe|checkout|purchase|apply|bonus|reward|credit|discount/i.test(ep),
+    /coupon|redeem|claim|transfer|withdraw|vote|checkout|purchase|apply|bonus|reward|credit|discount|activate|upgrade|downgrade/i.test(ep),
   );
 
-  // Also test generic endpoints with POST
-  const postEndpoints = target.apiEndpoints.slice(0, 5);
-
-  const testEndpoints = [...new Set([...stateEndpoints, ...postEndpoints])].slice(0, 8);
+  if (stateEndpoints.length === 0) return findings;
+  const testEndpoints = stateEndpoints.slice(0, 6);
 
   for (const endpoint of testEndpoints) {
     // Send N identical requests simultaneously
@@ -35,7 +33,7 @@ export const raceConditionModule: ScanModule = async (target) => {
     );
 
     // If a "claim"-type endpoint succeeds multiple times, that's a race condition
-    const isSensitive = /coupon|redeem|claim|transfer|withdraw|vote|like|bonus|reward|credit|discount/i.test(endpoint);
+    const isSensitive = /coupon|redeem|claim|transfer|withdraw|checkout|purchase|bonus|reward|credit|discount|activate|upgrade/i.test(endpoint);
     if (isSensitive && successes.length > 1) {
       findings.push({
         id: `race-${findings.length}`,

@@ -138,23 +138,40 @@ export const injectionModule: ScanModule = async (target) => {
           }
         }
 
-        // Time-based detection (check if response was slow)
+        // Time-based detection — compare against baseline to avoid false positives
         if (payload.includes("SLEEP") || payload.includes("WAITFOR")) {
-          const start = Date.now();
-          if (t.method === "GET") {
-            const url = new URL(t.url);
-            url.searchParams.set(t.paramName, payload);
-            await scanFetch(url.href, { timeoutMs: 10000 });
+          // Measure baseline (3 requests, take median)
+          const baseTimes: number[] = [];
+          for (let i = 0; i < 3; i++) {
+            const bs = Date.now();
+            try {
+              const baseUrl = new URL(t.url);
+              baseUrl.searchParams.set(t.paramName, "baseline_test");
+              await scanFetch(baseUrl.href, { timeoutMs: 10000 });
+            } catch { /* skip */ }
+            baseTimes.push(Date.now() - bs);
           }
+          const baseline = baseTimes.sort((a, b) => a - b)[1] || 500; // median
+
+          const start = Date.now();
+          try {
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, payload);
+              await scanFetch(url.href, { timeoutMs: 10000 });
+            }
+          } catch { /* skip */ }
           const elapsed = Date.now() - start;
-          if (elapsed >= 1800) {
+
+          // Only flag if: absolute delay > 1800ms AND at least 2x baseline
+          if (elapsed >= 1800 && elapsed >= baseline * 2) {
             findings.push({
               id: `injection-sqli-blind-${findings.length}`,
               module: "SQL Injection",
               severity: "critical",
               title: `Blind SQL injection (time-based) on ${new URL(t.url).pathname}`,
-              description: `The server delayed ${elapsed}ms when injecting a time-delay SQL payload. This indicates the input is passed directly into SQL queries.`,
-              evidence: `Payload: ${payload}\nResponse time: ${elapsed}ms`,
+              description: `The server delayed ${elapsed}ms when injecting a time-delay SQL payload (baseline: ${baseline}ms). This indicates the input is passed directly into SQL queries.`,
+              evidence: `Payload: ${payload}\nResponse time: ${elapsed}ms\nBaseline: ${baseline}ms`,
               remediation: "Use parameterized queries. Never concatenate user input into SQL strings.",
               cwe: "CWE-89",
               owasp: "A03:2021",

@@ -16,19 +16,19 @@ const sendBatch = async (
   url: string,
   count: number,
   timeoutMs = 10000,
-): Promise<{ ok: boolean; ms: number }[]> => {
+): Promise<{ ok: boolean; ms: number; status: number }[]> => {
   const results = await Promise.allSettled(
     Array.from({ length: count }, async () => {
       const start = Date.now();
       try {
         const res = await scanFetch(url, { timeoutMs });
-        return { ok: res.ok, ms: Date.now() - start };
+        return { ok: res.ok, ms: Date.now() - start, status: res.status };
       } catch {
-        return { ok: false, ms: Date.now() - start };
+        return { ok: false, ms: Date.now() - start, status: 0 };
       }
     }),
   );
-  return results.map((r) => (r.status === "fulfilled" ? r.value : { ok: false, ms: 10000 }));
+  return results.map((r) => (r.status === "fulfilled" ? r.value : { ok: false, ms: 10000, status: 0 }));
 };
 
 const percentile = (arr: number[], p: number): number => {
@@ -49,6 +49,8 @@ export const loadModule: ScanModule = async (target) => {
     const batch = await sendBatch(testUrl, concurrency);
     const times = batch.map((r) => r.ms);
     const successes = batch.filter((r) => r.ok).length;
+    const rateLimited = batch.filter((r) => r.status === 429).length;
+    const serverErrors = batch.filter((r) => r.status >= 500).length;
     const fails = batch.filter((r) => !r.ok).length;
 
     results.push({
@@ -62,8 +64,22 @@ export const loadModule: ScanModule = async (target) => {
       errorRate: fails / concurrency,
     });
 
-    // Stop if more than 50% failing
-    if (fails / concurrency > 0.5) break;
+    // 429s mean rate limiting is working — that's good, not a failure
+    if (rateLimited > concurrency * 0.3) {
+      findings.push({
+        id: "stress-load-rate-limited",
+        module: "Load Testing",
+        severity: "info",
+        title: `Rate limiting active at ${concurrency} concurrent requests`,
+        description: `${rateLimited}/${concurrency} requests received 429 (Too Many Requests). Rate limiting is properly protecting your app.`,
+        evidence: `At ${concurrency} concurrent: ${rateLimited} rate-limited, ${successes} succeeded, ${serverErrors} server errors`,
+        remediation: "Rate limiting is working as intended. Review limits if they seem too aggressive for legitimate traffic.",
+      });
+      break;
+    }
+
+    // Stop if more than 50% server errors (not counting 429s)
+    if (serverErrors / concurrency > 0.5) break;
   }
 
   // Analyze results

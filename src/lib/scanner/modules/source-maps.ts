@@ -21,7 +21,16 @@ export const sourceMapsModule: ScanModule = async (target) => {
     try {
       const res = await scanFetch(mapUrl);
       if (res.ok) {
-        exposedMaps.push(mapUrl);
+        const text = await res.text();
+        // Validate it's an actual source map (has required fields)
+        try {
+          const json = JSON.parse(text);
+          if (json.version && json.sources && json.mappings) {
+            exposedMaps.push(mapUrl);
+          }
+        } catch {
+          // Not valid JSON — not a real source map
+        }
       }
     } catch {}
   }
