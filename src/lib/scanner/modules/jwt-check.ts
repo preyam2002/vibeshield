@@ -71,7 +71,7 @@ export const jwtModule: ScanModule = async (target) => {
 
     // Check for sensitive data in payload
     const sensitiveFields = Object.keys(payload).filter((k) =>
-      /password|secret|ssn|credit|card|cvv/i.test(k),
+      /password|secret|ssn|credit|card|cvv|dob|date_of_birth|tax_id|passport|license_number|phone|address/i.test(k),
     );
     if (sensitiveFields.length > 0) {
       findings.push({
