@@ -42,6 +42,8 @@ import { exposedToolsModule } from "./modules/exposed-tools";
 import { apiSecurityModule } from "./modules/api-security";
 import { envLeakModule } from "./modules/env-leak";
 import { aiSecurityModule } from "./modules/ai-security";
+import { ssrfModule } from "./modules/ssrf";
+import { fileUploadModule } from "./modules/file-upload";
 
 const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
@@ -71,6 +73,8 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "API Security", description: "Test for prototype pollution, over-fetching, and mass assignment", category: "security", run: apiSecurityModule },
   { name: "Environment Leak", description: "Deep scan for environment variable and config leaks", category: "security", run: envLeakModule },
   { name: "AI Security", description: "Test AI/LLM endpoint security and prompt injection", category: "security", run: aiSecurityModule },
+  { name: "SSRF", description: "Test for Server-Side Request Forgery vulnerabilities", category: "security", run: ssrfModule },
+  { name: "File Upload", description: "Test file upload security and type validation", category: "security", run: fileUploadModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [

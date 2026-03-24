@@ -39,6 +39,8 @@ const ATTACK_MODULES = [
   { name: "API Security", desc: "Prototype pollution, over-fetching, mass assignment", icon: "🧬" },
   { name: "Env Variable Leak", desc: "Exposed env vars, dev configs, localhost URLs", icon: "🔐" },
   { name: "AI/LLM Security", desc: "Prompt injection, system prompt leak, unauthed AI", icon: "🤖" },
+  { name: "SSRF", desc: "Server-side request forgery via proxy/fetch endpoints", icon: "🌀" },
+  { name: "File Upload", desc: "Unrestricted file types, SVG XSS, path traversal", icon: "📤" },
 ];
 
 interface RecentScan {
