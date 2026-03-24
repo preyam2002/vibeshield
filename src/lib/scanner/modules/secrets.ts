@@ -117,7 +117,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
   },
   {
     name: "Resend API Key",
-    pattern: /re_[a-zA-Z0-9]{20,}/g,
+    pattern: /re_[a-zA-Z0-9]{30,}/g,
     severity: "high",
     description: "Resend API key exposed. Attackers can send emails from your domain.",
     remediation: "Rotate in Resend dashboard. Move to server-side.",

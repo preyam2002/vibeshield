@@ -1,5 +1,6 @@
 import type { ScanModule, Finding } from "../types";
 import { scanFetch } from "../fetch";
+import { looksLikeHtml } from "../soft404";
 
 const ID_PATH_PATTERNS = [
   /\/api\/\w+\/(\d+)$/,
@@ -7,11 +8,20 @@ const ID_PATH_PATTERNS = [
   /\/\w+\/(\d+)$/,
 ];
 
+// Endpoints that naturally serve public content by ID — not IDOR
+const PUBLIC_RESOURCE_PATTERNS = /\/(posts?|articles?|blogs?|products?|items?|pages?|categories|tags|comments|reviews)\//i;
+
+// Fields that indicate private/user-specific data
+const PRIVATE_DATA_PATTERNS = /email|phone|address|ssn|password|billing|payment|credit|salary|dob|birth|social.?security/i;
+
+const MAX_IDOR_FINDINGS = 3;
+
 export const idorModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
   // Find endpoints that look like they use sequential IDs
   const idEndpoints: { base: string; currentId: number }[] = [];
+  const seenBases = new Set<string>();
 
   for (const endpoint of target.apiEndpoints) {
     for (const pattern of ID_PATH_PATTERNS) {
@@ -19,7 +29,11 @@ export const idorModule: ScanModule = async (target) => {
       if (match) {
         const id = parseInt(match[1]);
         if (!isNaN(id)) {
-          idEndpoints.push({ base: endpoint.replace(/\/\d+$/, ""), currentId: id });
+          const base = endpoint.replace(/\/\d+$/, "");
+          if (!seenBases.has(base)) {
+            seenBases.add(base);
+            idEndpoints.push({ base, currentId: id });
+          }
         }
       }
     }
@@ -34,7 +48,11 @@ export const idorModule: ScanModule = async (target) => {
         if (match) {
           const id = parseInt(match[1]);
           if (!isNaN(id)) {
-            idEndpoints.push({ base: url.origin + url.pathname.replace(/\/\d+$/, ""), currentId: id });
+            const base = url.origin + url.pathname.replace(/\/\d+$/, "");
+            if (!seenBases.has(base)) {
+              seenBases.add(base);
+              idEndpoints.push({ base, currentId: id });
+            }
           }
         }
       }
@@ -44,10 +62,12 @@ export const idorModule: ScanModule = async (target) => {
   }
 
   // Test sequential ID access
-  for (const ep of idEndpoints.slice(0, 10)) {
+  for (const ep of idEndpoints.slice(0, 8)) {
+    if (findings.length >= MAX_IDOR_FINDINGS) break;
     const testIds = [1, 2, 3, ep.currentId + 1, ep.currentId + 2];
     let accessibleCount = 0;
     const evidenceLines: string[] = [];
+    const evidenceTexts: string[] = [];
 
     for (const id of testIds) {
       try {
@@ -56,8 +76,11 @@ export const idorModule: ScanModule = async (target) => {
         if (res.ok) {
           const ct = res.headers.get("content-type") || "";
           if (ct.includes("json")) {
+            const text = await res.text();
+            if (looksLikeHtml(text)) continue;
             accessibleCount++;
             evidenceLines.push(`GET ${url} → ${res.status}`);
+            evidenceTexts.push(text.substring(0, 500));
           }
         }
       } catch {
@@ -65,13 +88,20 @@ export const idorModule: ScanModule = async (target) => {
       }
     }
 
-    if (accessibleCount >= 2) {
+    if (accessibleCount >= 3) {
+      // Skip endpoints that serve intentionally public content (blogs, products, etc.)
+      if (PUBLIC_RESOURCE_PATTERNS.test(ep.base)) continue;
+
+      // Check if responses contain private user data (stronger signal)
+      const hasPrivateData = evidenceTexts.some((t) => PRIVATE_DATA_PATTERNS.test(t));
+      const severity = hasPrivateData ? "high" : "medium";
+
       findings.push({
         id: `idor-sequential-${findings.length}`,
         module: "IDOR",
-        severity: "high",
+        severity,
         title: `Sequential ID enumeration on ${ep.base}/[id]`,
-        description: `${accessibleCount} different IDs returned data without any access control check. An attacker can enumerate all records by iterating through IDs. This is the #1 vulnerability in vibe-coded apps.`,
+        description: `${accessibleCount} different IDs returned data without any access control check. An attacker can enumerate all records by iterating through IDs.${hasPrivateData ? " Responses contain private user data fields." : ""}`,
         evidence: evidenceLines.join("\n"),
         remediation: "Use UUIDs instead of sequential IDs. Always verify the requesting user has permission to access the specific resource.",
         cwe: "CWE-639",
@@ -82,6 +112,7 @@ export const idorModule: ScanModule = async (target) => {
 
   // Test IDOR via query parameters
   for (const endpoint of target.apiEndpoints.slice(0, 10)) {
+    if (findings.length >= MAX_IDOR_FINDINGS) break;
     const url = new URL(endpoint);
     if (url.searchParams.has("id") || url.searchParams.has("user_id") || url.searchParams.has("userId")) {
       const paramName = url.searchParams.has("id") ? "id" : url.searchParams.has("user_id") ? "user_id" : "userId";

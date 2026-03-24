@@ -4,20 +4,25 @@ import { scanFetch } from "../fetch";
 export const csrfModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
+  // Check if SameSite cookies provide CSRF protection already
+  const hasSameSiteCookie = target.cookies.some(
+    (c) => c.sameSite && c.sameSite.toLowerCase() !== "none",
+  );
+
   // Check forms for CSRF tokens
-  for (const form of target.forms) {
+  for (const form of target.forms.slice(0, 10)) {
     if (form.method === "GET") continue;
     const hasCsrfToken = form.inputs.some((i) =>
       /csrf|xsrf|token|_token|authenticity/i.test(i.name),
     );
 
-    if (!hasCsrfToken) {
+    if (!hasCsrfToken && !hasSameSiteCookie) {
       findings.push({
         id: `csrf-no-token-${findings.length}`,
         module: "CSRF",
         severity: "medium",
         title: `Form missing CSRF token: ${form.action}`,
-        description: "This form submits data without a CSRF token. A malicious site could trick logged-in users into submitting this form unknowingly.",
+        description: "This form submits data without a CSRF token and no SameSite cookies are set. A malicious site could trick logged-in users into submitting this form unknowingly.",
         evidence: `Form action: ${form.action}\nMethod: ${form.method}\nInputs: ${form.inputs.map((i) => i.name).join(", ")}`,
         remediation: "Add CSRF protection. For Next.js API routes, check the Origin header. For traditional forms, include a CSRF token.",
         cwe: "CWE-352",

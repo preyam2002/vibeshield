@@ -21,7 +21,7 @@ export const authModule: ScanModule = async (target) => {
 
   // Test API endpoints without authentication
   // Skip endpoints that are intentionally public (webhooks, callbacks, health checks, auth flows)
-  const publicPatterns = /webhook|callback|health|status|ping|csp-report|cron|sitemap|feed|rss|\.well-known|auth\/signin|auth\/signup|auth\/login|auth\/register|auth\/providers|auth\/csrf|stripe/i;
+  const publicPatterns = /webhook|callback|health|status|ping|csp-report|cron|sitemap|feed|rss|\.well-known|auth\/signin|auth\/signup|auth\/login|auth\/register|auth\/providers|auth\/csrf|stripe|chilipiper|calendly|hubspot|intercom|zendesk|crisp|drift|segment|analytics|tracking|pixel|beacon/i;
 
   const MAX_AUTH_FINDINGS = 3;
   for (const endpoint of target.apiEndpoints) {
@@ -45,8 +45,13 @@ export const authModule: ScanModule = async (target) => {
       // Check if response contains sensitive-looking data
       // Use stricter patterns — field names must appear as JSON keys to avoid false positives
       const hasSensitive = SENSITIVE_PATTERNS.some((p) => {
-        const keyPattern = new RegExp(`"[^"]*${p.source}[^"]*"\\s*:`, "i");
-        return keyPattern.test(text);
+        const keyPattern = new RegExp(`"[^"]*${p.source}[^"]*"\\s*:\\s*"([^"]*)"`, "i");
+        const match = text.match(keyPattern);
+        if (!match) return false;
+        const value = match[1];
+        // Skip if value is null, empty, or a placeholder
+        if (!value || value === "null" || value === "undefined" || value.length < 3) return false;
+        return true;
       });
       const isArray = Array.isArray(data);
       const itemCount = isArray ? (data as unknown[]).length : 0;
