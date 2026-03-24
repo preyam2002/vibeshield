@@ -20,7 +20,15 @@ export const authModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
   // Test API endpoints without authentication
+  // Skip endpoints that are intentionally public (webhooks, callbacks, health checks, auth flows)
+  const publicPatterns = /webhook|callback|health|status|ping|csp-report|cron|sitemap|feed|rss|\.well-known|auth\/signin|auth\/signup|auth\/login|auth\/register|auth\/providers|auth\/csrf|stripe/i;
+
+  const MAX_AUTH_FINDINGS = 3;
   for (const endpoint of target.apiEndpoints) {
+    if (findings.length >= MAX_AUTH_FINDINGS) break;
+    const pathname = new URL(endpoint).pathname;
+    if (publicPatterns.test(pathname)) continue;
+
     try {
       const res = await scanFetch(endpoint);
       if (!res.ok) continue;
@@ -35,16 +43,21 @@ export const authModule: ScanModule = async (target) => {
       try { data = JSON.parse(text); } catch { continue; }
 
       // Check if response contains sensitive-looking data
-      const hasSensitive = SENSITIVE_PATTERNS.some((p) => p.test(text));
+      // Use stricter patterns — field names must appear as JSON keys to avoid false positives
+      const hasSensitive = SENSITIVE_PATTERNS.some((p) => {
+        const keyPattern = new RegExp(`"[^"]*${p.source}[^"]*"\\s*:`, "i");
+        return keyPattern.test(text);
+      });
       const isArray = Array.isArray(data);
       const itemCount = isArray ? (data as unknown[]).length : 0;
 
-      if (hasSensitive || itemCount > 1) {
+      // Require stronger signals: sensitive keys with actual data, or arrays with many records
+      if ((hasSensitive && text.length > 50) || itemCount > 5) {
         findings.push({
           id: `auth-no-auth-${findings.length}`,
           module: "Authentication",
           severity: hasSensitive ? "critical" : "high",
-          title: `Unauthenticated access to ${new URL(endpoint).pathname}`,
+          title: `Unauthenticated access to ${pathname}`,
           description: isArray
             ? `This endpoint returns ${itemCount} records without any authentication.${hasSensitive ? " Response contains sensitive-looking fields (email, password, etc.)." : ""}`
             : `This endpoint returns data without authentication.${hasSensitive ? " Response contains sensitive-looking fields." : ""}`,
