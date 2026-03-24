@@ -17,8 +17,23 @@ export const emailEnumModule: ScanModule = async (target) => {
     "admin@" + new URL(target.url).hostname,
   ];
 
+  // Only test paths that exist (discovered by recon or return non-404)
+  const MAX_FINDINGS = 2;
   for (const path of AUTH_PATHS) {
+    if (findings.length >= MAX_FINDINGS) break;
     const url = target.baseUrl + path;
+    // Skip paths not discovered by recon (likely don't exist)
+    const discovered = target.apiEndpoints.some((ep) => ep.includes(path));
+    if (!discovered) {
+      // Quick check if the path exists
+      try {
+        const probe = await scanFetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", timeoutMs: 3000 });
+        if (probe.status === 404 || probe.status === 405) continue;
+        const probeText = await probe.text();
+        // Skip HTML responses (SPA shell, not a real auth endpoint)
+        if (probeText.includes("<!DOCTYPE") || probeText.includes("<html")) continue;
+      } catch { continue; }
+    }
     try {
       // Test with fake email
       const res1 = await scanFetch(url, {
@@ -66,6 +81,7 @@ export const emailEnumModule: ScanModule = async (target) => {
       }
 
       // Check timing difference (significant = >200ms)
+      if (findings.length >= MAX_FINDINGS) break;
       const start1 = Date.now();
       await scanFetch(url, {
         method: "POST",
