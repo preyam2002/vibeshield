@@ -197,6 +197,15 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchScan]);
 
+  // Auto-expand first critical/high finding when scan completes
+  useEffect(() => {
+    if (scan?.status === "completed" && openFindings.size === 0) {
+      const first = scan.findings.find((f) => f.severity === "critical" || f.severity === "high");
+      if (first) setOpenFindings(new Set([first.id]));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scan?.status]);
+
   const toggleFinding = (findingId: string) => {
     setOpenFindings((prev) => {
       const next = new Set(prev);
