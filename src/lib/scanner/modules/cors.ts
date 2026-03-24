@@ -10,6 +10,8 @@ const EVIL_ORIGINS = [
 export const corsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
   const endpoints = [target.url, ...target.apiEndpoints.slice(0, 10)];
+  let wildcardFound = false;
+  let reflectFound = false;
 
   for (const endpoint of endpoints) {
     // Test wildcard CORS
@@ -20,7 +22,8 @@ export const corsModule: ScanModule = async (target) => {
       const acao = res.headers.get("access-control-allow-origin");
       const acac = res.headers.get("access-control-allow-credentials");
 
-      if (acao === "*") {
+      if (acao === "*" && !wildcardFound) {
+        wildcardFound = true;
         findings.push({
           id: `cors-wildcard-${findings.length}`,
           module: "CORS",
@@ -38,12 +41,14 @@ export const corsModule: ScanModule = async (target) => {
       }
 
       // Test if it reflects the origin
+      if (reflectFound) continue;
       for (const origin of EVIL_ORIGINS) {
         const res2 = await scanFetch(endpoint, {
           headers: { Origin: origin },
         });
         const acao2 = res2.headers.get("access-control-allow-origin");
         if (acao2 === origin) {
+          reflectFound = true;
           findings.push({
             id: `cors-reflect-${findings.length}`,
             module: "CORS",
