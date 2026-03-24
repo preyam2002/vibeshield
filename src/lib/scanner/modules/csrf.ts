@@ -4,9 +4,10 @@ import { scanFetch } from "../fetch";
 export const csrfModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // Check if SameSite cookies provide CSRF protection already
+  // Check if SameSite cookies provide CSRF protection
+  // Missing SameSite defaults to Lax in modern browsers (provides CSRF protection)
   const hasSameSiteCookie = target.cookies.some(
-    (c) => c.sameSite && c.sameSite.toLowerCase() !== "none",
+    (c) => !c.sameSite || c.sameSite.toLowerCase() !== "none",
   );
 
   // Check forms for CSRF tokens

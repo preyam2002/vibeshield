@@ -58,7 +58,10 @@ curl ${baseUrl}/api/scan/abc-123/export -o report.json
 curl ${baseUrl}/api/scan/abc-123/report -o report.md
 
 # SARIF (GitHub Code Scanning)
-curl ${baseUrl}/api/scan/abc-123/sarif -o results.sarif`}
+curl ${baseUrl}/api/scan/abc-123/sarif -o results.sarif
+
+# CSV (spreadsheet/JIRA import)
+curl ${baseUrl}/api/scan/abc-123/csv -o findings.csv`}
               </pre>
             </div>
           </div>
@@ -185,6 +188,7 @@ echo $R | jq '{grade, score, summary}' && \\
               { method: "GET", path: "/api/scan/:id/export", desc: "Download JSON report" },
               { method: "GET", path: "/api/scan/:id/report", desc: "Download Markdown report" },
               { method: "GET", path: "/api/scan/:id/sarif", desc: "Download SARIF file" },
+              { method: "GET", path: "/api/scan/:id/csv", desc: "Download CSV report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
               { method: "GET", path: "/api/scans", desc: "List recent scans" },
             ].map((ep) => (

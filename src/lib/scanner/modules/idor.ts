@@ -76,6 +76,8 @@ export const idorModule: ScanModule = async (target) => {
   // Test sequential ID access
   for (const ep of idEndpoints.slice(0, 8)) {
     if (findings.length >= MAX_IDOR_FINDINGS) break;
+    // Skip UUID-based endpoints — can't enumerate UUIDs sequentially
+    if (ep.currentId === 0) continue;
     const testIds = [1, 2, 3, ep.currentId + 1, ep.currentId + 2];
     let accessibleCount = 0;
     const evidenceLines: string[] = [];

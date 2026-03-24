@@ -308,7 +308,7 @@ const parseCookie = (raw: string): CookieInfo => {
     value,
     secure: flags.some((f) => f === "secure"),
     httpOnly: flags.some((f) => f === "httponly"),
-    sameSite: flags.find((f) => f.startsWith("samesite"))?.split("=")[1] || "none",
+    sameSite: flags.find((f) => f.startsWith("samesite"))?.split("=")[1]?.trim() || "",
     domain: flags.find((f) => f.startsWith("domain"))?.split("=")[1] || "",
     path: flags.find((f) => f.startsWith("path"))?.split("=")[1] || "/",
   };

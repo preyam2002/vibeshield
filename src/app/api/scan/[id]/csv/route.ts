@@ -1,0 +1,33 @@
+import { NextResponse } from "next/server";
+import { getScan } from "@/lib/scanner/store";
+
+const escCsv = (s: string) => {
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+};
+
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const scan = getScan(id);
+  if (!scan) {
+    return NextResponse.json({ error: "Scan not found" }, { status: 404 });
+  }
+
+  const header = "Severity,Module,Title,Description,Remediation,CWE,OWASP";
+  const rows = scan.findings.map((f) =>
+    [f.severity, f.module, f.title, f.description, f.remediation, f.cwe || "", f.owasp || ""]
+      .map(escCsv)
+      .join(","),
+  );
+  const csv = [header, ...rows].join("\n");
+
+  return new Response(csv, {
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="vibeshield-${id}.csv"`,
+    },
+  });
+}

@@ -44,14 +44,15 @@ export const cookiesModule: ScanModule = async (target) => {
       });
     }
 
-    if (isSensitive && (!cookie.sameSite || cookie.sameSite === "none")) {
+    // SameSite=None explicitly allows cross-site — flag it. Missing SameSite defaults to Lax in modern browsers.
+    if (isSensitive && cookie.sameSite.toLowerCase() === "none") {
       findings.push({
         id: `cookies-no-samesite-${cookie.name}`,
         module: "Cookies",
         severity: "medium",
-        title: `Session cookie "${cookie.name}" has weak SameSite policy`,
-        description: "This cookie is sent on cross-site requests, making CSRF attacks possible.",
-        evidence: `Cookie: ${cookie.name}\nSameSite: ${cookie.sameSite || "not set"}`,
+        title: `Session cookie "${cookie.name}" has SameSite=None`,
+        description: "This cookie is explicitly set to SameSite=None, meaning it's sent on all cross-site requests. This enables CSRF attacks unless other protections are in place.",
+        evidence: `Cookie: ${cookie.name}\nSameSite: None`,
         remediation: "Set SameSite=Lax or SameSite=Strict on this cookie.",
         cwe: "CWE-1275",
         owasp: "A05:2021",
