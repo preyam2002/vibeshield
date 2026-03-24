@@ -76,7 +76,28 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const load = () => fetch("/api/scans").then((r) => r.json()).then(setRecentScans).catch(() => {});
+    const load = async () => {
+      try {
+        const res = await fetch("/api/scans");
+        const serverScans: RecentScan[] = await res.json();
+        // Merge server scans with localStorage history
+        const stored: RecentScan[] = JSON.parse(localStorage.getItem("vibeshield-history") || "[]");
+        const merged = new Map<string, RecentScan>();
+        for (const s of stored) merged.set(s.id, s);
+        for (const s of serverScans) merged.set(s.id, s); // server data takes priority
+        const all = [...merged.values()].slice(0, 20);
+        // Persist completed scans to localStorage
+        const toStore = all.filter((s) => s.status === "completed" || s.status === "failed").slice(0, 20);
+        localStorage.setItem("vibeshield-history", JSON.stringify(toStore));
+        setRecentScans(all);
+      } catch {
+        // Fallback to localStorage only
+        try {
+          const stored: RecentScan[] = JSON.parse(localStorage.getItem("vibeshield-history") || "[]");
+          if (stored.length > 0) setRecentScans(stored);
+        } catch { /* skip */ }
+      }
+    };
     load();
     const interval = setInterval(load, 5000);
     return () => clearInterval(interval);

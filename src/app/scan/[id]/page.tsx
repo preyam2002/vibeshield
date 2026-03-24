@@ -174,6 +174,15 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     try {
       const res = await fetch(`/api/scan/${id}`);
       if (!res.ok) {
+        // Try loading from localStorage cache
+        try {
+          const cached = localStorage.getItem(`vibeshield-scan-${id}`);
+          if (cached) {
+            setScan(JSON.parse(cached));
+            if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = undefined; }
+            return;
+          }
+        } catch { /* skip */ }
         setError("Scan not found");
         return;
       }
@@ -181,12 +190,23 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       setScan(data);
 
       if (data.status === "completed" || data.status === "failed") {
+        // Cache completed scans in localStorage
+        try { localStorage.setItem(`vibeshield-scan-${id}`, JSON.stringify(data)); } catch { /* skip */ }
         if (intervalRef.current) {
           clearInterval(intervalRef.current);
           intervalRef.current = undefined;
         }
       }
     } catch {
+      // Try localStorage before giving up
+      try {
+        const cached = localStorage.getItem(`vibeshield-scan-${id}`);
+        if (cached) {
+          setScan(JSON.parse(cached));
+          if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = undefined; }
+          return;
+        }
+      } catch { /* skip */ }
       setError("Failed to fetch scan results");
     }
   }, [id]);
