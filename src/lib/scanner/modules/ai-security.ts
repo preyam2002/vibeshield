@@ -147,6 +147,10 @@ export const aiSecurityModule: ScanModule = async (target) => {
       if (looksLikeHtml(text)) continue;
 
       if (res.ok && text.length > 5) {
+        // Skip responses that are actually error/auth messages returning 200
+        const isErrorResponse = /\b(unauthorized|unauthenticated|forbidden|invalid.?token|login.?required|sign.?in|access.?denied)\b/i.test(text.substring(0, 500));
+        if (isErrorResponse) continue;
+
         confirmedEndpoints.push(endpoint);
 
         // Check if there's no auth at all (200 without any auth headers)
@@ -190,7 +194,7 @@ export const aiSecurityModule: ScanModule = async (target) => {
 
         // Check if the response contains system prompt indicators
         const leakedIndicators = SYSTEM_PROMPT_INDICATORS.filter((p) => p.test(text));
-        if (leakedIndicators.length >= 2) {
+        if (leakedIndicators.length >= 3) {
           findings.push({
             id: `ai-prompt-leak-${findings.length}`,
             module: "AI Security",

@@ -23,7 +23,7 @@ export const emailEnumModule: ScanModule = async (target) => {
     if (findings.length >= MAX_FINDINGS) break;
     const url = target.baseUrl + path;
     // Skip paths not discovered by recon (likely don't exist)
-    const discovered = target.apiEndpoints.some((ep) => ep.includes(path));
+    const discovered = target.apiEndpoints.some((ep) => new URL(ep).pathname === path || ep.endsWith(path));
     if (!discovered) {
       // Quick check if the path exists
       try {
@@ -96,8 +96,9 @@ export const emailEnumModule: ScanModule = async (target) => {
         } catch { /* skip */ }
         baseTimes.push(Date.now() - bs);
       }
-      const baselineMedian = baseTimes.sort((a, b) => a - b)[1] || 500;
-      const baselineVariance = Math.max(...baseTimes) - Math.min(...baseTimes);
+      const sortedBase = [...baseTimes].sort((a, b) => a - b);
+      const baselineMedian = sortedBase[1] || 500;
+      const baselineVariance = sortedBase[sortedBase.length - 1] - sortedBase[0];
 
       // Now measure "real" email timing (3 requests, take median)
       const realTimes: number[] = [];
@@ -113,7 +114,8 @@ export const emailEnumModule: ScanModule = async (target) => {
         } catch { /* skip */ }
         realTimes.push(Date.now() - rs);
       }
-      const realMedian = realTimes.sort((a, b) => a - b)[1] || 500;
+      const sortedReal = [...realTimes].sort((a, b) => a - b);
+      const realMedian = sortedReal[1] || 500;
       const diff = Math.abs(realMedian - baselineMedian);
 
       // Only flag if: diff > 300ms AND diff > 2x baseline variance AND diff > 50% of baseline
