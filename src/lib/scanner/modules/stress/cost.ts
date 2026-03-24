@@ -21,28 +21,24 @@ export const costAttackModule: ScanModule = async (target) => {
 
   const estimates: CostEstimate[] = [];
 
-  // Detect AI API usage
+  // Detect AI API usage — one finding per provider
   for (const [provider, pricing] of Object.entries(AI_PRICING)) {
     if (target.technologies.some((t) => t.toLowerCase().includes(provider)) ||
         new RegExp(provider, "i").test(allJs)) {
-      // Find likely AI endpoints
       const aiEndpoints = target.apiEndpoints.filter((ep) =>
         /generate|chat|completion|ai|ask|query|prompt/i.test(ep),
       );
-
-      for (const ep of aiEndpoints) {
-        // Assume ~500 input tokens, ~500 output tokens per request
-        const costPerReq = (pricing.input * 0.5) + (pricing.output * 0.5);
-        const rps = 100; // attacker rate
-        estimates.push({
-          service: provider,
-          endpoint: ep,
-          costPerRequest: costPerReq,
-          costPerHour: costPerReq * rps * 3600,
-          costPerDay: costPerReq * rps * 86400,
-          requestRate: rps,
-        });
-      }
+      if (aiEndpoints.length === 0) continue;
+      const costPerReq = (pricing.input * 0.5) + (pricing.output * 0.5);
+      const rps = 100;
+      estimates.push({
+        service: `${provider} (${aiEndpoints.length} AI endpoints)`,
+        endpoint: aiEndpoints[0],
+        costPerRequest: costPerReq,
+        costPerHour: costPerReq * rps * 3600,
+        costPerDay: costPerReq * rps * 86400,
+        requestRate: rps,
+      });
     }
   }
 

@@ -157,27 +157,26 @@ export const envLeakModule: ScanModule = async (target) => {
     }
   }
 
-  // Check for other env patterns in bundles
+  // Check for other env patterns in bundles — one finding per pattern type
   for (const check of JS_ENV_PATTERNS) {
     const matches = allJs.match(check.pattern);
     if (matches) {
       const unique = [...new Set(matches)];
-      for (const match of unique.slice(0, 2)) {
-        const redacted = match.length > 60
-          ? match.substring(0, 30) + "..." + match.substring(match.length - 10)
-          : match;
-        findings.push({
-          id: `env-leak-js-${check.name.toLowerCase().replace(/[\s/]+/g, "-")}-${findings.length}`,
-          module: "Environment Leak",
-          severity: check.severity,
-          title: `${check.name}`,
-          description: check.description,
-          evidence: `Found in JS bundle: ${redacted}`,
-          remediation: check.remediation,
-          cwe: "CWE-215",
-          owasp: "A05:2021",
-        });
-      }
+      const sample = unique[0];
+      const redacted = sample.length > 60
+        ? sample.substring(0, 30) + "..." + sample.substring(sample.length - 10)
+        : sample;
+      findings.push({
+        id: `env-leak-js-${check.name.toLowerCase().replace(/[\s/]+/g, "-")}-${findings.length}`,
+        module: "Environment Leak",
+        severity: check.severity,
+        title: `${check.name}${unique.length > 1 ? ` (${unique.length} instances)` : ""}`,
+        description: check.description,
+        evidence: `Found in JS bundle: ${redacted}${unique.length > 1 ? `\n...and ${unique.length - 1} more` : ""}`,
+        remediation: check.remediation,
+        cwe: "CWE-215",
+        owasp: "A05:2021",
+      });
     }
   }
 
