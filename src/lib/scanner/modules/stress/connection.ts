@@ -38,6 +38,12 @@ export const connectionExhaustionModule: ScanModule = async (target) => {
     (r) => r.status === "fulfilled" && !r.value.ok && r.value.status === 0,
   ).length;
 
+  // If nearly all requests failed from the start, it's likely WAF/bot protection
+  const wafBlocked = results.filter(
+    (r) => r.status === "fulfilled" && (r.value.status === 403 || r.value.status === 503),
+  ).length;
+  if (wafBlocked > N * 0.5) return findings; // WAF blocking — not a real capacity issue
+
   if (connectionErrors > N * 0.3) {
     findings.push({
       id: "stress-connection-refused",

@@ -51,7 +51,7 @@ export const errorLeakModule: ScanModule = async (target) => {
       if (r.status !== "fulfilled") continue;
       const { status, body } = r.value;
 
-      if (status >= 500 && body.length > 50) {
+      if (status >= 500 && body.length > 200) {
         // Check for error pattern leaks
         for (const pattern of ERROR_PATTERNS) {
           if (pattern.test(body)) {
