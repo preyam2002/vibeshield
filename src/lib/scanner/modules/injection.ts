@@ -244,7 +244,7 @@ export const injectionModule: ScanModule = async (target) => {
     }
   }
 
-  // SSTI testing — fetch baseline first to avoid false positives
+  // SSTI testing — double-check with two different expressions to avoid false positives
   const sstiFound = new Set<string>();
   for (const t of dedupedTargets.slice(0, 5)) {
     const pathname = new URL(t.url).pathname;
@@ -252,28 +252,34 @@ export const injectionModule: ScanModule = async (target) => {
 
     // Get baseline: fetch with a harmless value and check if "49" exists
     let baselineHas49 = false;
-    let baselineText = "";
     try {
       const baseUrl = new URL(t.url);
       baseUrl.searchParams.set(t.paramName, "harmless_test_value");
       const baseRes = await scanFetch(baseUrl.href);
-      baselineText = await baseRes.text();
+      const baselineText = await baseRes.text();
       baselineHas49 = baselineText.includes("49");
     } catch { /* skip */ }
 
     if (baselineHas49) continue; // "49" exists naturally — can't distinguish injection
 
-    for (const payload of SSTI_PAYLOADS.slice(0, 3)) {
-      try {
-        const url = new URL(t.url);
-        url.searchParams.set(t.paramName, payload);
-        const res = await scanFetch(url.href);
-        const text = await res.text();
+    // First check: {{7*7}} → should contain "49"
+    try {
+      const url1 = new URL(t.url);
+      url1.searchParams.set(t.paramName, "{{7*7}}");
+      const res1 = await scanFetch(url1.href);
+      const text1 = await res1.text();
 
-        // Skip HTML responses — real SSTI shows in rendered output, not SPA shells
-        if (looksLikeHtml(text) && target.isSpa) continue;
+      // Skip HTML/SPA shells
+      if (looksLikeHtml(text1) && target.isSpa) continue;
 
-        if (payload === "{{7*7}}" && text.includes("49") && !text.includes("{{7*7}}")) {
+      if (text1.includes("49") && !text1.includes("{{7*7}}")) {
+        // Confirmation: {{8*8}} → should contain "64" to prove evaluation
+        const url2 = new URL(t.url);
+        url2.searchParams.set(t.paramName, "{{8*8}}");
+        const res2 = await scanFetch(url2.href);
+        const text2 = await res2.text();
+
+        if (text2.includes("64") && !text2.includes("{{8*8}}")) {
           sstiFound.add(pathname);
           findings.push({
             id: `injection-ssti-${findings.length}`,
@@ -281,16 +287,15 @@ export const injectionModule: ScanModule = async (target) => {
             severity: "critical",
             title: `Server-Side Template Injection on ${pathname}`,
             description: "Template expressions are evaluated on the server. Attackers can execute arbitrary code on your server.",
-            evidence: `Payload: ${payload}\nResult contains "49" (evaluated expression)`,
+            evidence: `Payload: {{7*7}} → response contains "49"\nPayload: {{8*8}} → response contains "64"\nBoth expressions evaluated — confirmed SSTI`,
             remediation: "Never pass user input into template engines. Use a logic-less template or sandbox the engine.",
             cwe: "CWE-1336",
             owasp: "A03:2021",
           });
-          break;
         }
-      } catch {
-        // skip
       }
+    } catch {
+      // skip
     }
   }
 
