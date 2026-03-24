@@ -80,32 +80,51 @@ export const emailEnumModule: ScanModule = async (target) => {
         }
       }
 
-      // Check timing difference (significant = >200ms)
+      // Check timing difference with baseline normalization
       if (findings.length >= MAX_FINDINGS) break;
-      const start1 = Date.now();
-      await scanFetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: testEmails[0], password: "x" }),
-      });
-      const time1 = Date.now() - start1;
+      // Measure baseline variance (3 requests with fake email, take median)
+      const baseTimes: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        const bs = Date.now();
+        try {
+          await scanFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: `nonexistent-timing-test-${i}@test.com`, password: "x" }),
+            timeoutMs: 5000,
+          });
+        } catch { /* skip */ }
+        baseTimes.push(Date.now() - bs);
+      }
+      const baselineMedian = baseTimes.sort((a, b) => a - b)[1] || 500;
+      const baselineVariance = Math.max(...baseTimes) - Math.min(...baseTimes);
 
-      const start2 = Date.now();
-      await scanFetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: testEmails[1], password: "x" }),
-      });
-      const time2 = Date.now() - start2;
+      // Now measure "real" email timing (3 requests, take median)
+      const realTimes: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        const rs = Date.now();
+        try {
+          await scanFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: testEmails[1], password: "x" }),
+            timeoutMs: 5000,
+          });
+        } catch { /* skip */ }
+        realTimes.push(Date.now() - rs);
+      }
+      const realMedian = realTimes.sort((a, b) => a - b)[1] || 500;
+      const diff = Math.abs(realMedian - baselineMedian);
 
-      if (Math.abs(time1 - time2) > 200) {
+      // Only flag if: diff > 300ms AND diff > 2x baseline variance AND diff > 50% of baseline
+      if (diff > 300 && diff > baselineVariance * 2 && diff > baselineMedian * 0.5) {
         findings.push({
           id: `email-enum-timing-${findings.length}`,
           module: "Email Enumeration",
           severity: "low",
           title: `Timing-based email enumeration on ${path}`,
-          description: `Response times differ significantly for existing vs non-existing emails (${time1}ms vs ${time2}ms). Attackers can determine valid emails by measuring response times.`,
-          evidence: `Non-existing email: ${time1}ms\nPotentially existing email: ${time2}ms\nDifference: ${Math.abs(time1 - time2)}ms`,
+          description: `Response times differ significantly for existing vs non-existing emails (baseline: ${baselineMedian}ms, real: ${realMedian}ms). Attackers can determine valid emails by measuring response times.`,
+          evidence: `Baseline median: ${baselineMedian}ms (variance: ${baselineVariance}ms)\nReal email median: ${realMedian}ms\nDifference: ${diff}ms`,
           remediation: "Normalize response times for auth endpoints. Add a consistent delay regardless of whether the user exists.",
           cwe: "CWE-208",
         });
