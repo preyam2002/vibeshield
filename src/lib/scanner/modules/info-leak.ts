@@ -67,20 +67,24 @@ export const infoLeakModule: ScanModule = async (target) => {
         }
 
         // Check for sensitive info patterns (only if no stack trace found)
+        // Cap at 2 findings per pattern type to avoid noise from similar endpoints
         if (!seenEndpoints.has(pathname)) {
           for (const si of SENSITIVE_INFO_PATTERNS) {
             if (si.pattern.test(text)) {
+              const existingCount = findings.filter((f) => f.title.includes(si.description)).length;
               seenEndpoints.add(pathname);
-              findings.push({
-                id: `infoleak-sensitive-${findings.length}`,
-                module: "Information Leakage",
-                severity: "low",
-                title: `${si.description} leaked on ${pathname}`,
-                description: `Sensitive information (${si.description}) was found in the response.`,
-                evidence: `URL: ${url}\nPattern: ${si.description}`,
-                remediation: "Sanitize error responses in production. Use a global error handler.",
-                cwe: "CWE-200",
-              });
+              if (existingCount < 2) {
+                findings.push({
+                  id: `infoleak-sensitive-${findings.length}`,
+                  module: "Information Leakage",
+                  severity: "low",
+                  title: `${si.description} leaked on ${pathname}`,
+                  description: `Sensitive information (${si.description}) was found in the response.`,
+                  evidence: `URL: ${url}\nPattern: ${si.description}`,
+                  remediation: "Sanitize error responses in production. Use a global error handler.",
+                  cwe: "CWE-200",
+                });
+              }
               break;
             }
           }
