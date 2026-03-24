@@ -1,6 +1,6 @@
 import type { ScanModule, Finding } from "../types";
 import { scanFetch } from "../fetch";
-import { isSoft404 } from "../soft404";
+import { isSoft404, looksLikeHtml } from "../soft404";
 
 interface DirCheck {
   path: string;
@@ -14,9 +14,9 @@ interface DirCheck {
 const CHECKS: DirCheck[] = [
   // Environment/Config files
   { path: "/.env", severity: "critical", title: "Exposed .env file", description: "Your .env file is publicly accessible. It likely contains database passwords, API keys, and other secrets.", remediation: "Block access to .env in your web server config or hosting provider.", contentCheck: /[A-Z_]+=/ },
-  { path: "/.env.local", severity: "critical", title: "Exposed .env.local file", description: "Local environment file is accessible.", remediation: "Block access to .env files." },
-  { path: "/.env.production", severity: "critical", title: "Exposed .env.production file", description: "Production env file is accessible.", remediation: "Block access to .env files." },
-  { path: "/.env.development", severity: "high", title: "Exposed .env.development file", description: "Dev environment file is accessible.", remediation: "Block access to .env files." },
+  { path: "/.env.local", severity: "critical", title: "Exposed .env.local file", description: "Local environment file is accessible.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },
+  { path: "/.env.production", severity: "critical", title: "Exposed .env.production file", description: "Production env file is accessible.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },
+  { path: "/.env.development", severity: "high", title: "Exposed .env.development file", description: "Dev environment file is accessible.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },
 
   // Git
   { path: "/.git/config", severity: "critical", title: "Exposed .git directory", description: "Your .git directory is accessible. Attackers can download your entire repository including commit history and potentially secrets.", remediation: "Block access to .git/ in your web server.", contentCheck: /\[core\]|\[remote/ },
@@ -35,10 +35,10 @@ const CHECKS: DirCheck[] = [
   { path: "/playground", severity: "high", title: "API Playground exposed", description: "An API playground/explorer is publicly accessible.", remediation: "Disable API playgrounds in production." },
 
   // Backup files
-  { path: "/backup.sql", severity: "critical", title: "SQL backup file exposed", description: "A database backup file is publicly downloadable.", remediation: "Remove backup files from web-accessible directories." },
-  { path: "/dump.sql", severity: "critical", title: "SQL dump file exposed", description: "A database dump is publicly accessible.", remediation: "Remove from web root." },
-  { path: "/database.sql", severity: "critical", title: "Database file exposed", description: "Database file publicly accessible.", remediation: "Remove from web root." },
-  { path: "/db.sqlite", severity: "critical", title: "SQLite database exposed", description: "SQLite database file is downloadable.", remediation: "Move database outside web root." },
+  { path: "/backup.sql", severity: "critical", title: "SQL backup file exposed", description: "A database backup file is publicly downloadable.", remediation: "Remove backup files from web-accessible directories.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
+  { path: "/dump.sql", severity: "critical", title: "SQL dump file exposed", description: "A database dump is publicly accessible.", remediation: "Remove from web root.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
+  { path: "/database.sql", severity: "critical", title: "Database file exposed", description: "Database file publicly accessible.", remediation: "Remove from web root.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
+  { path: "/db.sqlite", severity: "critical", title: "SQLite database exposed", description: "SQLite database file is downloadable.", remediation: "Move database outside web root.", contentCheck: /SQLite/ },
   { path: "/data.json", severity: "medium", title: "Data file exposed", description: "A data file is publicly accessible.", remediation: "Review if this should be public." },
 
   // Package/dependency files
@@ -93,6 +93,8 @@ export const directoriesModule: ScanModule = async (target) => {
 
     // Skip if this is a SPA returning its shell for any route (soft 404)
     if (isSoft404(text, target)) continue;
+    // Skip HTML responses — real exposed files (.env, .sql, .log) are not HTML
+    if (looksLikeHtml(text) && check.severity !== "info") continue;
 
     findings.push({
       id: `dir-${check.path.replace(/[^a-z0-9]/gi, "-")}-${findings.length}`,
