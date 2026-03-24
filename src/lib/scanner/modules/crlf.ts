@@ -57,15 +57,16 @@ export const crlfModule: ScanModule = async (target) => {
             }
 
             // Check for response body injection (response splitting)
+            // Only flag if the injected content appears on its own line, not reflected inside URLs/attributes
             const text = await res.text();
-            if (text.includes("X-Injected: true") && payload.includes("X-Injected")) {
+            if (text.includes("\nX-Injected: true") && payload.includes("X-Injected")) {
               findings.push({
                 id: `crlf-split-${findings.length}`,
                 module: "CRLF Injection",
                 severity: "medium",
                 title: `HTTP response splitting on ${pathname} (param: ${param})`,
-                description: "CRLF characters in input are reflected in the response body, indicating potential HTTP response splitting.",
-                evidence: `Payload: ${param}=${payload}\nInjected content reflected in response body`,
+                description: "CRLF characters in input cause content injection in the HTTP response body. This indicates the server doesn't strip newline characters from user input.",
+                evidence: `Payload: ${param}=${payload}\nInjected content appears on its own line in response body`,
                 remediation: "Strip or encode \\r\\n characters from all user input. Use framework-provided response methods.",
                 cwe: "CWE-113",
                 owasp: "A03:2021",
