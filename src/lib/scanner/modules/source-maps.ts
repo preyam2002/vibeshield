@@ -51,7 +51,7 @@ export const sourceMapsModule: ScanModule = async (target) => {
 
   // Also try common source map paths (skip already-found maps)
   const knownMaps = new Set(exposedMaps);
-  for (const scriptUrl of target.scripts.slice(0, 10)) {
+  for (const scriptUrl of target.scripts.slice(0, 25)) {
     const mapUrl = scriptUrl + ".map";
     if (knownMaps.has(mapUrl)) continue;
     try {
