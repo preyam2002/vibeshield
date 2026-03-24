@@ -50,7 +50,8 @@ export const loadModule: ScanModule = async (target) => {
     const times = batch.map((r) => r.ms);
     const successes = batch.filter((r) => r.ok).length;
     const rateLimited = batch.filter((r) => r.status === 429).length;
-    const serverErrors = batch.filter((r) => r.status >= 500).length;
+    const wafBlocked = batch.filter((r) => r.status === 403 || r.status === 503).length;
+    const serverErrors = batch.filter((r) => r.status >= 500 && r.status !== 503).length;
     const fails = batch.filter((r) => !r.ok).length;
 
     results.push({
@@ -78,7 +79,21 @@ export const loadModule: ScanModule = async (target) => {
       break;
     }
 
-    // Stop if more than 50% server errors (not counting 429s)
+    // 403/503 at low concurrency = WAF/bot protection, not a real failure
+    if ((rateLimited + wafBlocked) > concurrency * 0.5 && concurrency <= 20) {
+      findings.push({
+        id: "stress-load-waf-protected",
+        module: "Load Testing",
+        severity: "info",
+        title: "WAF/bot protection detected",
+        description: `${wafBlocked} requests received 403/503 at just ${concurrency} concurrent requests. Your app appears to have WAF or bot protection (e.g., Cloudflare) which blocks automated scanning.`,
+        evidence: `At ${concurrency} concurrent: ${wafBlocked} blocked (403/503), ${rateLimited} rate-limited, ${successes} succeeded`,
+        remediation: "WAF protection is working as intended. Load test results may not reflect actual capacity.",
+      });
+      return findings; // WAF blocks everything — load test results are meaningless
+    }
+
+    // Stop if more than 50% server errors (not counting 429s and WAF blocks)
     if (serverErrors / concurrency > 0.5) break;
   }
 
@@ -91,6 +106,12 @@ export const loadModule: ScanModule = async (target) => {
   const breakPoint = results.find((r) => r.errorRate > 0.2);
   const lastGood = results.filter((r) => r.errorRate <= 0.2).pop();
   const slowPoint = results.find((r) => r.p95ResponseMs > 5000);
+
+  // If first batch already had 100% errors, it's likely WAF/CDN blocking — skip the finding
+  if (breakPoint && breakPoint === results[0] && breakPoint.errorRate >= 0.99) {
+    // All requests failed from the start — likely not a real capacity issue
+    return findings;
+  }
 
   if (breakPoint) {
     findings.push({
