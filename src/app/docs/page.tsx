@@ -1,5 +1,7 @@
+"use client";
+
 export default function DocsPage() {
-  const baseUrl = "YOUR_VIBESHIELD_URL";
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "https://vibeshield.dev";
 
   return (
     <div className="min-h-screen">
@@ -31,6 +33,9 @@ export default function DocsPage() {
 {`curl -X POST ${baseUrl}/api/scan \\
   -H "Content-Type: application/json" \\
   -d '{"url": "https://your-app.vercel.app"}'
+
+# Options: mode "full" (default) or "security" (skip stress tests)
+# -d '{"url": "...", "mode": "security"}'
 
 # Response: {"id": "abc-123", "url": "https://your-app.vercel.app"}`}
               </pre>
@@ -155,7 +160,7 @@ jobs:
           <h2 className="text-lg font-bold text-zinc-200 mb-4">API Reference</h2>
           <div className="space-y-4">
             {[
-              { method: "POST", path: "/api/scan", desc: "Start a new scan", body: '{"url": "...", "callbackUrl?": "..."}' },
+              { method: "POST", path: "/api/scan", desc: "Start a new scan", body: '{"url": "...", "mode?": "full|security", "callbackUrl?": "..."}' },
               { method: "GET", path: "/api/scan/:id", desc: "Get scan status and results" },
               { method: "GET", path: "/api/scan/:id/export", desc: "Download JSON report" },
               { method: "GET", path: "/api/scan/:id/report", desc: "Download Markdown report" },

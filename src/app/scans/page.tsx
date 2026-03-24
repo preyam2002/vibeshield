@@ -23,7 +23,22 @@ export default function ScansPage() {
   const [scans, setScans] = useState<ScanEntry[]>([]);
 
   useEffect(() => {
-    const load = () => fetch("/api/scans").then((r) => r.json()).then(setScans).catch(() => {});
+    const load = async () => {
+      try {
+        const res = await fetch("/api/scans");
+        const serverScans: ScanEntry[] = await res.json();
+        const stored: ScanEntry[] = JSON.parse(localStorage.getItem("vibeshield-history") || "[]");
+        const merged = new Map<string, ScanEntry>();
+        for (const s of stored) merged.set(s.id, s);
+        for (const s of serverScans) merged.set(s.id, s);
+        setScans([...merged.values()]);
+      } catch {
+        try {
+          const stored: ScanEntry[] = JSON.parse(localStorage.getItem("vibeshield-history") || "[]");
+          if (stored.length > 0) setScans(stored);
+        } catch { /* skip */ }
+      }
+    };
     load();
     const interval = setInterval(load, 3000);
     return () => clearInterval(interval);
