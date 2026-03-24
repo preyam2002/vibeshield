@@ -68,9 +68,6 @@ const REQUIRED_HEADERS: {
 ];
 
 const checkSriMissing = (target: Parameters<ScanModule>[0]): Finding | null => {
-  // Check if any external scripts lack integrity attributes
-  // We can detect this from the HTML — scripts with src pointing to CDN/external domains
-  const html = target.soft404Body ? "" : ""; // We need the page HTML — check scripts list
   const externalScripts = target.scripts.filter((s) => {
     try { return new URL(s).origin !== target.baseUrl; } catch { return false; }
   });
