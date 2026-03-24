@@ -83,11 +83,14 @@ export const nextjsModule: ScanModule = async (target) => {
     }
   }
 
-  // Check middleware bypass
+  // Check middleware bypass (includes CVE-2025-29927: x-middleware-subrequest)
   const bypassHeaders = [
     { header: "x-middleware-prefetch", value: "1" },
     { header: "x-nextjs-data", value: "1" },
     { header: "purpose", value: "prefetch" },
+    { header: "x-middleware-subrequest", value: "middleware" },
+    { header: "x-middleware-subrequest", value: "src/middleware" },
+    { header: "x-middleware-subrequest", value: "middleware:middleware:middleware:middleware:middleware" },
   ];
 
   for (const endpoint of target.apiEndpoints.slice(0, 5)) {

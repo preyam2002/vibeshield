@@ -20,6 +20,20 @@ export const clickjackingModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for CSP frame-ancestors * (wildcard = no protection)
+  if (hasFrameAncestors && /frame-ancestors\s+\*/i.test(csp!)) {
+    findings.push({
+      id: "clickjacking-csp-wildcard",
+      module: "Clickjacking",
+      severity: "medium",
+      title: "CSP frame-ancestors allows wildcard",
+      description: "Content-Security-Policy has frame-ancestors set to * which allows any site to embed your app in an iframe.",
+      evidence: `Content-Security-Policy: ...frame-ancestors *...`,
+      remediation: "Set frame-ancestors to 'none' or 'self' instead of wildcard.",
+      cwe: "CWE-1021",
+    });
+  }
+
   if (xfo && xfo.toUpperCase() === "ALLOWALL") {
     findings.push({
       id: "clickjacking-allowall",
