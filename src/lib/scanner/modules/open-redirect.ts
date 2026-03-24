@@ -52,7 +52,7 @@ export const openRedirectModule: ScanModule = async (target) => {
         try {
           return new URL(location, new URL(baseUrl).origin).hostname === "evil.com";
         } catch {
-          return /^(https?:)?\/\/evil\.com/i.test(location);
+          return /^(https?:)?\/\/evil\.com(\/|$)/i.test(location);
         }
       })();
 
@@ -74,8 +74,8 @@ export const openRedirectModule: ScanModule = async (target) => {
     }
   }
 
-  // Also check existing redirect-looking URLs
-  for (const link of target.linkUrls) {
+  // Also check existing redirect-looking URLs (limit to 20)
+  for (const link of target.linkUrls.slice(0, 20)) {
     try {
       const url = new URL(link);
       for (const param of REDIRECT_PARAMS) {
@@ -89,7 +89,7 @@ export const openRedirectModule: ScanModule = async (target) => {
               const location = res.headers.get("location") || "";
               const isExternal = (() => {
                 try { return new URL(location, url.origin).hostname === "evil.com"; }
-                catch { return /^(https?:)?\/\/evil\.com/i.test(location); }
+                catch { return /^(https?:)?\/\/evil\.com(\/|$)/i.test(location); }
               })();
               if (isExternal) {
                 findings.push({

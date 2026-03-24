@@ -79,6 +79,30 @@ export const corsModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for missing Vary: Origin (cache poisoning risk)
+  for (const endpoint of endpoints.slice(0, 5)) {
+    try {
+      const res = await scanFetch(endpoint, { headers: { Origin: `https://${targetHost}` } });
+      const acao = res.headers.get("access-control-allow-origin");
+      if (acao && acao !== "*") {
+        const vary = res.headers.get("vary") || "";
+        if (!/\borigin\b/i.test(vary)) {
+          findings.push({
+            id: `cors-no-vary-${findings.length}`,
+            module: "CORS",
+            severity: "low",
+            title: `CORS response missing Vary: Origin on ${new URL(endpoint).pathname}`,
+            description: "The server returns a dynamic Access-Control-Allow-Origin header but doesn't include Vary: Origin. This allows CDN/proxy cache poisoning — a cached response for one origin could be served to another.",
+            evidence: `Access-Control-Allow-Origin: ${acao}\nVary: ${vary || "(not set)"}`,
+            remediation: "Add Vary: Origin to responses that set dynamic Access-Control-Allow-Origin headers.",
+            cwe: "CWE-942",
+          });
+          break;
+        }
+      }
+    } catch { /* skip */ }
+  }
+
   // Test preflight for dangerous methods
   for (const endpoint of target.apiEndpoints.slice(0, 5)) {
     try {

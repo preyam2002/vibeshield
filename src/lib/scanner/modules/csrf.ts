@@ -52,7 +52,7 @@ export const csrfModule: ScanModule = async (target) => {
           // Try without Content-Type (simple request) — if it still works, no custom header required
           const simpleRes = await scanFetch(endpoint, {
             method: "POST",
-            headers: { Origin: "https://evil.com" },
+            headers: { Origin: "https://evil.com", "Content-Type": "application/x-www-form-urlencoded" },
             body: "test=true",
           });
           if (simpleRes.ok && !hasSameSiteCookie) {

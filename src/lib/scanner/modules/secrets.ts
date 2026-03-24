@@ -46,6 +46,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
     severity: "high",
     description: "A JWT token (likely Supabase service role key) was found in client code. The service role key bypasses ALL Row Level Security policies.",
     remediation: "If this is a Supabase service role key, remove it from client code immediately. Only the anon key should be client-side.",
+    // Note: validated at match time — we decode the payload and check for "service_role" claim
   },
   // OpenAI
   {
@@ -154,7 +155,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
   // Modern AI providers
   {
     name: "DeepSeek API Key",
-    pattern: /sk-[a-f0-9]{48,}/g,
+    pattern: /sk-(?!ant-|proj-|live_|test_)[a-f0-9]{48,}/g,
     severity: "critical",
     description: "DeepSeek API key exposed. Attackers can make API calls billed to your account.",
     remediation: "Rotate in the DeepSeek console. Proxy all AI calls through your backend.",
@@ -240,9 +241,18 @@ export const secretsModule: ScanModule = async (target) => {
     const matches = allJs.match(pat.pattern);
     if (matches) {
       const unique = [...new Set(matches)];
-      const validMatches = unique.slice(0, 3).filter((match) =>
-        !(pat.name === "Generic Secret/Password in Code" && isPlaceholderValue(match)),
-      );
+      const validMatches = unique.slice(0, 3).filter((match) => {
+        if (pat.name === "Generic Secret/Password in Code" && isPlaceholderValue(match)) return false;
+        // For Supabase JWT pattern, verify it's a service_role key, not an anon key
+        if (pat.name === "Supabase Service Role Key") {
+          try {
+            const payload = match.split(".")[1];
+            const decoded = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+            if (decoded.includes('"anon"') && !decoded.includes('"service_role"')) return false;
+          } catch { /* proceed with match */ }
+        }
+        return true;
+      });
       for (let i = 0; i < validMatches.length; i++) {
         const match = validMatches[i];
         const redacted = match.length > 20
