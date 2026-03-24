@@ -38,8 +38,16 @@ export const apiSecurityModule: ScanModule = async (target) => {
         if (!res.ok) continue;
 
         const text = await res.text();
-        // If the server echoes back the proto keys or returns 200 with a body, it may be processing them
-        if (text.includes("polluted") || text.includes(key)) {
+        // Check if the polluted property propagated — just echoing back the key isn't enough
+        let parsed: Record<string, unknown> | null = null;
+        try { parsed = JSON.parse(text); } catch { /* skip */ }
+        const isPolluted = parsed && (
+          ("polluted" in parsed && parsed.polluted === true) ||
+          (typeof parsed === "object" && parsed !== null && "toString" in parsed && typeof (parsed as Record<string, unknown>).toString !== "function")
+        );
+        // Also flag if the server returns the __proto__ key directly (stored pollution)
+        const storedProto = parsed && key === "__proto__" && "__proto__" in parsed;
+        if (isPolluted || storedProto) {
           findings.push({
             id: `api-proto-pollution-${findings.length}`,
             module: "API Security",
@@ -51,7 +59,7 @@ export const apiSecurityModule: ScanModule = async (target) => {
             cwe: "CWE-1321",
             owasp: "A03:2021",
           });
-          break; // one finding per endpoint is enough
+          break;
         }
       } catch {
         // skip

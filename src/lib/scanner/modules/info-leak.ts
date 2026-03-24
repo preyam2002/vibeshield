@@ -200,8 +200,8 @@ export const infoLeakModule: ScanModule = async (target) => {
   const noopenerPattern = /rel\s*=\s*["'][^"']*noopener[^"']*["']/gi;
   const blankCount = (allJs.match(blankTargetPattern) || []).length;
   const noopenerCount = (allJs.match(noopenerPattern) || []).length;
-  if (blankCount > 0 && noopenerCount < blankCount * 0.5) {
-    const unsafe = blankCount - noopenerCount;
+  const unsafe = blankCount - noopenerCount;
+  if (unsafe >= 3) {
     findings.push({
       id: "infoleak-tabnabbing",
       module: "Information Leakage",

@@ -6,10 +6,12 @@ const ID_PATH_PATTERNS = [
   /\/api\/\w+\/(\d+)$/,
   /\/api\/v\d\/\w+\/(\d+)$/,
   /\/\w+\/(\d+)$/,
+  /\/api\/\w+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  /\/api\/v\d\/\w+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
 ];
 
 // Endpoints that naturally serve public content by ID — not IDOR
-const PUBLIC_RESOURCE_PATTERNS = /\/(posts?|articles?|blogs?|products?|items?|pages?|categories|tags|comments|reviews)\//i;
+const PUBLIC_RESOURCE_PATTERNS = /\/(posts?|articles?|blogs?|products?|items?|pages?|categories|tags?|comments?|reviews?|docs?|help|faq|changelog)\b/i;
 
 // Fields that indicate private/user-specific data
 const PRIVATE_DATA_PATTERNS = /email|phone|address|ssn|password|billing|payment|credit|salary|dob|birth|social.?security/i;
@@ -23,16 +25,26 @@ export const idorModule: ScanModule = async (target) => {
   const idEndpoints: { base: string; currentId: number }[] = [];
   const seenBases = new Set<string>();
 
+  const stripId = (url: string) => url.replace(/\/(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i, "");
+
   for (const endpoint of target.apiEndpoints) {
     for (const pattern of ID_PATH_PATTERNS) {
       const match = endpoint.match(pattern);
       if (match) {
-        const id = parseInt(match[1]);
+        const idStr = match[1];
+        const id = parseInt(idStr);
         if (!isNaN(id)) {
-          const base = endpoint.replace(/\/\d+$/, "");
+          const base = stripId(endpoint);
           if (!seenBases.has(base)) {
             seenBases.add(base);
             idEndpoints.push({ base, currentId: id });
+          }
+        } else if (/^[0-9a-f]{8}-/.test(idStr)) {
+          // UUID-based endpoint — still test for access control
+          const base = stripId(endpoint);
+          if (!seenBases.has(base)) {
+            seenBases.add(base);
+            idEndpoints.push({ base, currentId: 0 });
           }
         }
       }
@@ -48,7 +60,7 @@ export const idorModule: ScanModule = async (target) => {
         if (match) {
           const id = parseInt(match[1]);
           if (!isNaN(id)) {
-            const base = url.origin + url.pathname.replace(/\/\d+$/, "");
+            const base = url.origin + stripId(url.pathname);
             if (!seenBases.has(base)) {
               seenBases.add(base);
               idEndpoints.push({ base, currentId: id });
