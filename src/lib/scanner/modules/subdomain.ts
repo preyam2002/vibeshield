@@ -7,10 +7,10 @@ const TAKEOVER_FINGERPRINTS: { service: string; cname: string; fingerprint: stri
   { service: "Heroku", cname: "herokuapp.com", fingerprint: "no-such-app" },
   { service: "AWS S3", cname: "s3.amazonaws.com", fingerprint: "NoSuchBucket" },
   { service: "Surge.sh", cname: "surge.sh", fingerprint: "project not found" },
-  { service: "Netlify", cname: "netlify.app", fingerprint: "Not Found - Request ID" },
-  { service: "Fly.io", cname: "fly.dev", fingerprint: "404 Not Found" },
+  { service: "Netlify", cname: "netlify.app", fingerprint: "Not Found - Request ID:" },
+  { service: "Fly.io", cname: "fly.dev", fingerprint: "Fly.io 404" },
   { service: "Vercel", cname: "vercel.app", fingerprint: "DEPLOYMENT_NOT_FOUND" },
-  { service: "Render", cname: "onrender.com", fingerprint: "not found" },
+  { service: "Render", cname: "onrender.com", fingerprint: "render.com/docs/custom-domains" },
 ];
 
 export const subdomainModule: ScanModule = async (target) => {
@@ -58,6 +58,9 @@ export const subdomainModule: ScanModule = async (target) => {
     try {
       const res = await scanFetch(`https://${sub}`, { timeoutMs: 5000, noCache: true });
       const text = await res.text();
+
+      // Skip if it's a live site returning real content (200 with >10KB of HTML)
+      if (res.status === 200 && text.length > 10000) continue;
 
       for (const fp of TAKEOVER_FINGERPRINTS) {
         if (text.includes(fp.fingerprint)) {
