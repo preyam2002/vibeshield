@@ -64,16 +64,23 @@ export const stripeModule: ScanModule = async (target) => {
         body: JSON.stringify({ price: 1, amount: 1, priceId: "price_test" }),
       });
       if (res.ok) {
-        findings.push({
-          id: `stripe-price-manip-${findings.length}`,
-          module: "Stripe",
-          severity: "high",
-          title: `Potential price manipulation on ${new URL(endpoint).pathname}`,
-          description: "The payment endpoint accepts client-sent price/amount values. If these are used to create Stripe sessions, attackers can pay arbitrary amounts.",
-          evidence: `POST ${endpoint} with amount:1 → ${res.status}`,
-          remediation: "Never accept prices from the client. Look up prices server-side using Stripe Price IDs from your database.",
-          cwe: "CWE-472",
-        });
+        const text = await res.text();
+        // Skip SPA shells and empty responses
+        if (looksLikeHtml(text)) continue;
+        if (text.length < 10) continue;
+        // Only flag if response looks like it created something (contains checkout/session/url references)
+        if (/checkout|session|url|redirect|payment/i.test(text)) {
+          findings.push({
+            id: `stripe-price-manip-${findings.length}`,
+            module: "Stripe",
+            severity: "high",
+            title: `Potential price manipulation on ${new URL(endpoint).pathname}`,
+            description: "The payment endpoint accepts client-sent price/amount values and returns checkout-related data. If these are used to create Stripe sessions, attackers can pay arbitrary amounts.",
+            evidence: `POST ${endpoint} with amount:1 → ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
+            remediation: "Never accept prices from the client. Look up prices server-side using Stripe Price IDs from your database.",
+            cwe: "CWE-472",
+          });
+        }
       }
     } catch {
       // skip
