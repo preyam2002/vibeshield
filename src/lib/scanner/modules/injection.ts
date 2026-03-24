@@ -101,8 +101,20 @@ export const injectionModule: ScanModule = async (target) => {
     }
   }
 
-  // SQL Injection testing
-  for (const t of testTargets.slice(0, 15)) {
+  // Deduplicate test targets by pathname+param
+  const seenTargets = new Set<string>();
+  const dedupedTargets = testTargets.filter((t) => {
+    const key = `${new URL(t.url).pathname}:${t.paramName}`;
+    if (seenTargets.has(key)) return false;
+    seenTargets.add(key);
+    return true;
+  });
+
+  // SQL Injection testing — deduplicate by pathname+param
+  const sqliFound = new Set<string>();
+  for (const t of dedupedTargets.slice(0, 15)) {
+    const sqliKey = `${new URL(t.url).pathname}:${t.paramName}`;
+    if (sqliFound.has(sqliKey)) continue;
     for (const payload of SQLI_PAYLOADS.slice(0, 5)) {
       try {
         let res: Response;
@@ -123,6 +135,7 @@ export const injectionModule: ScanModule = async (target) => {
         // Check for SQL error messages
         for (const pattern of SQLI_ERROR_PATTERNS) {
           if (pattern.test(text)) {
+            sqliFound.add(sqliKey);
             findings.push({
               id: `injection-sqli-${findings.length}`,
               module: "SQL Injection",
@@ -165,6 +178,7 @@ export const injectionModule: ScanModule = async (target) => {
 
           // Only flag if: absolute delay > 1800ms AND at least 2x baseline
           if (elapsed >= 1800 && elapsed >= baseline * 2) {
+            sqliFound.add(sqliKey);
             findings.push({
               id: `injection-sqli-blind-${findings.length}`,
               module: "SQL Injection",
@@ -184,8 +198,14 @@ export const injectionModule: ScanModule = async (target) => {
     }
   }
 
-  // XSS testing
-  for (const t of testTargets.slice(0, 10)) {
+  // XSS testing — deduplicate by pathname+param
+  const xssFound = new Set<string>();
+  const MAX_XSS = 3;
+  for (const t of dedupedTargets.slice(0, 10)) {
+    const pathname = new URL(t.url).pathname;
+    const key = `${pathname}:${t.paramName}`;
+    if (xssFound.has(key) || xssFound.size >= MAX_XSS) continue;
+
     for (const payload of XSS_PAYLOADS.slice(0, 4)) {
       try {
         let res: Response;
@@ -203,21 +223,20 @@ export const injectionModule: ScanModule = async (target) => {
 
         const text = await res.text();
         const ct = res.headers.get("content-type") || "";
-        // Check if payload is reflected unescaped in HTML context
-        // JSON responses that echo input are not XSS-vulnerable
         if (text.includes(payload) && !ct.includes("application/json")) {
+          xssFound.add(key);
           findings.push({
             id: `injection-xss-${findings.length}`,
             module: "XSS",
             severity: "high",
-            title: `Reflected XSS on ${new URL(t.url).pathname} (param: ${t.paramName})`,
+            title: `Reflected XSS on ${pathname} (param: ${t.paramName})`,
             description: "An XSS payload was reflected in the response without sanitization. Attackers can inject scripts that steal cookies, redirect users, or perform actions as the victim.",
             evidence: `Payload: ${payload}\nParam: ${t.paramName}\nContent-Type: ${ct}\nPayload reflected in response body`,
             remediation: "Sanitize all user input before rendering. Use framework auto-escaping (React does this by default for JSX, but dangerouslySetInnerHTML bypasses it).",
             cwe: "CWE-79",
             owasp: "A03:2021",
           });
-          break; // one XSS finding per target is enough
+          break;
         }
       } catch {
         // skip
@@ -227,7 +246,7 @@ export const injectionModule: ScanModule = async (target) => {
 
   // SSTI testing — fetch baseline first to avoid false positives
   const sstiFound = new Set<string>();
-  for (const t of testTargets.slice(0, 5)) {
+  for (const t of dedupedTargets.slice(0, 5)) {
     const pathname = new URL(t.url).pathname;
     if (sstiFound.has(pathname)) continue;
 
