@@ -39,7 +39,16 @@ export const openRedirectModule: ScanModule = async (target) => {
 
           if (res.status >= 300 && res.status < 400) {
             const location = res.headers.get("location") || "";
-            if (location.includes("evil.com")) {
+            // The redirect must go TO evil.com as the host, not just preserve the param in a same-site redirect
+            const isExternalRedirect = (() => {
+              try {
+                const loc = new URL(location, url.origin);
+                return loc.hostname === "evil.com";
+              } catch {
+                return location.startsWith("//evil.com") || location.startsWith("https://evil.com") || location.startsWith("http://evil.com");
+              }
+            })();
+            if (isExternalRedirect) {
               foundPaths.add(pathname);
               findings.push({
                 id: `openredirect-${findings.length}`,
@@ -75,7 +84,11 @@ export const openRedirectModule: ScanModule = async (target) => {
             const res = await scanFetch(url.href, { redirect: "manual" });
             if (res.status >= 300 && res.status < 400) {
               const location = res.headers.get("location") || "";
-              if (location.includes("evil.com")) {
+              const isExternal = (() => {
+                try { return new URL(location, url.origin).hostname === "evil.com"; }
+                catch { return /^(https?:)?\/\/evil\.com/i.test(location); }
+              })();
+              if (isExternal) {
                 findings.push({
                   id: `openredirect-existing-${findings.length}`,
                   module: "Open Redirect",
