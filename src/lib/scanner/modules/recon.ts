@@ -157,10 +157,31 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
 
   target.technologies = [...new Set(target.technologies)];
 
-  // Probe common API endpoints
+  // Extract API endpoints referenced in JS bundles
+  const apiFromJs = new Set<string>();
+  const apiPatterns = [
+    /fetch\s*\(\s*["'`](\/api\/[^"'`\s]+)["'`]/g,
+    /["'`](\/api\/[a-zA-Z0-9/_-]{2,})["'`]/g,
+    /["'`](\/rest\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
+    /["'`](\/auth\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
+    /["'`](\/graphql)["'`]/g,
+  ];
+  for (const pat of apiPatterns) {
+    for (const m of allJs.matchAll(pat)) {
+      const path = m[1];
+      if (path && path.length < 100 && !path.includes("${")) {
+        apiFromJs.add(baseUrl + path);
+      }
+    }
+  }
+
+  // Probe common API endpoints + JS-discovered ones
+  const allApiPaths = [...new Set([
+    ...COMMON_API_PATHS.map((p) => baseUrl + p),
+    ...apiFromJs,
+  ])];
   const probeResults = await Promise.allSettled(
-    COMMON_API_PATHS.map(async (path) => {
-      const testUrl = baseUrl + path;
+    allApiPaths.slice(0, 60).map(async (testUrl) => {
       const res = await scanFetch(testUrl, { method: "GET", redirect: "follow", timeoutMs: 5000 });
       return { path: testUrl, status: res.status, contentType: res.headers.get("content-type") || "" };
     }),
