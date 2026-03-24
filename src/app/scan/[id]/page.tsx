@@ -610,11 +610,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3 mb-6">
           {/* Grade card */}
           <div className={`${gradeConf.bg} border ${gradeConf.border} rounded-xl p-4 text-center col-span-2`}>
-            <div className={`text-5xl font-black ${gradeConf.color}`}>
-              {isRunning ? "..." : scan.grade}
+            <div className={`text-5xl font-black ${scan.status === "failed" ? "text-red-500" : gradeConf.color}`}>
+              {isRunning ? "..." : scan.status === "failed" ? "ERR" : scan.grade}
             </div>
             <div className="text-xs text-zinc-500 mt-1">
-              {isRunning ? "Scanning" : `${scan.score}/100 · ${gradeConf.desc}`}
+              {isRunning ? "Scanning" : scan.status === "failed" ? "Scan failed" : `${scan.score}/100 · ${gradeConf.desc}`}
             </div>
           </div>
 

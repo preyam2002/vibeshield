@@ -154,6 +154,60 @@ const TOOL_CHECKS: ToolCheck[] = [
     remediation: "Limit public status information. Move detailed diagnostics behind authentication.",
     requireJson: true,
   },
+  // Spring Boot Actuator
+  {
+    path: "/actuator",
+    name: "Spring Boot Actuator",
+    contentPatterns: [/actuator/i, /health/i, /info/i, /beans/i, /env/i, /metrics/i],
+    severity: "high",
+    description: "Spring Boot Actuator is publicly accessible, exposing application internals, environment variables, and health data.",
+    remediation: "Restrict actuator endpoints to internal networks. Set management.endpoints.web.exposure.include to only 'health'.",
+    requireJson: true,
+  },
+  {
+    path: "/actuator/env",
+    name: "Spring Boot Actuator Env",
+    contentPatterns: [/property/i, /value/i, /source/i, /activeProfiles/i],
+    severity: "critical",
+    description: "Spring Boot Actuator /env endpoint is exposed, potentially leaking environment variables and secrets.",
+    remediation: "Disable the env actuator endpoint in production.",
+    requireJson: true,
+  },
+  // phpMyAdmin
+  {
+    path: "/phpmyadmin",
+    name: "phpMyAdmin",
+    contentPatterns: [/phpmyadmin/i, /mysql/i, /database/i, /sql/i],
+    severity: "critical",
+    description: "phpMyAdmin is publicly accessible, providing direct database management via the browser.",
+    remediation: "Remove phpMyAdmin from production or restrict access by IP/VPN.",
+  },
+  {
+    path: "/pma",
+    name: "phpMyAdmin (pma)",
+    contentPatterns: [/phpmyadmin/i, /mysql/i, /database/i, /sql/i],
+    severity: "critical",
+    description: "phpMyAdmin is publicly accessible at /pma.",
+    remediation: "Remove phpMyAdmin from production or restrict access by IP/VPN.",
+  },
+  // Adminer
+  {
+    path: "/adminer",
+    name: "Adminer",
+    contentPatterns: [/adminer/i, /login/i, /server/i, /database/i],
+    severity: "critical",
+    description: "Adminer database manager is publicly accessible.",
+    remediation: "Remove Adminer from production deployments.",
+  },
+  // Webpack HMR in production
+  {
+    path: "/__webpack_hmr",
+    name: "Webpack HMR",
+    contentPatterns: [/webpack/i, /hmr/i, /hot/i, /module/i],
+    severity: "medium",
+    description: "Webpack Hot Module Replacement is active, indicating the app may be running in development mode in production.",
+    remediation: "Ensure NODE_ENV=production in your deployment. Never deploy development builds.",
+  },
 ];
 
 export const exposedToolsModule: ScanModule = async (target) => {

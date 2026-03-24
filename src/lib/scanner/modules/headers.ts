@@ -29,15 +29,6 @@ const REQUIRED_HEADERS: {
     cwe: "CWE-319",
   },
   {
-    header: "x-frame-options",
-    severity: "medium",
-    title: "Missing X-Frame-Options header",
-    description:
-      "Without this header, your site can be embedded in iframes on malicious sites, enabling clickjacking attacks where users unknowingly click hidden elements.",
-    remediation: "Add header: X-Frame-Options: DENY (or SAMEORIGIN if you need iframe embedding)",
-    cwe: "CWE-1021",
-  },
-  {
     header: "x-content-type-options",
     severity: "low",
     title: "Missing X-Content-Type-Options header",

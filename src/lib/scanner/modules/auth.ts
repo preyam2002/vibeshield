@@ -123,6 +123,42 @@ export const authModule: ScanModule = async (target) => {
     }
   }
 
+  // Test endpoints with invalid auth tokens — should be rejected
+  for (const endpoint of target.apiEndpoints.slice(0, 5)) {
+    if (findings.length >= MAX_AUTH_FINDINGS) break;
+    const pathname = new URL(endpoint).pathname;
+    if (publicPatterns.test(pathname)) continue;
+
+    try {
+      // First check if endpoint requires auth (returns 401/403 without token)
+      const noAuthRes = await scanFetch(endpoint);
+      if (noAuthRes.status !== 401 && noAuthRes.status !== 403) continue;
+
+      // Now try with an obviously invalid token
+      const invalidRes = await scanFetch(endpoint, {
+        headers: { Authorization: "Bearer invalid-token-vibeshield-test" },
+      });
+      if (invalidRes.ok) {
+        const text = await invalidRes.text();
+        if (looksLikeHtml(text) && isSoft404(text, target)) continue;
+        if (text.length < 10) continue;
+        findings.push({
+          id: `auth-weak-validation-${findings.length}`,
+          module: "Authentication",
+          severity: "critical",
+          title: `Weak token validation on ${pathname}`,
+          description: "This endpoint accepts invalid Bearer tokens. The server is not properly validating authentication tokens, allowing anyone with any string as a token to access protected data.",
+          evidence: `Without token: ${noAuthRes.status}\nWith invalid token: ${invalidRes.status}\nResponse: ${text.substring(0, 200)}`,
+          remediation: "Validate tokens cryptographically. Use a JWT library that verifies signatures, or validate tokens against your auth provider.",
+          cwe: "CWE-287",
+          owasp: "A07:2021",
+        });
+      }
+    } catch {
+      // skip
+    }
+  }
+
   // Test API endpoints with different HTTP methods
   for (const endpoint of target.apiEndpoints.slice(0, 10)) {
     // Get baseline GET response for comparison
