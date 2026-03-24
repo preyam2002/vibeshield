@@ -187,17 +187,20 @@ export const secretsModule: ScanModule = async (target) => {
     const matches = allJs.match(pat.pattern);
     if (matches) {
       const unique = [...new Set(matches)];
-      for (const match of unique.slice(0, 3)) {
-        // For generic patterns, filter out placeholder/test values
-        if (pat.name === "Generic Secret/Password in Code" && isPlaceholderValue(match)) continue;
+      const validMatches = unique.slice(0, 3).filter((match) =>
+        !(pat.name === "Generic Secret/Password in Code" && isPlaceholderValue(match)),
+      );
+      for (let i = 0; i < validMatches.length; i++) {
+        const match = validMatches[i];
         const redacted = match.length > 20
           ? match.substring(0, 10) + "..." + match.substring(match.length - 5)
           : match.substring(0, 8) + "...";
+        const suffix = validMatches.length > 1 ? ` (#${i + 1})` : "";
         findings.push({
           id: `secrets-${pat.name.toLowerCase().replace(/\s+/g, "-")}-${findings.length}`,
           module: "Secret Detection",
           severity: pat.severity,
-          title: `${pat.name} exposed in client-side JavaScript`,
+          title: `${pat.name} exposed in client-side JavaScript${suffix}`,
           description: pat.description,
           evidence: `Found: ${redacted}`,
           remediation: pat.remediation,
