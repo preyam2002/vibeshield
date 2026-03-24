@@ -93,8 +93,10 @@ export const nextjsModule: ScanModule = async (target) => {
     { header: "x-middleware-subrequest", value: "middleware:middleware:middleware:middleware:middleware" },
   ];
 
+  const seenBypassHeaders = new Set<string>();
   for (const endpoint of target.apiEndpoints.slice(0, 5)) {
     for (const { header, value } of bypassHeaders) {
+      if (seenBypassHeaders.has(header)) continue;
       try {
         const res = await scanFetch(endpoint, {
           headers: { [header]: value },
@@ -103,6 +105,7 @@ export const nextjsModule: ScanModule = async (target) => {
         const normalRes = await scanFetch(endpoint);
 
         if (res.status === 200 && normalRes.status !== 200) {
+          seenBypassHeaders.add(header);
           findings.push({
             id: `nextjs-middleware-bypass-${findings.length}`,
             module: "Next.js",

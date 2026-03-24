@@ -209,7 +209,8 @@ export const fileUploadModule: ScanModule = async (target) => {
         const text = await res.text();
         if (looksLikeHtml(text) && isSoft404(text, target)) continue;
         // Check for directory listing indicators
-        if (/Index of|directory listing|Parent Directory|<a href="[^"]+\.[a-z]{2,4}"/i.test(text)) {
+        if (target.isSpa) continue;
+        if (/Index of\s|directory listing|Parent Directory/i.test(text)) {
           findings.push({
             id: `file-upload-dir-listing-${findings.length}`,
             module: "File Upload",
