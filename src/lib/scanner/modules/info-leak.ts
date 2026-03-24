@@ -21,7 +21,6 @@ const SENSITIVE_INFO_PATTERNS: { pattern: RegExp; description: string }[] = [
   { pattern: /debug\s*=\s*True|DEBUG\s*=\s*true/i, description: "Debug mode enabled" },
   { pattern: /django\.core|django\.db/i, description: "Django framework details" },
   { pattern: /express-session/i, description: "Express session details" },
-  { pattern: /NEXT_PUBLIC_|REACT_APP_/i, description: "Framework env var naming" },
 ];
 
 export const infoLeakModule: ScanModule = async (target) => {

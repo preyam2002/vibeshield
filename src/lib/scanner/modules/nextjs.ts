@@ -44,6 +44,45 @@ export const nextjsModule: ScanModule = async (target) => {
     }
   }
 
+  // Check __NEXT_DATA__ for sensitive props leaked via getServerSideProps/getStaticProps
+  for (const page of [target.url, ...target.pages.slice(0, 5)]) {
+    try {
+      const res = await scanFetch(page);
+      const html = await res.text();
+      const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+      if (nextDataMatch) {
+        const nextData = nextDataMatch[1];
+        // Check for actual secret patterns, not just keywords
+        const secretPatterns = [
+          /[a-z_]*(?:password|passwd)['":\s]*['"][^'"]{4,}/i,
+          /(?:sk-|sk_live_|sk_test_)[a-zA-Z0-9]{10,}/,
+          /(?:AKIA|ASIA)[A-Z0-9]{16}/,
+          /(?:mongodb\+srv|postgres|mysql|redis):\/\/[^\s"']+/,
+          /(?:ghp_|ghs_)[a-zA-Z0-9]{36,}/,
+          /eyJhbGciOi[A-Za-z0-9_-]{50,}/,
+        ];
+        const foundSecrets = secretPatterns.filter((p) => p.test(nextData));
+        if (foundSecrets.length > 0) {
+          const pathname = new URL(page).pathname;
+          findings.push({
+            id: `nextjs-next-data-leak-${findings.length}`,
+            module: "Next.js",
+            severity: "critical",
+            title: `Secrets leaked in __NEXT_DATA__ on ${pathname}`,
+            description: "The __NEXT_DATA__ script tag contains what appears to be real secrets (API keys, passwords, database URLs). Data in getServerSideProps/getStaticProps is serialized into the page HTML and visible to anyone.",
+            evidence: `Found ${foundSecrets.length} secret pattern(s) in __NEXT_DATA__ on ${pathname}`,
+            remediation: "Never return secrets in getServerSideProps/getStaticProps. Use API routes for sensitive operations. Audit your page props for leaked server-side data.",
+            cwe: "CWE-200",
+            owasp: "A01:2021",
+          });
+          break; // One finding is enough
+        }
+      }
+    } catch {
+      // skip
+    }
+  }
+
   // Check middleware bypass
   const bypassHeaders = [
     { header: "x-middleware-prefetch", value: "1" },
