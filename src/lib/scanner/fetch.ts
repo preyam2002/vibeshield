@@ -1,6 +1,6 @@
 // Global concurrency-limited fetch to prevent overwhelming the event loop
 let active = 0;
-const MAX_CONCURRENT = 8;
+const MAX_CONCURRENT = 12;
 const queue: (() => void)[] = [];
 
 const waitForSlot = (): Promise<void> => {
