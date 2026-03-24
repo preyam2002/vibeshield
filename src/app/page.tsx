@@ -47,6 +47,7 @@ const ATTACK_MODULES = [
   { name: "Dependencies", desc: "Detect vulnerable JS library versions in bundles", icon: "📦" },
   { name: "Path Traversal", desc: "Directory traversal and file inclusion attacks", icon: "📂" },
   { name: "Command Injection", desc: "OS command injection via user-controlled params", icon: "💀" },
+  { name: "NoSQL Injection", desc: "MongoDB operator injection and auth bypass", icon: "🍃" },
 ];
 
 interface RecentScan {
