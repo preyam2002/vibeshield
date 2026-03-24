@@ -50,6 +50,8 @@ import { crlfModule } from "./modules/crlf";
 import { hostHeaderModule } from "./modules/host-header";
 import { subdomainModule } from "./modules/subdomain";
 import { dependenciesModule } from "./modules/dependencies";
+import { pathTraversalModule } from "./modules/path-traversal";
+import { commandInjectionModule } from "./modules/command-injection";
 
 const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
@@ -85,6 +87,8 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Host Header", description: "Test for Host header injection and password reset poisoning", category: "security", run: hostHeaderModule },
   { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
   { name: "Dependencies", description: "Detect vulnerable client-side library versions", category: "security", run: dependenciesModule },
+  { name: "Path Traversal", description: "Test for directory traversal and file inclusion", category: "security", run: pathTraversalModule },
+  { name: "Command Injection", description: "Test for OS command injection vulnerabilities", category: "security", run: commandInjectionModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [

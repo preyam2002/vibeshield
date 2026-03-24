@@ -45,6 +45,8 @@ const ATTACK_MODULES = [
   { name: "Host Header", desc: "Host injection, password reset poisoning", icon: "🏠" },
   { name: "Subdomain Takeover", desc: "CT log discovery, dangling DNS detection", icon: "🌐" },
   { name: "Dependencies", desc: "Detect vulnerable JS library versions in bundles", icon: "📦" },
+  { name: "Path Traversal", desc: "Directory traversal and file inclusion attacks", icon: "📂" },
+  { name: "Command Injection", desc: "OS command injection via user-controlled params", icon: "💀" },
 ];
 
 interface RecentScan {
