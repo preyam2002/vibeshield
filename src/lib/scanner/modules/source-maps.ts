@@ -3,6 +3,8 @@ import { scanFetch } from "../fetch";
 
 export const sourceMapsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
+  const exposedMaps: string[] = [];
+  const conventionMaps: string[] = [];
 
   // Check for sourceMappingURL in JS bundles
   for (const [scriptUrl, content] of target.jsContents) {
@@ -10,7 +12,7 @@ export const sourceMapsModule: ScanModule = async (target) => {
     if (!mapMatch) continue;
 
     let mapUrl = mapMatch[1];
-    if (mapUrl.startsWith("data:")) continue; // inline source maps are fine (sort of)
+    if (mapUrl.startsWith("data:")) continue;
 
     if (!mapUrl.startsWith("http")) {
       mapUrl = new URL(mapUrl, scriptUrl).href;
@@ -19,25 +21,23 @@ export const sourceMapsModule: ScanModule = async (target) => {
     try {
       const res = await scanFetch(mapUrl);
       if (res.ok) {
-        const text = await res.text();
-        const hasSourceContent = text.includes('"sourcesContent"');
-        findings.push({
-          id: `sourcemaps-exposed-${findings.length}`,
-          module: "Source Maps",
-          severity: "high",
-          title: "Source maps are publicly accessible",
-          description: hasSourceContent
-            ? "Source maps with full source code are accessible. Anyone can view your complete, unminified source code including comments, variable names, and business logic."
-            : "Source maps are accessible. Attackers can use these to understand your code structure and find vulnerabilities more easily.",
-          evidence: `Accessible source map: ${mapUrl}\n${hasSourceContent ? "Contains full source code (sourcesContent present)" : "Contains file mappings"}`,
-          remediation: "Disable source maps in production. For Next.js: set productionBrowserSourceMaps: false in next.config.js. For Vite: set build.sourcemap: false.",
-          cwe: "CWE-540",
-          owasp: "A05:2021",
-        });
+        exposedMaps.push(mapUrl);
       }
-    } catch {
-      // not accessible, which is good
-    }
+    } catch {}
+  }
+
+  if (exposedMaps.length > 0) {
+    findings.push({
+      id: "sourcemaps-exposed",
+      module: "Source Maps",
+      severity: "high",
+      title: `${exposedMaps.length} source map${exposedMaps.length > 1 ? "s" : ""} publicly accessible`,
+      description: "Source maps are accessible, allowing anyone to view your unminified source code including comments, variable names, and business logic.",
+      evidence: `Accessible source maps:\n${exposedMaps.slice(0, 5).join("\n")}${exposedMaps.length > 5 ? `\n...and ${exposedMaps.length - 5} more` : ""}`,
+      remediation: "Disable source maps in production. For Next.js: set productionBrowserSourceMaps: false in next.config.js. For Vite: set build.sourcemap: false.",
+      cwe: "CWE-540",
+      owasp: "A05:2021",
+    });
   }
 
   // Also try common source map paths
@@ -46,20 +46,22 @@ export const sourceMapsModule: ScanModule = async (target) => {
     try {
       const res = await scanFetch(mapUrl);
       if (res.ok && (res.headers.get("content-type") || "").includes("json")) {
-        findings.push({
-          id: `sourcemaps-convention-${findings.length}`,
-          module: "Source Maps",
-          severity: "high",
-          title: "Source map found via convention (.js.map)",
-          description: "A source map file was found by appending .map to a JavaScript URL. Your source code may be fully readable.",
-          evidence: `Accessible: ${mapUrl}`,
-          remediation: "Block access to .map files in production or disable source map generation.",
-          cwe: "CWE-540",
-        });
+        conventionMaps.push(mapUrl);
       }
-    } catch {
-      // fine
-    }
+    } catch {}
+  }
+
+  if (conventionMaps.length > 0) {
+    findings.push({
+      id: "sourcemaps-convention",
+      module: "Source Maps",
+      severity: "high",
+      title: `${conventionMaps.length} source map${conventionMaps.length > 1 ? "s" : ""} found via .js.map convention`,
+      description: "Source map files were found by appending .map to JavaScript URLs. Your source code may be fully readable.",
+      evidence: `Accessible:\n${conventionMaps.slice(0, 5).join("\n")}${conventionMaps.length > 5 ? `\n...and ${conventionMaps.length - 5} more` : ""}`,
+      remediation: "Block access to .map files in production or disable source map generation.",
+      cwe: "CWE-540",
+    });
   }
 
   return findings;

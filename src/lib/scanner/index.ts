@@ -123,8 +123,9 @@ const runScan = async (scanId: string, targetUrl: string) => {
   const runModule = async (mod: ScanModuleDefinition) => {
     updateModule(scanId, mod.name, { status: "running" });
     try {
+      const MAX_PER_MODULE = 8;
       const findings = await mod.run(target);
-      addFindings(scanId, findings);
+      addFindings(scanId, findings.slice(0, MAX_PER_MODULE));
       updateModule(scanId, mod.name, {
         status: "completed",
         findingsCount: findings.length,
