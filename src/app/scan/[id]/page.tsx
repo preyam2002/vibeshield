@@ -19,6 +19,7 @@ interface ModuleStatus {
   name: string;
   status: "pending" | "running" | "completed" | "failed" | "skipped";
   findingsCount: number;
+  durationMs?: number;
   error?: string;
 }
 
@@ -725,9 +726,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     }`}>
                       {mod.name}
                     </span>
-                    {mod.findingsCount > 0 && (
-                      <span className="text-[10px] text-zinc-600 ml-auto tabular-nums">{mod.findingsCount}</span>
-                    )}
+                    <span className="ml-auto flex items-center gap-1.5">
+                      {mod.findingsCount > 0 && (
+                        <span className="text-[10px] text-zinc-600 tabular-nums">{mod.findingsCount}</span>
+                      )}
+                      {mod.durationMs != null && mod.status === "completed" && (
+                        <span className="text-[10px] text-zinc-700 tabular-nums">{mod.durationMs < 1000 ? `${mod.durationMs}ms` : `${(mod.durationMs / 1000).toFixed(1)}s`}</span>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>

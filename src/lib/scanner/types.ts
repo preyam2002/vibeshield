@@ -51,6 +51,7 @@ export interface ModuleStatus {
   name: string;
   status: "pending" | "running" | "completed" | "failed" | "skipped";
   findingsCount: number;
+  durationMs?: number;
   error?: string;
 }
 

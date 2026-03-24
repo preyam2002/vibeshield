@@ -128,6 +128,7 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   clearScanCache();
   // Phase 1: Recon
   updateModule(scanId, "Recon", { status: "running" });
+  const reconStart = Date.now();
   let target: ScanTarget;
   try {
     target = await runRecon(targetUrl);
@@ -139,15 +140,16 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
       forms: target.forms.length,
       cookies: target.cookies.length,
     });
-    updateModule(scanId, "Recon", { status: "completed" });
+    updateModule(scanId, "Recon", { status: "completed", durationMs: Date.now() - reconStart });
   } catch (err) {
-    updateModule(scanId, "Recon", { status: "failed", error: String(err) });
+    updateModule(scanId, "Recon", { status: "failed", error: String(err), durationMs: Date.now() - reconStart });
     updateScanStatus(scanId, "failed");
     return;
   }
 
   const runModule = async (mod: ScanModuleDefinition) => {
     updateModule(scanId, mod.name, { status: "running" });
+    const start = Date.now();
     try {
       const MAX_PER_MODULE = 8;
       const findings = await mod.run(target);
@@ -155,12 +157,14 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
       updateModule(scanId, mod.name, {
         status: "completed",
         findingsCount: findings.length,
+        durationMs: Date.now() - start,
       });
     } catch (err) {
       console.error(`Module ${mod.name} failed:`, err);
       updateModule(scanId, mod.name, {
         status: "failed",
         error: String(err),
+        durationMs: Date.now() - start,
       });
     }
   };
