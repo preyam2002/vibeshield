@@ -14,14 +14,14 @@ export const clickjackingModule: ScanModule = async (target) => {
       severity: "medium",
       title: "No clickjacking protection",
       description: "Neither X-Frame-Options nor CSP frame-ancestors is set. Your site can be embedded in iframes on malicious sites, tricking users into clicking hidden buttons.",
-      remediation: "Add X-Frame-Options: DENY header AND Content-Security-Policy: frame-ancestors 'none' (or 'self' if you need same-origin framing).",
+      remediation: "Add Content-Security-Policy: frame-ancestors 'none' (preferred) or X-Frame-Options: DENY. Use 'self' instead of 'none' if you need same-origin framing.",
       cwe: "CWE-1021",
       owasp: "A05:2021",
     });
   }
 
   // Check for CSP frame-ancestors * (wildcard = no protection)
-  if (hasFrameAncestors && /frame-ancestors\s+\*/i.test(csp!)) {
+  if (hasFrameAncestors && /frame-ancestors\s+\*[\s;]?/i.test(csp!)) {
     findings.push({
       id: "clickjacking-csp-wildcard",
       module: "Clickjacking",

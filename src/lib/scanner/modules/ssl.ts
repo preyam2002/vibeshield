@@ -46,7 +46,7 @@ export const sslModule: ScanModule = async (target) => {
   if (hsts) {
     const maxAgeMatch = hsts.match(/max-age=(\d+)/);
     if (maxAgeMatch) {
-      const maxAge = parseInt(maxAgeMatch[1]);
+      const maxAge = parseInt(maxAgeMatch[1], 10);
       if (maxAge < 31536000) {
         findings.push({
           id: "ssl-hsts-short",
@@ -64,7 +64,7 @@ export const sslModule: ScanModule = async (target) => {
 
   // Check for mixed content indicators
   const allJs = Array.from(target.jsContents.values()).join("\n");
-  const httpRefs = allJs.match(/http:\/\/[^"'\s]+\.(js|css|png|jpg|gif|svg|woff)/gi);
+  const httpRefs = allJs.match(/http:\/\/[a-zA-Z0-9._\-\/]+\.(js|css|png|jpg|gif|svg|woff2?|ico|json)(?=["'\s;,)])/gi);
   if (httpRefs && httpRefs.length > 0) {
     findings.push({
       id: "ssl-mixed-content",
