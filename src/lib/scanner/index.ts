@@ -88,12 +88,15 @@ const STRESS_MODULES: ScanModuleDefinition[] = [
 
 const ALL_MODULES = [...SECURITY_MODULES, ...STRESS_MODULES];
 
-export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string) => {
+export type ScanMode = "full" | "security";
+
+export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string, mode: ScanMode = "full") => {
   createScan(scanId, targetUrl);
 
+  const activeModules = mode === "security" ? SECURITY_MODULES : ALL_MODULES;
   const moduleStatuses = [
     { name: "Recon", status: "pending" as const, findingsCount: 0 },
-    ...ALL_MODULES.map((m) => ({
+    ...activeModules.map((m) => ({
       name: m.name,
       status: "pending" as const,
       findingsCount: 0,
@@ -102,9 +105,8 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
   setModules(scanId, moduleStatuses);
   updateScanStatus(scanId, "scanning");
 
-  // Detach from the request using setTimeout so the API response returns immediately
   setTimeout(() => {
-    runScan(scanId, targetUrl).then(() => {
+    runScan(scanId, targetUrl, mode).then(() => {
       if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
     }).catch((err) => {
       console.error(`Scan ${scanId} failed:`, err);
@@ -114,7 +116,7 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
   }, 0);
 };
 
-const runScan = async (scanId: string, targetUrl: string) => {
+const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full") => {
   // Phase 1: Recon
   updateModule(scanId, "Recon", { status: "running" });
   let target: ScanTarget;
@@ -147,14 +149,16 @@ const runScan = async (scanId: string, targetUrl: string) => {
     }
   };
 
-  // Run security modules in batches of 4 for speed, stress modules sequentially
+  // Run security modules in batches for speed, stress modules sequentially
   const BATCH_SIZE = 6;
   for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
     const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
     await Promise.all(batch.map(runModule));
   }
-  for (const mod of STRESS_MODULES) {
-    await runModule(mod);
+  if (mode === "full") {
+    for (const mod of STRESS_MODULES) {
+      await runModule(mod);
+    }
   }
 
   updateScanStatus(scanId, "completed");
