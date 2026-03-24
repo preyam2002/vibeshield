@@ -531,6 +531,17 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               <div className="flex items-center gap-3 text-zinc-500 text-xs">
                 <span><ElapsedTimer startedAt={scan.startedAt} /></span>
                 <span>{completedModules}/{totalModules} modules</span>
+                {completedModules >= 3 && (() => {
+                  const elapsed = (Date.now() - new Date(scan.startedAt).getTime()) / 1000;
+                  const rate = completedModules / elapsed;
+                  const remaining = Math.round((totalModules - completedModules) / rate);
+                  const mins = Math.floor(remaining / 60);
+                  const secs = remaining % 60;
+                  return <span className="text-zinc-600">~{mins > 0 ? `${mins}m ${secs}s` : `${secs}s`} left</span>;
+                })()}
+                {scan.summary.total > 0 && (
+                  <span className="text-orange-500/70">{scan.summary.total} found</span>
+                )}
               </div>
             </div>
             <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
