@@ -233,10 +233,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center space-y-3">
-          <p className="text-red-400 text-lg">{error}</p>
-          <a href="/" className="text-sm text-zinc-500 hover:text-zinc-300 underline">Start a new scan</a>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <a href="/" className="text-lg font-bold text-transparent bg-clip-text bg-linear-to-r from-red-500 to-orange-400">VibeShield</a>
+        <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-8 text-center max-w-sm">
+          <div className="text-red-400 text-4xl mb-3">404</div>
+          <p className="text-zinc-400 text-sm mb-4">{error}</p>
+          <a href="/" className="text-sm bg-linear-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-white px-5 py-2 rounded-lg transition-colors inline-block">
+            Start a new scan
+          </a>
         </div>
       </div>
     );
@@ -336,6 +340,31 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+        {/* Failed banner */}
+        {scan.status === "failed" && (
+          <div className="mb-6 bg-red-500/5 border border-red-500/20 rounded-xl p-4">
+            <div className="flex items-center gap-3">
+              <div className="text-2xl">⚠</div>
+              <div>
+                <div className="text-sm font-medium text-red-400">Scan failed</div>
+                <div className="text-xs text-zinc-500 mt-0.5">
+                  The target may be unreachable, blocking our requests, or behind a firewall.
+                  {scan.modules.find((m) => m.error) && (
+                    <span className="text-zinc-600"> — {scan.modules.find((m) => m.error)?.error}</span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={handleRescan}
+                disabled={rescanning}
+                className="ml-auto text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Completion banner */}
         {!isRunning && scan.status === "completed" && (
           <div className={`mb-6 ${gradeConf.bg} border ${gradeConf.border} rounded-xl p-4`}>
