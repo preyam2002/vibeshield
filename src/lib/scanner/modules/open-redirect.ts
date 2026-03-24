@@ -14,6 +14,9 @@ const EVIL_URLS = [
   "/\\evil.com",
   "https://evil.com%00.legitimate.com",
   "https://legitimate.com@evil.com",
+  "https://evil.com#.legitimate.com",
+  "https://evil.com?.legitimate.com",
+  "//evil.com/%2f..",
 ];
 
 export const openRedirectModule: ScanModule = async (target) => {
@@ -31,7 +34,7 @@ export const openRedirectModule: ScanModule = async (target) => {
 
     for (const param of REDIRECT_PARAMS) {
       if (foundPaths.has(pathname)) break;
-      for (const evil of EVIL_URLS.slice(0, 2)) {
+      for (const evil of EVIL_URLS.slice(0, 4)) {
         try {
           const url = new URL(baseUrl);
           url.searchParams.set(param, evil);

@@ -49,13 +49,17 @@ export const corsModule: ScanModule = async (target) => {
         const acao2 = res2.headers.get("access-control-allow-origin");
         if (acao2 === origin) {
           reflectFound = true;
+          const acac2 = res2.headers.get("access-control-allow-credentials");
+          const withCreds = acac2 === "true";
           findings.push({
             id: `cors-reflect-${findings.length}`,
             module: "CORS",
-            severity: "high",
-            title: `CORS reflects arbitrary Origin on ${new URL(endpoint).pathname}`,
-            description: `This endpoint echoes back whatever Origin is sent, including "${origin}". Any website can make cross-origin requests and read responses.`,
-            evidence: `Origin: ${origin}\nAccess-Control-Allow-Origin: ${acao2}`,
+            severity: withCreds ? "critical" : "high",
+            title: `CORS reflects arbitrary Origin${withCreds ? " with credentials" : ""} on ${new URL(endpoint).pathname}`,
+            description: withCreds
+              ? `This endpoint echoes back any Origin AND allows credentials. Any website can make fully authenticated requests and steal user data — this is a full CORS bypass.`
+              : `This endpoint echoes back whatever Origin is sent, including "${origin}". Any website can make cross-origin requests and read responses.`,
+            evidence: `Origin: ${origin}\nAccess-Control-Allow-Origin: ${acao2}${withCreds ? "\nAccess-Control-Allow-Credentials: true" : ""}`,
             remediation: "Validate the Origin header against a whitelist of allowed domains.",
             cwe: "CWE-942",
             owasp: "A05:2021",
