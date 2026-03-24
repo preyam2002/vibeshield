@@ -50,7 +50,7 @@ const SYSTEM_PROMPT_INDICATORS = [
 const AI_KEY_PATTERNS: { name: string; pattern: RegExp; severity: Finding["severity"] }[] = [
   { name: "OpenAI API Key (legacy)", pattern: /sk-[a-zA-Z0-9]{32,}/g, severity: "critical" },
   { name: "Anthropic API Key", pattern: /sk-ant-[a-zA-Z0-9_-]{40,}/g, severity: "critical" },
-  { name: "Google AI/Gemini Key", pattern: /AIza[0-9A-Za-z_-]{35}/g, severity: "high" },
+  // Google AI key (AIza...) is already covered by secrets.ts as "Google API Key"
   { name: "Cohere API Key", pattern: /[a-zA-Z0-9]{40}(?=-cohere)/g, severity: "high" },
   { name: "Replicate API Token", pattern: /r8_[a-zA-Z0-9]{36,}/g, severity: "high" },
   { name: "Hugging Face Token", pattern: /hf_[a-zA-Z0-9]{34,}/g, severity: "high" },

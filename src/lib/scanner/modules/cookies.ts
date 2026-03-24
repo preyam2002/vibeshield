@@ -1,15 +1,19 @@
 import type { ScanModule, Finding } from "../types";
 
 const SENSITIVE_COOKIE_NAMES = [
-  /session/i, /token/i, /auth/i, /jwt/i, /sid/i,
-  /csrf/i, /xsrf/i, /login/i, /user/i, /access/i,
-  /refresh/i, /api.?key/i,
+  /^session/i, /token$/i, /auth/i, /jwt/i, /^sid$/i,
+  /csrf/i, /xsrf/i, /login/i, /^user$/i, /^user[_-]?id$/i,
+  /access[_-]?token/i, /refresh[_-]?token/i, /api.?key/i,
 ];
+
+// Preference/tracking cookies that are not security-sensitive
+const NON_SENSITIVE_PATTERNS = /country|currency|locale|language|lang|theme|timezone|tz|consent|analytics|tracking|anonymous|preferences|pref|utm_|_ga|_gid|_fbp|ajs_/i;
 
 export const cookiesModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
   for (const cookie of target.cookies) {
+    if (NON_SENSITIVE_PATTERNS.test(cookie.name)) continue;
     const isSensitive = SENSITIVE_COOKIE_NAMES.some((p) => p.test(cookie.name));
 
     if (isSensitive && !cookie.httpOnly) {
@@ -54,19 +58,23 @@ export const cookiesModule: ScanModule = async (target) => {
       });
     }
 
-    // Check for overly broad cookie scope
-    if (cookie.path === "/" && cookie.domain && cookie.domain.startsWith(".")) {
-      findings.push({
-        id: `cookies-broad-scope-${cookie.name}`,
-        module: "Cookies",
-        severity: "low",
-        title: `Cookie "${cookie.name}" has broad domain scope`,
-        description: `This cookie is shared across all subdomains (${cookie.domain}). A compromised subdomain could access this cookie.`,
-        evidence: `Cookie: ${cookie.name}\nDomain: ${cookie.domain}\nPath: ${cookie.path}`,
-        remediation: "Restrict the cookie domain to the specific subdomain that needs it.",
-        cwe: "CWE-1275",
-      });
-    }
+  }
+
+  // Consolidate broad domain scope into a single finding
+  const broadCookies = target.cookies.filter(
+    (c) => !NON_SENSITIVE_PATTERNS.test(c.name) && c.path === "/" && c.domain && c.domain.startsWith("."),
+  );
+  if (broadCookies.length > 0) {
+    findings.push({
+      id: "cookies-broad-scope",
+      module: "Cookies",
+      severity: "low",
+      title: `${broadCookies.length} cookie${broadCookies.length > 1 ? "s" : ""} with broad domain scope`,
+      description: `${broadCookies.length} cookie(s) are shared across all subdomains. A compromised subdomain could access these cookies.`,
+      evidence: broadCookies.map((c) => `${c.name} (${c.domain})`).join(", "),
+      remediation: "Restrict cookie domains to the specific subdomain that needs them.",
+      cwe: "CWE-1275",
+    });
   }
 
   // Check for auth tokens stored in localStorage (XSS-vulnerable)
