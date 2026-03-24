@@ -148,5 +148,22 @@ export const infoLeakModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for dangerouslySetInnerHTML usage in React bundles (common XSS vector)
+  const allJs = Array.from(target.jsContents.values()).join("\n");
+  const dangerousMatches = allJs.match(/dangerouslySetInnerHTML/g);
+  if (dangerousMatches && dangerousMatches.length > 0) {
+    findings.push({
+      id: "infoleak-dangerous-innerhtml",
+      module: "Information Leakage",
+      severity: "medium",
+      title: `dangerouslySetInnerHTML used ${dangerousMatches.length} time${dangerousMatches.length > 1 ? "s" : ""}`,
+      description: `Your React app uses dangerouslySetInnerHTML ${dangerousMatches.length} time(s). This bypasses React's XSS protection and renders raw HTML. If any of these render user-controlled content, it's a direct XSS vulnerability.`,
+      evidence: `Found ${dangerousMatches.length} instances of dangerouslySetInnerHTML in JS bundles`,
+      remediation: "Audit each dangerouslySetInnerHTML usage. If rendering user content, sanitize with DOMPurify first. Prefer React's built-in escaping.",
+      cwe: "CWE-79",
+      owasp: "A03:2021",
+    });
+  }
+
   return findings;
 };

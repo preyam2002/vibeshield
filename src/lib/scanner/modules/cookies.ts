@@ -69,5 +69,31 @@ export const cookiesModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for auth tokens stored in localStorage (XSS-vulnerable)
+  const allJs = Array.from(target.jsContents.values()).join("\n");
+  const localStoragePatterns = [
+    /localStorage\.setItem\s*\(\s*["'](?:token|auth|jwt|access_token|refresh_token|session|api_key|apiKey|id_token|Bearer)["']/gi,
+    /localStorage\s*\[\s*["'](?:token|auth|jwt|access_token|refresh_token|session|api_key|apiKey|id_token|Bearer)["']\s*\]/gi,
+  ];
+
+  for (const pat of localStoragePatterns) {
+    const matches = allJs.match(pat);
+    if (matches) {
+      const unique = [...new Set(matches)];
+      findings.push({
+        id: "cookies-localstorage-token",
+        module: "Cookies",
+        severity: "medium",
+        title: `Auth token stored in localStorage (${unique.length} instance${unique.length > 1 ? "s" : ""})`,
+        description: "Your app stores authentication tokens in localStorage, which is accessible to any JavaScript on the page. If an XSS vulnerability exists, attackers can steal these tokens. HttpOnly cookies are the safer alternative.",
+        evidence: `Found in JS bundle:\n${unique.slice(0, 3).join("\n")}`,
+        remediation: "Store auth tokens in HttpOnly cookies instead of localStorage. If you must use localStorage, ensure robust XSS protection (CSP, input sanitization).",
+        cwe: "CWE-922",
+        owasp: "A07:2021",
+      });
+      break;
+    }
+  }
+
   return findings;
 };
