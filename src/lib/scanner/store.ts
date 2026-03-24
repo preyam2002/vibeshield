@@ -48,7 +48,40 @@ export const updateScanStatus = (id: string, status: ScanResult["status"]) => {
     if (status === "completed" || status === "failed") {
       scan.completedAt = new Date().toISOString();
     }
+    if (status === "completed") {
+      buildComparison(scan);
+    }
   }
+};
+
+const buildComparison = (scan: ScanResult) => {
+  const prev = findPreviousScan(scan.target, scan.id);
+  if (!prev) return;
+
+  const prevTitles = new Set(prev.findings.map((f) => f.title));
+  const currTitles = new Set(scan.findings.map((f) => f.title));
+
+  const newFindings = scan.findings
+    .filter((f) => !prevTitles.has(f.title))
+    .map((f) => ({ title: f.title, severity: f.severity, module: f.module }));
+  const fixedFindings = prev.findings
+    .filter((f) => !currTitles.has(f.title))
+    .map((f) => ({ title: f.title, severity: f.severity, module: f.module }));
+
+  scan.comparison = {
+    previousId: prev.id,
+    previousGrade: prev.grade,
+    previousScore: prev.score,
+    previousFindings: prev.summary.total,
+    delta: {
+      score: scan.score - prev.score,
+      findings: scan.summary.total - prev.summary.total,
+      critical: scan.summary.critical - prev.summary.critical,
+      high: scan.summary.high - prev.summary.high,
+    },
+    ...(newFindings.length > 0 ? { newFindings } : {}),
+    ...(fixedFindings.length > 0 ? { fixedFindings } : {}),
+  };
 };
 
 export const addFindings = (id: string, findings: Finding[]) => {

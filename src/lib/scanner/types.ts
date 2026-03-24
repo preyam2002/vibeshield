@@ -83,6 +83,15 @@ export interface ScanResult {
     forms: number;
     cookies: number;
   };
+  comparison?: {
+    previousId: string;
+    previousGrade: string;
+    previousScore: number;
+    previousFindings: number;
+    delta: { score: number; findings: number; critical: number; high: number };
+    newFindings?: { title: string; severity: string; module: string }[];
+    fixedFindings?: { title: string; severity: string; module: string }[];
+  };
 }
 
 export type ScanModule = (
