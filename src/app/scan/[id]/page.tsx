@@ -647,31 +647,37 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </div>
             )}
 
-            {/* Scan info */}
+            {/* Module breakdown */}
             {!isRunning && (
               <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
                 <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
-                  Scan Info
+                  Module Results
                 </h3>
-                <div className="text-xs text-zinc-500 space-y-2">
-                  <div className="flex justify-between">
-                    <span>Duration</span>
-                    <span className="text-zinc-400"><ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /></span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Modules</span>
-                    <span className="text-zinc-400">{totalModules}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Findings</span>
-                    <span className="text-zinc-400">{scan.summary.total}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Status</span>
-                    <span className={scan.status === "completed" ? "text-emerald-400" : "text-red-400"}>
-                      {scan.status === "completed" ? "Complete" : "Failed"}
-                    </span>
-                  </div>
+                <div className="space-y-1">
+                  {scan.modules.filter((m) => m.name !== "Recon").map((m) => {
+                    const hasFindings = m.findingsCount > 0;
+                    return (
+                      <div key={m.name} className="flex items-center gap-2 text-[11px]">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                          m.status === "failed" ? "bg-zinc-600" :
+                          hasFindings ? "bg-orange-500" : "bg-emerald-500"
+                        }`} />
+                        <span className={`truncate ${hasFindings ? "text-zinc-300" : "text-zinc-600"}`}>
+                          {m.name}
+                        </span>
+                        {hasFindings && (
+                          <span className="text-orange-400 ml-auto shrink-0">{m.findingsCount}</span>
+                        )}
+                        {!hasFindings && m.status === "completed" && (
+                          <span className="text-emerald-600 ml-auto shrink-0 text-[10px]">pass</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-3 pt-3 border-t border-zinc-800/30 text-xs text-zinc-500 flex justify-between">
+                  <span>Duration</span>
+                  <span className="text-zinc-400"><ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /></span>
                 </div>
               </div>
             )}
