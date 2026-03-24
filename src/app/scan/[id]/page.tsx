@@ -1,0 +1,636 @@
+"use client";
+
+import { useEffect, useState, useCallback, useRef, use } from "react";
+import { useRouter } from "next/navigation";
+
+interface Finding {
+  id: string;
+  module: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  title: string;
+  description: string;
+  evidence?: string;
+  remediation: string;
+  cwe?: string;
+  owasp?: string;
+}
+
+interface ModuleStatus {
+  name: string;
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  findingsCount: number;
+  error?: string;
+}
+
+interface ScanResult {
+  id: string;
+  target: string;
+  status: "queued" | "scanning" | "completed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  findings: Finding[];
+  modules: ModuleStatus[];
+  grade: string;
+  score: number;
+  technologies: string[];
+  isSpa: boolean;
+  summary: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    info: number;
+    total: number;
+  };
+}
+
+const SEVERITY_CONFIG = {
+  critical: { color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", label: "CRITICAL", dot: "bg-red-500" },
+  high: { color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/30", label: "HIGH", dot: "bg-orange-500" },
+  medium: { color: "text-yellow-400", bg: "bg-yellow-500/10", border: "border-yellow-500/30", label: "MEDIUM", dot: "bg-yellow-500" },
+  low: { color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30", label: "LOW", dot: "bg-blue-500" },
+  info: { color: "text-zinc-400", bg: "bg-zinc-500/10", border: "border-zinc-500/30", label: "INFO", dot: "bg-zinc-500" },
+} as const;
+
+const GRADE_CONFIG: Record<string, { color: string; bg: string; border: string; desc: string }> = {
+  A: { color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30", desc: "Excellent" },
+  "A-": { color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30", desc: "Great" },
+  "B+": { color: "text-lime-400", bg: "bg-lime-500/10", border: "border-lime-500/30", desc: "Good" },
+  B: { color: "text-lime-400", bg: "bg-lime-500/10", border: "border-lime-500/30", desc: "Good" },
+  "C+": { color: "text-yellow-400", bg: "bg-yellow-500/10", border: "border-yellow-500/30", desc: "Fair" },
+  C: { color: "text-yellow-400", bg: "bg-yellow-500/10", border: "border-yellow-500/30", desc: "Fair" },
+  "D+": { color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/30", desc: "Poor" },
+  D: { color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/30", desc: "Poor" },
+  F: { color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", desc: "Critical" },
+  "-": { color: "text-zinc-600", bg: "bg-zinc-500/10", border: "border-zinc-500/30", desc: "Scanning" },
+};
+
+const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: boolean; onToggle: () => void }) => {
+  const sev = SEVERITY_CONFIG[finding.severity];
+  return (
+    <div className={`border ${sev.border} rounded-lg overflow-hidden bg-zinc-950/50`}>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-zinc-900/50 transition-colors"
+      >
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${sev.bg} ${sev.color} shrink-0`}>
+          {sev.label}
+        </span>
+        <span className="flex-1 text-sm font-medium text-zinc-200 min-w-0">{finding.title}</span>
+        <span className="text-[10px] text-zinc-600 shrink-0 hidden sm:block">{finding.module}</span>
+        <svg
+          className={`w-4 h-4 text-zinc-600 transition-transform shrink-0 ${isOpen ? "rotate-180" : ""}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="px-4 pb-4 space-y-3 border-t border-zinc-800/50">
+          <div className="pt-3">
+            <p className="text-sm text-zinc-400 leading-relaxed">{finding.description}</p>
+          </div>
+          {finding.evidence && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">Evidence</h4>
+              <pre className="text-xs bg-zinc-900/80 border border-zinc-800/50 rounded-lg p-3 text-zinc-400 overflow-x-auto whitespace-pre-wrap break-all">
+                {finding.evidence}
+              </pre>
+            </div>
+          )}
+          <div>
+            <h4 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">How to Fix</h4>
+            <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">{finding.remediation}</p>
+          </div>
+          <div className="flex items-center gap-2 pt-1 flex-wrap">
+            {finding.cwe && (
+              <span className="text-[10px] bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5 text-zinc-500">{finding.cwe}</span>
+            )}
+            {finding.owasp && (
+              <span className="text-[10px] bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5 text-zinc-500">OWASP {finding.owasp}</span>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                const prompt = `Fix this security vulnerability in my app:\n\n**${finding.title}**\n\nSeverity: ${finding.severity.toUpperCase()}\n\n${finding.description}\n\n${finding.evidence ? `Evidence:\n${finding.evidence}\n\n` : ""}Recommended fix:\n${finding.remediation}`;
+                navigator.clipboard.writeText(prompt);
+                const btn = e.currentTarget;
+                btn.textContent = "Copied!";
+                setTimeout(() => { btn.textContent = "Copy AI fix prompt"; }, 2000);
+              }}
+              className="text-[10px] bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-400 rounded px-2 py-0.5 transition-colors ml-auto"
+            >
+              Copy AI fix prompt
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ElapsedTimer = ({ startedAt, completedAt }: { startedAt: string; completedAt?: string }) => {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (completedAt) {
+      setElapsed(Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+      return;
+    }
+    const tick = () => setElapsed(Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [startedAt, completedAt]);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  return <span>{mins > 0 ? `${mins}m ${secs}s` : `${secs}s`}</span>;
+};
+
+export default function ScanPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const [scan, setScan] = useState<ScanResult | null>(null);
+  const [error, setError] = useState("");
+  const [rescanning, setRescanning] = useState(false);
+  const [openFindings, setOpenFindings] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState<string>("all");
+  const [groupBy, setGroupBy] = useState<"severity" | "module">("severity");
+  const [expandAll, setExpandAll] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+
+  const fetchScan = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/scan/${id}`);
+      if (!res.ok) {
+        setError("Scan not found");
+        return;
+      }
+      const data = await res.json() as ScanResult;
+      setScan(data);
+
+      if (data.status === "completed" || data.status === "failed") {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = undefined;
+        }
+      }
+    } catch {
+      setError("Failed to fetch scan results");
+    }
+  }, [id]);
+
+  useEffect(() => {
+    fetchScan();
+    intervalRef.current = setInterval(fetchScan, 2000);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [fetchScan]);
+
+  const toggleFinding = (findingId: string) => {
+    setOpenFindings((prev) => {
+      const next = new Set(prev);
+      if (next.has(findingId)) next.delete(findingId);
+      else next.add(findingId);
+      return next;
+    });
+  };
+
+  const handleRescan = async () => {
+    if (!scan) return;
+    setRescanning(true);
+    try {
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: scan.target }),
+      });
+      const data = await res.json();
+      router.push(`/scan/${data.id}`);
+    } catch {
+      setRescanning(false);
+    }
+  };
+
+  const toggleExpandAll = () => {
+    if (expandAll) {
+      setOpenFindings(new Set());
+    } else {
+      setOpenFindings(new Set(sortedFindings.map((f) => f.id)));
+    }
+    setExpandAll(!expandAll);
+  };
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <p className="text-red-400 text-lg">{error}</p>
+          <a href="/" className="text-sm text-zinc-500 hover:text-zinc-300 underline">Start a new scan</a>
+        </div>
+      </div>
+    );
+  }
+
+  if (!scan) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="flex items-center gap-3 text-zinc-500">
+          <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          Loading scan...
+        </div>
+      </div>
+    );
+  }
+
+  const isRunning = scan.status === "scanning" || scan.status === "queued";
+  const completedModules = scan.modules.filter((m) => m.status === "completed" || m.status === "failed").length;
+  const totalModules = scan.modules.length;
+  const progress = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
+  const currentModule = scan.modules.find((m) => m.status === "running");
+
+  const filteredFindings = filter === "all"
+    ? scan.findings
+    : scan.findings.filter((f) => f.severity === filter);
+
+  const severityOrder = ["critical", "high", "medium", "low", "info"] as const;
+  const sortedFindings = [...filteredFindings].sort(
+    (a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity),
+  );
+
+  const gradeConf = GRADE_CONFIG[scan.grade] || GRADE_CONFIG["-"];
+
+  return (
+    <div className="min-h-screen">
+      {/* Header */}
+      <header className="border-b border-zinc-800/50 px-4 sm:px-6 py-3">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+          <a href="/" className="text-lg font-bold text-transparent bg-clip-text bg-linear-to-r from-red-500 to-orange-400 shrink-0">
+            VibeShield
+          </a>
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="text-sm text-zinc-500 truncate">{scan.target}</span>
+            {!isRunning && (
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(window.location.href);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  }}
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  {copied ? "Copied!" : "Share"}
+                </button>
+                <a
+                  href={`/api/scan/${id}/report`}
+                  download
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Report
+                </a>
+                <a
+                  href={`/api/scan/${id}/export`}
+                  download
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  JSON
+                </a>
+                <button
+                  onClick={handleRescan}
+                  disabled={rescanning}
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {rescanning ? "Starting..." : "Rescan"}
+                </button>
+                <a
+                  href="/"
+                  className="text-xs bg-linear-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  New Scan
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+        {/* Completion banner */}
+        {!isRunning && scan.status === "completed" && (
+          <div className={`mb-6 ${gradeConf.bg} border ${gradeConf.border} rounded-xl p-4`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className={`text-3xl font-black ${gradeConf.color}`}>{scan.grade}</div>
+                <div>
+                  <div className="text-sm font-medium text-zinc-200">
+                    Scan complete — {scan.summary.total} {scan.summary.total === 1 ? "finding" : "findings"} across {totalModules} modules
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-0.5">
+                    {scan.summary.critical > 0 && `${scan.summary.critical} critical, `}
+                    {scan.summary.high > 0 && `${scan.summary.high} high, `}
+                    {scan.summary.medium > 0 && `${scan.summary.medium} medium`}
+                    {scan.summary.critical === 0 && scan.summary.high === 0 && scan.summary.medium === 0 && "No significant issues found"}
+                    {" — "}
+                    <ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /> scan time
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Progress bar */}
+        {isRunning && (
+          <div className="mb-6 bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4">
+            <div className="flex items-center justify-between text-sm mb-3">
+              <span className="text-zinc-300 flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+                </span>
+                {currentModule ? (
+                  <>Running: <span className="font-medium text-zinc-100">{currentModule.name}</span></>
+                ) : (
+                  "Starting scan..."
+                )}
+              </span>
+              <div className="flex items-center gap-3 text-zinc-500 text-xs">
+                <span><ElapsedTimer startedAt={scan.startedAt} /></span>
+                <span>{completedModules}/{totalModules} modules</span>
+              </div>
+            </div>
+            <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+              <div
+                className="bg-linear-to-r from-red-500 to-orange-500 h-1.5 rounded-full transition-all duration-700 ease-out"
+                style={{ width: `${Math.max(progress, 2)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Top stats row */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3 mb-6">
+          {/* Grade card */}
+          <div className={`${gradeConf.bg} border ${gradeConf.border} rounded-xl p-4 text-center col-span-2`}>
+            <div className={`text-5xl font-black ${gradeConf.color}`}>
+              {isRunning ? "..." : scan.grade}
+            </div>
+            <div className="text-xs text-zinc-500 mt-1">
+              {isRunning ? "Scanning" : `${scan.score}/100 · ${gradeConf.desc}`}
+            </div>
+          </div>
+
+          {/* Severity breakdown */}
+          {severityOrder.map((sev) => {
+            const conf = SEVERITY_CONFIG[sev];
+            const count = scan.summary[sev];
+            const isActive = filter === sev;
+            return (
+              <button
+                key={sev}
+                onClick={() => setFilter(filter === sev ? "all" : sev)}
+                className={`rounded-xl p-3 text-center transition-all ${
+                  isActive
+                    ? `${conf.bg} border ${conf.border} scale-[1.02]`
+                    : "bg-zinc-900/50 border border-zinc-800/50 hover:border-zinc-700/50"
+                }`}
+              >
+                <div className={`text-xl sm:text-2xl font-bold ${count > 0 ? conf.color : "text-zinc-700"}`}>
+                  {count}
+                </div>
+                <div className="text-[10px] text-zinc-600 mt-0.5 capitalize">{sev}</div>
+              </button>
+            );
+          })}
+
+          <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3 text-center">
+            <div className="text-xl sm:text-2xl font-bold text-zinc-300">{scan.summary.total}</div>
+            <div className="text-[10px] text-zinc-600 mt-0.5">Total</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
+          {/* Sidebar */}
+          <div className="lg:col-span-1 space-y-4">
+            {/* Module progress */}
+            <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+              <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                Modules ({completedModules}/{totalModules})
+              </h3>
+              <div className="space-y-0.5">
+                {scan.modules.map((mod) => (
+                  <div
+                    key={mod.name}
+                    className={`flex items-center gap-2 text-xs py-1.5 px-2 rounded-md transition-colors ${
+                      mod.status === "running" ? "bg-zinc-800/50" : ""
+                    }`}
+                  >
+                    {mod.status === "running" && (
+                      <svg className="animate-spin h-3 w-3 text-red-500 shrink-0" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    )}
+                    {mod.status === "completed" && (
+                      <svg className="h-3 w-3 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                    {mod.status === "failed" && (
+                      <svg className="h-3 w-3 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    )}
+                    {mod.status === "pending" && (
+                      <div className="h-3 w-3 rounded-full border border-zinc-700/50 shrink-0" />
+                    )}
+                    <span className={`truncate ${
+                      mod.status === "running" ? "text-zinc-200 font-medium" :
+                      mod.status === "completed" ? "text-zinc-500" : "text-zinc-700"
+                    }`}>
+                      {mod.name}
+                    </span>
+                    {mod.findingsCount > 0 && (
+                      <span className="text-[10px] text-zinc-600 ml-auto tabular-nums">{mod.findingsCount}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Tech stack */}
+            {scan.technologies && scan.technologies.length > 0 && (
+              <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                  Detected Stack
+                </h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {scan.technologies.map((tech) => (
+                    <span
+                      key={tech}
+                      className="text-[10px] bg-zinc-800/80 border border-zinc-700/50 text-zinc-400 px-2 py-1 rounded-md"
+                    >
+                      {tech}
+                    </span>
+                  ))}
+                  {scan.isSpa && (
+                    <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 px-2 py-1 rounded-md">
+                      SPA
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Scan info */}
+            {!isRunning && (
+              <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                  Scan Info
+                </h3>
+                <div className="text-xs text-zinc-500 space-y-2">
+                  <div className="flex justify-between">
+                    <span>Duration</span>
+                    <span className="text-zinc-400"><ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /></span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Modules</span>
+                    <span className="text-zinc-400">{totalModules}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Findings</span>
+                    <span className="text-zinc-400">{scan.summary.total}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Status</span>
+                    <span className={scan.status === "completed" ? "text-emerald-400" : "text-red-400"}>
+                      {scan.status === "completed" ? "Complete" : "Failed"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Findings */}
+          <div className="lg:col-span-3">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+                Findings{filter !== "all" ? ` — ${filter}` : ""}
+                {filteredFindings.length > 0 && ` (${filteredFindings.length})`}
+              </h3>
+              <div className="flex items-center gap-3">
+                {filter !== "all" && (
+                  <button
+                    onClick={() => setFilter("all")}
+                    className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+                  >
+                    Clear filter
+                  </button>
+                )}
+                <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => setGroupBy("severity")}
+                    className={`text-[10px] px-2.5 py-1 transition-colors ${groupBy === "severity" ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
+                  >
+                    By severity
+                  </button>
+                  <button
+                    onClick={() => setGroupBy("module")}
+                    className={`text-[10px] px-2.5 py-1 transition-colors ${groupBy === "module" ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
+                  >
+                    By module
+                  </button>
+                </div>
+                {sortedFindings.length > 0 && (
+                  <button
+                    onClick={toggleExpandAll}
+                    className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+                  >
+                    {expandAll ? "Collapse all" : "Expand all"}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {sortedFindings.length === 0 && !isRunning && (
+              <div className="text-center py-20 bg-zinc-900/20 border border-zinc-800/30 rounded-xl">
+                {scan.summary.total === 0 ? (
+                  <div className="space-y-2">
+                    <div className="text-4xl">&#x1f389;</div>
+                    <p className="text-zinc-400 font-medium">No vulnerabilities found</p>
+                    <p className="text-xs text-zinc-600">Your app passed all {totalModules} security checks</p>
+                  </div>
+                ) : (
+                  <p className="text-zinc-600">No findings match this filter.</p>
+                )}
+              </div>
+            )}
+
+            {sortedFindings.length === 0 && isRunning && (
+              <div className="text-center py-20 bg-zinc-900/20 border border-zinc-800/30 rounded-xl">
+                <div className="space-y-2">
+                  <svg className="animate-spin h-6 w-6 mx-auto text-zinc-600" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <p className="text-zinc-600 text-sm">Scanning... findings will appear here as they&apos;re discovered</p>
+                </div>
+              </div>
+            )}
+
+            {groupBy === "severity" ? (
+              <div className="space-y-2">
+                {sortedFindings.map((finding) => (
+                  <FindingCard
+                    key={finding.id}
+                    finding={finding}
+                    isOpen={openFindings.has(finding.id)}
+                    onToggle={() => toggleFinding(finding.id)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {Array.from(new Set(sortedFindings.map((f) => f.module))).map((moduleName) => {
+                  const moduleFindings = sortedFindings.filter((f) => f.module === moduleName);
+                  const worstSev = moduleFindings.reduce((worst, f) => {
+                    const order = severityOrder as readonly string[];
+                    return order.indexOf(f.severity) < order.indexOf(worst) ? f.severity : worst;
+                  }, "info" as string);
+                  const sevConf = SEVERITY_CONFIG[worstSev as keyof typeof SEVERITY_CONFIG] || SEVERITY_CONFIG.info;
+                  return (
+                    <div key={moduleName} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl overflow-hidden">
+                      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-800/30">
+                        <span className={`w-2 h-2 rounded-full ${sevConf.dot}`} />
+                        <span className="text-sm font-medium text-zinc-300">{moduleName}</span>
+                        <span className="text-[10px] text-zinc-600">{moduleFindings.length} {moduleFindings.length === 1 ? "finding" : "findings"}</span>
+                      </div>
+                      <div className="p-2 space-y-2">
+                        {moduleFindings.map((finding) => (
+                          <FindingCard
+                            key={finding.id}
+                            finding={finding}
+                            isOpen={openFindings.has(finding.id)}
+                            onToggle={() => toggleFinding(finding.id)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}

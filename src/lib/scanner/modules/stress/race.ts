@@ -1,0 +1,74 @@
+import type { ScanModule, Finding } from "../../types";
+import { scanFetch } from "../../fetch";
+
+export const raceConditionModule: ScanModule = async (target) => {
+  const findings: Finding[] = [];
+
+  // Find state-changing endpoints that might be vulnerable to race conditions
+  const stateEndpoints = target.apiEndpoints.filter((ep) =>
+    /coupon|redeem|claim|transfer|withdraw|vote|like|follow|subscribe|checkout|purchase|apply|bonus|reward|credit|discount/i.test(ep),
+  );
+
+  // Also test generic endpoints with POST
+  const postEndpoints = target.apiEndpoints.slice(0, 5);
+
+  const testEndpoints = [...new Set([...stateEndpoints, ...postEndpoints])].slice(0, 8);
+
+  for (const endpoint of testEndpoints) {
+    // Send N identical requests simultaneously
+    const N = 20;
+    const results = await Promise.allSettled(
+      Array.from({ length: N }, () =>
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }).then(async (res) => ({
+          status: res.status,
+          body: await res.text().catch(() => ""),
+        })),
+      ),
+    );
+
+    const successes = results.filter(
+      (r) => r.status === "fulfilled" && (r.value.status === 200 || r.value.status === 201),
+    );
+
+    // If a "claim"-type endpoint succeeds multiple times, that's a race condition
+    const isSensitive = /coupon|redeem|claim|transfer|withdraw|vote|like|bonus|reward|credit|discount/i.test(endpoint);
+    if (isSensitive && successes.length > 1) {
+      findings.push({
+        id: `race-${findings.length}`,
+        module: "Race Conditions",
+        severity: "high",
+        title: `Potential race condition on ${new URL(endpoint).pathname}`,
+        description: `Sent ${N} simultaneous POST requests to a state-changing endpoint. ${successes.length} succeeded. If this endpoint handles one-time actions (coupons, transfers, claims), the action may execute multiple times.`,
+        evidence: `Endpoint: ${endpoint}\nSimultaneous requests: ${N}\nSuccessful: ${successes.length}`,
+        remediation: "Implement idempotency keys or database-level locks (SELECT ... FOR UPDATE) for state-changing operations. Use unique constraints to prevent double-execution.",
+        cwe: "CWE-362",
+        owasp: "A04:2021",
+      });
+    }
+
+    // Test for response inconsistency (sign of race condition in reads)
+    const bodies = results
+      .filter((r) => r.status === "fulfilled" && r.value.status === 200)
+      .map((r) => (r as PromiseFulfilledResult<{ status: number; body: string }>).value.body);
+
+    const uniqueBodies = new Set(bodies);
+    if (uniqueBodies.size > 1 && bodies.length >= 3) {
+      findings.push({
+        id: `race-inconsistent-${findings.length}`,
+        module: "Race Conditions",
+        severity: "medium",
+        title: `Inconsistent responses under concurrency on ${new URL(endpoint).pathname}`,
+        description: `${uniqueBodies.size} different response bodies from ${bodies.length} concurrent identical requests. This may indicate race conditions in data reads.`,
+        evidence: `Concurrent requests: ${N}\nUnique responses: ${uniqueBodies.size}`,
+        remediation: "Review transaction isolation levels. Ensure reads within a request are consistent.",
+        cwe: "CWE-362",
+      });
+    }
+  }
+
+  return findings;
+};

@@ -1,0 +1,120 @@
+import type { ScanModule, Finding } from "../../types";
+import { scanFetch } from "../../fetch";
+
+interface LoadResult {
+  concurrency: number;
+  totalRequests: number;
+  successCount: number;
+  failCount: number;
+  avgResponseMs: number;
+  p95ResponseMs: number;
+  maxResponseMs: number;
+  errorRate: number;
+}
+
+const sendBatch = async (
+  url: string,
+  count: number,
+  timeoutMs = 10000,
+): Promise<{ ok: boolean; ms: number }[]> => {
+  const results = await Promise.allSettled(
+    Array.from({ length: count }, async () => {
+      const start = Date.now();
+      try {
+        const res = await scanFetch(url, { timeoutMs });
+        return { ok: res.ok, ms: Date.now() - start };
+      } catch {
+        return { ok: false, ms: Date.now() - start };
+      }
+    }),
+  );
+  return results.map((r) => (r.status === "fulfilled" ? r.value : { ok: false, ms: 10000 }));
+};
+
+const percentile = (arr: number[], p: number): number => {
+  const sorted = [...arr].sort((a, b) => a - b);
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, idx)];
+};
+
+export const loadModule: ScanModule = async (target) => {
+  const findings: Finding[] = [];
+  const testUrl = target.url;
+
+  // Ramp: 5 → 20 → 50 → 100 concurrent requests
+  const stages = [5, 20, 50, 100];
+  const results: LoadResult[] = [];
+
+  for (const concurrency of stages) {
+    const batch = await sendBatch(testUrl, concurrency);
+    const times = batch.map((r) => r.ms);
+    const successes = batch.filter((r) => r.ok).length;
+    const fails = batch.filter((r) => !r.ok).length;
+
+    results.push({
+      concurrency,
+      totalRequests: concurrency,
+      successCount: successes,
+      failCount: fails,
+      avgResponseMs: Math.round(times.reduce((a, b) => a + b, 0) / times.length),
+      p95ResponseMs: Math.round(percentile(times, 95)),
+      maxResponseMs: Math.round(Math.max(...times)),
+      errorRate: fails / concurrency,
+    });
+
+    // Stop if more than 50% failing
+    if (fails / concurrency > 0.5) break;
+  }
+
+  // Analyze results
+  const summary = results
+    .map((r) => `${r.concurrency} concurrent: avg ${r.avgResponseMs}ms, p95 ${r.p95ResponseMs}ms, errors ${Math.round(r.errorRate * 100)}%`)
+    .join("\n");
+
+  // Find breaking point
+  const breakPoint = results.find((r) => r.errorRate > 0.2);
+  const lastGood = results.filter((r) => r.errorRate <= 0.2).pop();
+  const slowPoint = results.find((r) => r.p95ResponseMs > 5000);
+
+  if (breakPoint) {
+    findings.push({
+      id: "stress-load-breaking-point",
+      module: "Load Testing",
+      severity: breakPoint.concurrency <= 20 ? "high" : "medium",
+      title: `App fails under ${breakPoint.concurrency} concurrent users`,
+      description: `Your app starts failing at ${breakPoint.concurrency} concurrent requests (${Math.round(breakPoint.errorRate * 100)}% error rate). ${breakPoint.concurrency <= 20 ? "This is very low — a single viral post could take your app down." : "Consider scaling for production traffic."}`,
+      evidence: summary,
+      remediation: breakPoint.concurrency <= 20
+        ? "Your app can't handle basic traffic. Check for: single-threaded processing, missing connection pooling, unoptimized database queries, or insufficient serverless concurrency limits."
+        : "Optimize hot paths, add caching, increase serverless concurrency limits, and consider a CDN.",
+      cwe: "CWE-400",
+    });
+  }
+
+  if (slowPoint && !breakPoint) {
+    findings.push({
+      id: "stress-load-slow",
+      module: "Load Testing",
+      severity: "medium",
+      title: `Response times degrade severely at ${slowPoint.concurrency} concurrent users`,
+      description: `P95 response time exceeds 5 seconds at ${slowPoint.concurrency} concurrent requests. Users will abandon your app.`,
+      evidence: summary,
+      remediation: "Profile slow endpoints. Add caching, optimize queries, and consider rate limiting.",
+      cwe: "CWE-400",
+    });
+  }
+
+  if (!breakPoint && !slowPoint && lastGood) {
+    findings.push({
+      id: "stress-load-ok",
+      module: "Load Testing",
+      severity: "info",
+      title: `App handles ${lastGood.concurrency} concurrent users`,
+      description: `Your app remained stable up to ${lastGood.concurrency} concurrent users with ${lastGood.avgResponseMs}ms average response time.`,
+      evidence: summary,
+      remediation: "Good baseline! Consider running extended load tests for sustained traffic patterns.",
+    });
+  }
+
+  return findings;
+};
