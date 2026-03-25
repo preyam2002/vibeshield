@@ -255,7 +255,9 @@ vercel deploy --prod && \\
     "remediation": "...",
     "codeSnippet": "...",        // optional — copy-paste fix
     "cwe": "CWE-693",           // optional
-    "owasp": "A05:2021"         // optional
+    "owasp": "A05:2021",        // optional
+    "confidence": 95,           // optional — 0-100, detection confidence
+    "endpoint": "/api/users"    // optional — specific URL where issue was found
   }],
   "modules": [{
     "name": "Security Headers",
@@ -302,6 +304,31 @@ vercel deploy --prod && \\
                 </div>
                 <p className="text-xs text-zinc-500">{ep.desc}</p>
                 {ep.body && <p className="text-xs text-zinc-600 mt-1 font-mono">Body: {ep.body}</p>}
+              </div>
+            ))}
+          </div>
+        </section>
+        {/* Configuration */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Configuration</h2>
+          <p className="text-sm text-zinc-500 mb-4">All scanner limits are configurable via environment variables:</p>
+          <div className="space-y-2">
+            {[
+              { env: "VIBESHIELD_MODULE_TIMEOUT_MS", desc: "Max time per module", default: "120000" },
+              { env: "VIBESHIELD_MAX_FINDINGS_PER_MODULE", desc: "Max findings from a single module", default: "8" },
+              { env: "VIBESHIELD_BATCH_SIZE", desc: "Parallel module batch size", default: "21" },
+              { env: "VIBESHIELD_CIRCUIT_BREAKER", desc: "Consecutive failures before abort", default: "4" },
+              { env: "VIBESHIELD_MAX_CONCURRENT", desc: "Max concurrent scans", default: "10" },
+              { env: "VIBESHIELD_RATE_TARGET", desc: "Max scans per target per window", default: "3" },
+              { env: "VIBESHIELD_RATE_IP", desc: "Max scans per IP per window", default: "20" },
+              { env: "VIBESHIELD_RATE_WINDOW_MS", desc: "Rate limit window", default: "300000" },
+              { env: "VIBESHIELD_MAX_SCANS", desc: "Max scans in memory", default: "100" },
+              { env: "VIBESHIELD_WEBHOOK_SECRET", desc: "HMAC-SHA256 key for webhook signatures", default: "(none)" },
+            ].map((c) => (
+              <div key={c.env} className="flex items-baseline gap-3 text-xs">
+                <code className="text-zinc-300 bg-zinc-800/50 px-1.5 py-0.5 rounded font-mono shrink-0">{c.env}</code>
+                <span className="text-zinc-600">{c.desc}</span>
+                <span className="text-zinc-700 ml-auto shrink-0">default: {c.default}</span>
               </div>
             ))}
           </div>
