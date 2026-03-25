@@ -262,5 +262,42 @@ export const authModule: ScanModule = async (target) => {
     });
   }
 
+  // 5. Rate limiting check on auth endpoints
+  const authEndpoints = target.apiEndpoints.filter((ep) =>
+    /auth|login|signin|signup|register|password|forgot|reset|verify|otp|2fa|mfa/i.test(new URL(ep).pathname),
+  );
+  if (authEndpoints.length > 0) {
+    // Send 5 rapid requests and check for rate limit headers
+    const rateLimitEndpoint = authEndpoints[0];
+    try {
+      const responses = await Promise.allSettled(
+        Array.from({ length: 5 }, () =>
+          scanFetch(rateLimitEndpoint, { method: "POST", body: JSON.stringify({ email: "test@vibeshield.dev", password: "wrong" }), headers: { "Content-Type": "application/json" }, timeoutMs: 5000 }),
+        ),
+      );
+      const fulfilled = responses.filter((r) => r.status === "fulfilled").map((r) => (r as PromiseFulfilledResult<Response>).value);
+      const hasRateLimitHeaders = fulfilled.some((r) =>
+        r.headers.get("x-ratelimit-limit") || r.headers.get("x-ratelimit-remaining") || r.headers.get("retry-after") || r.status === 429,
+      );
+      if (!hasRateLimitHeaders && fulfilled.length >= 4) {
+        const allSuccessOrSameStatus = fulfilled.every((r) => r.status === fulfilled[0].status);
+        if (allSuccessOrSameStatus) {
+          findings.push({
+            id: "auth-no-rate-limit",
+            module: "Authentication",
+            severity: "high",
+            title: `No rate limiting on ${new URL(rateLimitEndpoint).pathname}`,
+            description: "5 rapid requests to this auth endpoint all returned the same status with no rate-limit headers (X-RateLimit-*, Retry-After) or 429 response. Attackers can brute-force passwords or enumerate accounts.",
+            evidence: `POST ${rateLimitEndpoint}\n5 rapid requests → all returned ${fulfilled[0].status}\nNo rate-limit headers found`,
+            remediation: "Add rate limiting to authentication endpoints. Limit to 5-10 attempts per minute per IP/account.",
+            cwe: "CWE-307",
+            owasp: "A07:2021",
+            codeSnippet: `// Using next-rate-limit or upstash/ratelimit\nimport { Ratelimit } from "@upstash/ratelimit";\nimport { Redis } from "@upstash/redis";\n\nconst ratelimit = new Ratelimit({\n  redis: Redis.fromEnv(),\n  limiter: Ratelimit.slidingWindow(5, "60 s"),\n});\n\nexport async function POST(req: Request) {\n  const ip = req.headers.get("x-forwarded-for") || "unknown";\n  const { success } = await ratelimit.limit(ip);\n  if (!success) return Response.json({ error: "Too many attempts" }, { status: 429 });\n  // ... handle login\n}`,
+          });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
   return findings;
 };

@@ -342,7 +342,7 @@ export default function Home() {
               {[
                 { label: "Apps Scanned", value: recentScans.filter((s) => s.status === "completed").length },
                 { label: "Vulns Found", value: recentScans.filter((s) => s.status === "completed").reduce((acc, s) => acc + s.findings, 0) },
-                { label: "Avg Grade", value: (() => { const grades = recentScans.filter((s) => s.status === "completed").map((s) => s.grade); const gMap: Record<string, number> = { A: 95, "A-": 90, "B+": 85, B: 80, "C+": 75, C: 70, "D+": 65, D: 60, F: 40 }; const avg = grades.reduce((a, g) => a + (gMap[g] || 50), 0) / grades.length; if (avg >= 90) return "A"; if (avg >= 80) return "B"; if (avg >= 70) return "C"; if (avg >= 60) return "D"; return "F"; })() },
+                { label: "Avg Score", value: (() => { const completed = recentScans.filter((s) => s.status === "completed"); const gMap: Record<string, number> = { A: 95, "A-": 90, "B+": 85, B: 80, "C+": 75, C: 70, "D+": 65, D: 60, F: 40 }; return completed.length > 0 ? Math.round(completed.reduce((a, s) => a + (gMap[s.grade] || 50), 0) / completed.length) : "-"; })() },
               ].map((stat) => (
                 <div key={stat.label} className="text-center">
                   <div className="text-2xl font-bold text-zinc-200">{stat.value}</div>
@@ -350,6 +350,37 @@ export default function Home() {
                 </div>
               ))}
             </div>
+            {/* Grade distribution bar */}
+            {(() => {
+              const completed = recentScans.filter((s) => s.status === "completed");
+              if (completed.length < 2) return null;
+              const gradeGroups: Record<string, { count: number; color: string }> = {
+                "A/A-": { count: completed.filter((s) => s.grade === "A" || s.grade === "A-").length, color: "bg-green-500" },
+                "B/B+": { count: completed.filter((s) => s.grade === "B" || s.grade === "B+").length, color: "bg-lime-500" },
+                "C/C+": { count: completed.filter((s) => s.grade === "C" || s.grade === "C+").length, color: "bg-yellow-500" },
+                "D/D+": { count: completed.filter((s) => s.grade === "D" || s.grade === "D+").length, color: "bg-orange-500" },
+                "F": { count: completed.filter((s) => s.grade === "F").length, color: "bg-red-500" },
+              };
+              const nonEmpty = Object.entries(gradeGroups).filter(([, v]) => v.count > 0);
+              if (nonEmpty.length === 0) return null;
+              return (
+                <div className="mt-4">
+                  <div className="flex h-2 rounded-full overflow-hidden bg-zinc-800/50">
+                    {nonEmpty.map(([label, { count, color }]) => (
+                      <div key={label} className={`${color} transition-all`} style={{ width: `${(count / completed.length) * 100}%` }} title={`${label}: ${count}`} />
+                    ))}
+                  </div>
+                  <div className="flex justify-center gap-3 mt-2">
+                    {nonEmpty.map(([label, { count, color }]) => (
+                      <div key={label} className="flex items-center gap-1 text-[10px] text-zinc-600">
+                        <span className={`w-2 h-2 rounded-full ${color}`} />
+                        {label} ({count})
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

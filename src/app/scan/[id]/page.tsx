@@ -1088,7 +1088,15 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 }
               }
 
-              steps.sort((a, b) => b.points - a.points);
+              // Sort by points/effort ratio (quick wins first), then by points
+              const effortRank = { quick: 0, medium: 1, complex: 2 };
+              steps.sort((a, b) => {
+                // Primary: quick efforts with high points first
+                const ratioA = a.points / (effortRank[a.effort] + 1);
+                const ratioB = b.points / (effortRank[b.effort] + 1);
+                if (ratioA !== ratioB) return ratioB - ratioA;
+                return b.points - a.points;
+              });
 
               let runningScore = scan.score;
               const gradeAt = (s: number) => s >= 95 ? "A" : s >= 85 ? "A-" : s >= 75 ? "B+" : s >= 65 ? "B" : s >= 55 ? "C+" : s >= 45 ? "C" : s >= 35 ? "D+" : s >= 25 ? "D" : "F";
@@ -1103,11 +1111,12 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
 
               return (
                 <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
-                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">
                     Improve Your Grade
                   </h3>
+                  <div className="text-[9px] text-zinc-600 mb-3">Sorted by quick wins first</div>
                   <div className="space-y-2">
-                    {steps.slice(0, 5).map((s, i) => {
+                    {steps.slice(0, 7).map((s, i) => {
                       const sConf = SEVERITY_CONFIG[s.severity];
                       return (
                         <button
@@ -1132,7 +1141,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   </div>
                   {milestones.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-zinc-800/30 space-y-1">
-                      {milestones.slice(0, 3).map((m) => {
+                      {milestones.map((m) => {
                         const gc = GRADE_CONFIG[m.grade] || GRADE_CONFIG["-"];
                         return (
                           <div key={m.grade} className="flex items-center gap-2 text-[10px]">

@@ -249,5 +249,54 @@ export const cspModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for form-action (prevents form submission to attacker domains)
+  if (!directives.has("form-action")) {
+    findings.push({
+      id: `csp-form-action-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "medium",
+      title: "CSP missing form-action directive",
+      description: "Without form-action, attackers who inject HTML can add forms that submit user data (passwords, tokens) to an external server. This bypasses script-src restrictions since no JavaScript is needed.",
+      evidence: `CSP: ${mainCSP.substring(0, 200)}`,
+      remediation: "Add form-action 'self' to your CSP to restrict where forms can submit data.",
+      cwe: "CWE-693",
+      owasp: "A05:2021",
+      codeSnippet: `// Add form-action to your CSP\nform-action 'self';`,
+    });
+  }
+
+  // Check for upgrade-insecure-requests
+  if (!directives.has("upgrade-insecure-requests") && new URL(target.url).protocol === "https:") {
+    // Only suggest this for HTTPS sites — it's meaningless for HTTP
+    findings.push({
+      id: `csp-no-upgrade-insecure-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "low",
+      title: "CSP missing upgrade-insecure-requests",
+      description: "Without upgrade-insecure-requests, browsers won't automatically upgrade http:// resource URLs to https://. Mixed content may be blocked or loaded insecurely.",
+      evidence: `CSP: ${mainCSP.substring(0, 200)}`,
+      remediation: "Add upgrade-insecure-requests to your CSP to auto-upgrade HTTP resources to HTTPS.",
+      cwe: "CWE-319",
+      codeSnippet: `// Add to your CSP header\nupgrade-insecure-requests;`,
+    });
+  }
+
+  // Check for overly permissive script-src with many domains
+  const scriptDomains = scriptSrc.split(/\s+/).filter((s) => s.includes(".") && !s.startsWith("'"));
+  if (scriptDomains.length > 10) {
+    findings.push({
+      id: `csp-too-many-domains-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "medium",
+      title: `CSP script-src allowlists ${scriptDomains.length} domains`,
+      description: `The script-src directive allows ${scriptDomains.length} external domains. Each allowlisted domain is a potential CSP bypass — if any serve user-controllable JavaScript, the entire CSP is defeated. Consider strict-dynamic with nonces instead.`,
+      evidence: `script-src domains: ${scriptDomains.slice(0, 8).join(", ")}${scriptDomains.length > 8 ? ` ...and ${scriptDomains.length - 8} more` : ""}`,
+      remediation: "Switch to strict-dynamic with nonces instead of domain allowlisting. This is more maintainable and harder to bypass.",
+      cwe: "CWE-693",
+      owasp: "A05:2021",
+      codeSnippet: `// Use strict-dynamic with nonces instead of domain lists\n// middleware.ts\nconst nonce = crypto.randomUUID();\nconst csp = "script-src 'strict-dynamic' 'nonce-" + nonce + "';";\nres.headers.set("Content-Security-Policy", csp);\n// Then add nonce to script tags: <script nonce={nonce}>`,
+    });
+  }
+
   return findings;
 };
