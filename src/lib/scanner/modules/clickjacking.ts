@@ -17,6 +17,7 @@ export const clickjackingModule: ScanModule = async (target) => {
       remediation: "Add Content-Security-Policy: frame-ancestors 'none' (preferred) or X-Frame-Options: DENY. Use 'self' instead of 'none' if you need same-origin framing.",
       cwe: "CWE-1021",
       owasp: "A05:2021",
+      codeSnippet: `// next.config.ts headers()\n{ key: "X-Frame-Options", value: "DENY" },\n{ key: "Content-Security-Policy", value: "frame-ancestors 'none'" }`,
     });
   }
 

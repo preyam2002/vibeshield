@@ -48,6 +48,7 @@ export const corsModule: ScanModule = async (target) => {
         remediation: "Set Access-Control-Allow-Origin to your specific domain instead of *.",
         cwe: "CWE-942",
         owasp: "A05:2021",
+        codeSnippet: `// middleware.ts or API route\nres.headers.set("Access-Control-Allow-Origin", "https://yourdomain.com");\nres.headers.set("Vary", "Origin");`,
       });
     }
   }

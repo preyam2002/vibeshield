@@ -27,6 +27,7 @@ export const cookiesModule: ScanModule = async (target) => {
         remediation: "Set the HttpOnly flag on this cookie to prevent JavaScript access.",
         cwe: "CWE-1004",
         owasp: "A05:2021",
+        codeSnippet: `// Set-Cookie with HttpOnly\nres.cookies.set("${cookie.name}", value, {\n  httpOnly: true,\n  secure: true,\n  sameSite: "lax",\n});`,
       });
     }
 
@@ -99,6 +100,7 @@ export const cookiesModule: ScanModule = async (target) => {
         remediation: "Store auth tokens in HttpOnly cookies instead of localStorage. If you must use localStorage, ensure robust XSS protection (CSP, input sanitization).",
         cwe: "CWE-922",
         owasp: "A07:2021",
+        codeSnippet: `// Instead of localStorage, use HttpOnly cookies\n// API route: set cookie on login\nexport async function POST(req: Request) {\n  const { token } = await req.json();\n  const res = NextResponse.json({ ok: true });\n  res.cookies.set("auth", token, { httpOnly: true, secure: true, sameSite: "lax" });\n  return res;\n}`,
       });
       break;
     }

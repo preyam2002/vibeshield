@@ -182,6 +182,7 @@ export const authModule: ScanModule = async (target) => {
       remediation: "Add authentication middleware to this endpoint. Verify the user's identity before returning data.",
       cwe: "CWE-306",
       owasp: "A07:2021",
+      codeSnippet: `// middleware.ts — protect API routes\nimport { NextResponse } from "next/server";\nexport function middleware(req) {\n  if (req.nextUrl.pathname.startsWith("/api/")) {\n    const token = req.headers.get("authorization")?.split(" ")[1];\n    if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });\n  }\n  return NextResponse.next();\n}\nexport const config = { matcher: "/api/:path*" };`,
     });
   }
 
