@@ -308,5 +308,192 @@ export const jwtModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase: JWT in URL parameters — check API endpoints and pages for tokens in query strings
+  const urlsToCheck = [...target.apiEndpoints.slice(0, 20), ...target.pages.slice(0, 20)];
+  const urlParamResults = await Promise.allSettled(
+    urlsToCheck.map(async (endpoint) => {
+      const res = await scanFetch(endpoint, { timeoutMs: 5000 });
+      const finalUrl = res.url || endpoint;
+      try {
+        const parsed = new URL(finalUrl);
+        for (const [param, value] of parsed.searchParams) {
+          if (/^eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./.test(value)) {
+            return { endpoint: finalUrl, param, pathname: parsed.pathname };
+          }
+        }
+      } catch { /* skip */ }
+      // Also check if any redirect URLs contain JWTs in query params
+      const text = await res.text();
+      const redirectMatch = text.match(/(?:href|location|redirect)[=:]["' ]*([^"' >]+\?[^"' >]*eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+[^"' >]*)/i);
+      if (redirectMatch) {
+        try {
+          const redirectUrl = new URL(redirectMatch[1], endpoint);
+          for (const [param, value] of redirectUrl.searchParams) {
+            if (/^eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./.test(value)) {
+              return { endpoint: redirectUrl.toString(), param, pathname: redirectUrl.pathname };
+            }
+          }
+        } catch { /* skip */ }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of urlParamResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `jwt-url-param-${findings.length}`,
+      module: "jwt-check",
+      severity: "high",
+      title: `JWT passed in URL parameter "${v.param}" on ${v.pathname}`,
+      description: "A JWT is being transmitted as a URL query parameter. URLs are stored in browser history, server logs, proxy logs, and leak via the Referer header to third-party resources. This exposes the token to unintended parties.",
+      evidence: `URL: ${v.endpoint}\nParameter: ${v.param}`,
+      remediation: "Transmit JWTs via the Authorization header or as HttpOnly cookies. Never pass tokens in URL query parameters.",
+      cwe: "CWE-598",
+      owasp: "A02:2021",
+      codeSnippet: `// WRONG: JWT in URL query parameter\nfetch(\`/api/data?token=\${jwt}\`);\nwindow.location = \`/callback?access_token=\${jwt}\`;\n\n// CORRECT: JWT in Authorization header\nfetch("/api/data", {\n  headers: { Authorization: \`Bearer \${jwt}\` },\n});`,
+    });
+    if (findings.filter((f) => f.id.startsWith("jwt-url-param")).length >= 3) break;
+  }
+
+  // Phase: JWT expiration too long — flag tokens expiring more than 24 hours from now
+  for (const { source, token } of jwts) {
+    const parts = token.split(".");
+    if (parts.length < 2) continue;
+    const payload = decodeJwtPart(parts[1]);
+    if (!payload || !payload.exp) continue;
+
+    const expDate = new Date((payload.exp as number) * 1000);
+    const now = new Date();
+    const hoursUntilExpiry = (expDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    if (hoursUntilExpiry > 24 && hoursUntilExpiry <= 365 * 24) {
+      findings.push({
+        id: `jwt-exp-too-long-${findings.length}`,
+        module: "jwt-check",
+        severity: "medium",
+        title: `JWT expires in ${Math.round(hoursUntilExpiry)} hours (${source})`,
+        description: `This JWT has an expiration more than 24 hours in the future (${Math.round(hoursUntilExpiry / 24)} days). Access tokens should be short-lived (15-60 minutes). Long-lived tokens increase the window for token theft and replay attacks.`,
+        evidence: `Source: ${source}\nExpires: ${expDate.toISOString()}\nHours until expiry: ${Math.round(hoursUntilExpiry)}`,
+        remediation: "Use short-lived access tokens (15-60 minutes) paired with refresh tokens. Implement token rotation so that refresh tokens are single-use.",
+        cwe: "CWE-613",
+        codeSnippet: `// Short-lived access token (15 min) + refresh token pattern\nconst accessToken = jwt.sign({ sub: userId }, secret, {\n  expiresIn: "15m",\n});\nconst refreshToken = jwt.sign({ sub: userId, tokenFamily: familyId }, refreshSecret, {\n  expiresIn: "7d",\n});\n// Store refresh token hash server-side for rotation tracking`,
+      });
+    }
+  }
+
+  // Phase: JWT missing critical claims — check for missing iss, aud, nbf
+  for (const { source, token } of jwts) {
+    const parts = token.split(".");
+    if (parts.length < 2) continue;
+    const payload = decodeJwtPart(parts[1]);
+    if (!payload) continue;
+
+    const missingClaims: string[] = [];
+    if (!payload.iss) missingClaims.push("iss (issuer)");
+    if (!payload.aud) missingClaims.push("aud (audience)");
+    if (!payload.nbf) missingClaims.push("nbf (not before)");
+
+    // Only report if at least 2 claims are missing to reduce noise (iss+aud already checked above, this catches nbf)
+    if (missingClaims.length >= 2 && missingClaims.some((c) => c.startsWith("nbf"))) {
+      findings.push({
+        id: `jwt-missing-claims-${findings.length}`,
+        module: "jwt-check",
+        severity: "low",
+        title: `JWT missing security claims: ${missingClaims.map((c) => c.split(" ")[0]).join(", ")} (${source})`,
+        description: `This JWT is missing ${missingClaims.length} recommended security claims: ${missingClaims.join(", ")}. The 'iss' claim prevents cross-service token reuse, 'aud' restricts which services accept the token, and 'nbf' prevents tokens from being used before a specified time.`,
+        evidence: `Source: ${source}\nPresent claims: ${Object.keys(payload).join(", ")}\nMissing claims: ${missingClaims.join(", ")}`,
+        remediation: "Include iss, aud, and nbf claims in all JWTs and validate them server-side. This provides defense-in-depth against token confusion and replay attacks.",
+        cwe: "CWE-345",
+        codeSnippet: `// Include all security claims when signing\nconst token = jwt.sign(\n  {\n    sub: userId,\n    iss: "https://yourapp.com",\n    aud: "https://api.yourapp.com",\n    nbf: Math.floor(Date.now() / 1000), // valid from now\n  },\n  secret,\n  { expiresIn: "15m", algorithm: "RS256" }\n);\n\n// Validate all claims when verifying\njwt.verify(token, publicKey, {\n  issuer: "https://yourapp.com",\n  audience: "https://api.yourapp.com",\n  algorithms: ["RS256"],\n  clockTolerance: 30, // 30s leeway for nbf\n});`,
+      });
+    }
+  }
+
+  // Phase: JWT weak signing — try common/guessable secrets against HS256 tokens
+  if (jwts.length > 0) {
+    const commonSecrets = ["secret", "password", "123456", "changeme", "key", "jwt_secret", "shhhhh", "test"];
+    for (const { source, token } of jwts.slice(0, 3)) {
+      const parts = token.split(".");
+      if (parts.length < 3) continue;
+      const header = decodeJwtPart(parts[0]);
+      if (!header || header.alg !== "HS256") continue;
+
+      const signingInput = `${parts[0]}.${parts[1]}`;
+      const existingSig = parts[2];
+
+      for (const secret of commonSecrets) {
+        try {
+          const { createHmac } = await import("node:crypto");
+          const expectedSig = createHmac("sha256", secret)
+            .update(signingInput)
+            .digest("base64url");
+          if (expectedSig === existingSig) {
+            findings.push({
+              id: `jwt-weak-secret-${findings.length}`,
+              module: "jwt-check",
+              severity: "critical",
+              title: `JWT signed with guessable secret "${secret}" (${source})`,
+              description: `This HS256 JWT was signed with the commonly-used secret "${secret}". An attacker can forge arbitrary tokens with full control over claims including roles and permissions.`,
+              evidence: `Source: ${source}\nSecret: "${secret}"\nAlgorithm: HS256\nSignature verified against known weak secret`,
+              remediation: "Use a cryptographically random secret of at least 256 bits for HS256, or switch to RS256 with a proper key pair. Rotate the compromised secret immediately and invalidate all existing tokens.",
+              cwe: "CWE-1391",
+              owasp: "A02:2021",
+              codeSnippet: `// Generate a strong secret (run once, store securely)\nimport crypto from "node:crypto";\nconst secret = crypto.randomBytes(32).toString("base64");\n// Store in environment variable, NEVER in code\n// JWT_SECRET=<generated value>\n\n// Or better: use asymmetric RS256\nconst { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {\n  modulusLength: 2048,\n});`,
+            });
+            break;
+          }
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  // Phase: JWT refresh token exposure — check API responses for refresh tokens alongside access tokens
+  if (target.apiEndpoints.length > 0) {
+    const authEndpoints = target.apiEndpoints.filter((ep) =>
+      /auth|login|token|session|oauth|signin|signup|register/i.test(ep),
+    ).slice(0, 5);
+
+    const refreshResults = await Promise.allSettled(
+      authEndpoints.map(async (endpoint) => {
+        const res = await scanFetch(endpoint, { timeoutMs: 5000 });
+        const text = await res.text();
+        if (looksLikeHtml(text) || isSoft404(text, target)) return null;
+
+        // Check if response body contains both access and refresh tokens
+        const hasAccessToken = /["']?access[_-]?token["']?\s*[:=]/i.test(text);
+        const hasRefreshToken = /["']?refresh[_-]?token["']?\s*[:=]/i.test(text);
+
+        if (hasAccessToken && hasRefreshToken) {
+          // Verify it looks like actual JSON/API response with token values
+          const hasJwtValues = /eyJ[A-Za-z0-9_-]{10,}/.test(text);
+          const hasTokenValues = hasJwtValues || /"[A-Za-z0-9_-]{20,}"/.test(text);
+          if (hasTokenValues) {
+            return { endpoint, pathname: new URL(endpoint).pathname };
+          }
+        }
+        return null;
+      }),
+    );
+
+    for (const r of refreshResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `jwt-refresh-exposed-${findings.length}`,
+        module: "jwt-check",
+        severity: "high",
+        title: `Refresh token exposed in API response body on ${v.pathname}`,
+        description: "The API endpoint returns both access and refresh tokens in the response body. Refresh tokens in response bodies are vulnerable to XSS exfiltration. If an attacker steals the refresh token, they gain long-lived access to the account.",
+        evidence: `Endpoint: ${v.endpoint}\nResponse contains both access_token and refresh_token fields`,
+        remediation: "Return refresh tokens only in HttpOnly, Secure, SameSite=Strict cookies — never in the response body. This protects them from XSS attacks. Use the BFF (Backend-for-Frontend) pattern for SPAs.",
+        cwe: "CWE-522",
+        owasp: "A07:2021",
+        codeSnippet: `// WRONG: both tokens in response body\nreturn Response.json({\n  access_token: accessJwt,\n  refresh_token: refreshJwt, // XSS can steal this!\n});\n\n// CORRECT: refresh token in HttpOnly cookie\nconst response = Response.json({ access_token: accessJwt });\nresponse.headers.set(\n  "Set-Cookie",\n  \`refresh_token=\${refreshJwt}; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=604800\`\n);\nreturn response;`,
+      });
+    }
+  }
+
   return findings;
 };

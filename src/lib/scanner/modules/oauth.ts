@@ -325,5 +325,280 @@ export const oauthModule: ScanModule = async (target) => {
     }
   }
 
+  // ── Phase 2: Advanced OAuth checks ──────────────────────────────────────
+
+  const [pkceResults, stateValidationResults, redirectVariationResults, fragmentTokenResults, scopeEscalationResults] = await Promise.allSettled([
+
+    // 6. OAuth PKCE enforcement — check if public clients use code_challenge
+    (async (): Promise<{ missing: boolean; endpoints: string[] } | null> => {
+      const authEndpoints: string[] = [];
+      // Gather authorization endpoints from OIDC discovery
+      for (const r of oidcResults) {
+        if (r.status !== "fulfilled" || !r.value) continue;
+        if (r.value.config.authorization_endpoint) {
+          authEndpoints.push(r.value.config.authorization_endpoint);
+        }
+      }
+      // Also check JS bundles for authorization URLs
+      const authUrlPatterns = [
+        /(?:authorize|authorization)[_-]?(?:endpoint|url|uri)\s*[:=]\s*["']([^"']+)["']/gi,
+        /https?:\/\/[^"'\s]+\/(?:oauth2?|authorize)\b[^"'\s]*/gi,
+      ];
+      for (const pat of authUrlPatterns) {
+        for (const m of allJs.matchAll(pat)) {
+          const url = m[1] || m[0];
+          if (url.startsWith("http")) authEndpoints.push(url);
+        }
+      }
+      // Check if code_challenge is ever used in JS bundles
+      const usesPkce = /code_challenge/i.test(allJs) || /pkce/i.test(allJs) || /code_verifier/i.test(allJs);
+      if (!usesPkce && authEndpoints.length > 0) {
+        return { missing: true, endpoints: authEndpoints.slice(0, 3) };
+      }
+      // If we found OIDC configs, check if server enforces PKCE
+      for (const r of oidcResults) {
+        if (r.status !== "fulfilled" || !r.value) continue;
+        const cfg = r.value.config;
+        if (cfg.code_challenge_methods_supported && !cfg.require_pkce && !usesPkce) {
+          return { missing: true, endpoints: authEndpoints.slice(0, 3) };
+        }
+      }
+      return null;
+    })(),
+
+    // 7. OAuth state parameter validation — check if state is present and random
+    (async (): Promise<{ issue: string; evidence: string } | null> => {
+      // Look for state parameter generation in JS bundles
+      const stateGenPatterns = [
+        /state\s*[:=]\s*["']([^"']{1,80})["']/gi,
+      ];
+      for (const pat of stateGenPatterns) {
+        for (const m of allJs.matchAll(pat)) {
+          const stateValue = m[1];
+          // Skip dynamic/random-looking values or template literals
+          if (!stateValue || stateValue.includes("${") || stateValue.includes("random")) continue;
+          // Flag static/predictable state values
+          if (/^[a-z_-]+$/i.test(stateValue) && stateValue.length < 20) {
+            return {
+              issue: "static",
+              evidence: `Hardcoded state value found: state="${stateValue}"`,
+            };
+          }
+        }
+      }
+      // Check if state is ever set in OAuth URLs
+      const setsState = /[?&]state=/i.test(allJs) || /\.set\(\s*["']state["']/i.test(allJs) || /state\s*[:=]\s*(?:crypto|Math\.random|uuid|nanoid)/i.test(allJs);
+      const hasOAuthFlow = /response_type\s*[:=]/i.test(allJs) || /authorize/i.test(allJs);
+      if (hasOAuthFlow && !setsState) {
+        return {
+          issue: "missing",
+          evidence: "OAuth authorization flow detected but no state parameter usage found in JS bundles",
+        };
+      }
+      return null;
+    })(),
+
+    // 8. OAuth redirect URI validation — test subdomain variations, path traversal, open redirects
+    Promise.allSettled(
+      AUTH_CALLBACK_PATHS.slice(0, 3).map(async (path) => {
+        const url = target.baseUrl + path;
+        const targetHost = new URL(target.baseUrl).hostname;
+        const advancedBypasses = [
+          { uri: `${target.baseUrl}${path}/../../../evil`, technique: "path_traversal" },
+          { uri: `${target.baseUrl}${path}?next=https://evil.com`, technique: "open_redirect_param" },
+          { uri: `${target.baseUrl}${path}%00@evil.com`, technique: "null_byte" },
+          { uri: `https://sub.${targetHost}${path}`, technique: "subdomain_variation" },
+          { uri: `${target.baseUrl}${path}#@evil.com`, technique: "fragment_injection" },
+        ];
+        const results: { technique: string; evidence: string }[] = [];
+        const checks = await Promise.allSettled(
+          advancedBypasses.map(async ({ uri, technique }) => {
+            const testUrl = new URL(url);
+            testUrl.searchParams.set("redirect_uri", uri);
+            testUrl.searchParams.set("code", "test_bypass");
+            testUrl.searchParams.set("state", "test");
+            const res = await scanFetch(testUrl.href, { timeoutMs: 5000, redirect: "manual" });
+            const location = res.headers.get("location") || "";
+            if (
+              (res.status === 301 || res.status === 302 || res.status === 303) &&
+              (location.includes("evil") || location.includes(".."))
+            ) {
+              return { technique, evidence: `redirect_uri=${uri} → Location: ${location}` };
+            }
+            return null;
+          }),
+        );
+        for (const c of checks) {
+          if (c.status === "fulfilled" && c.value) results.push(c.value);
+        }
+        return results.length > 0 ? { path, results } : null;
+      }),
+    ).then((settled) => {
+      const hits: { path: string; results: { technique: string; evidence: string }[] }[] = [];
+      for (const r of settled) {
+        if (r.status === "fulfilled" && r.value) hits.push(r.value);
+      }
+      return hits;
+    }),
+
+    // 9. OAuth token in fragment — check if access tokens are exposed in URL fragments (implicit flow)
+    (async (): Promise<{ found: boolean; evidence: string[] } | null> => {
+      const evidence: string[] = [];
+      // Check JS for fragment token extraction (indicates implicit flow handling)
+      const fragmentPatterns = [
+        /(?:location|window)\.hash.*access_token/gi,
+        /(?:#|fragment).*access_token/gi,
+        /getHashParam.*(?:access_token|token)/gi,
+        /parseHash|getTokenFromHash/gi,
+        /access_token\s*=\s*(?:location|window)\.hash/gi,
+        /new URLSearchParams\(.*(?:hash|fragment).*\).*(?:get|access_token)/gi,
+      ];
+      for (const pat of fragmentPatterns) {
+        for (const m of allJs.matchAll(pat)) {
+          evidence.push(m[0].substring(0, 100));
+        }
+      }
+      // Check redirect URLs for fragment tokens
+      for (const rUrl of target.redirectUrls) {
+        if (/#.*access_token=/.test(rUrl) || /#.*token=/.test(rUrl)) {
+          evidence.push(`Redirect URL with fragment token: ${rUrl.substring(0, 150)}`);
+        }
+      }
+      // Check link URLs for fragment tokens
+      for (const link of target.linkUrls) {
+        if (/#.*access_token=/.test(link)) {
+          evidence.push(`Link with fragment token: ${link.substring(0, 150)}`);
+        }
+      }
+      return evidence.length > 0 ? { found: true, evidence } : null;
+    })(),
+
+    // 10. OAuth scope escalation — test if requesting additional scopes is possible
+    (async (): Promise<{ escalatable: boolean; evidence: string } | null> => {
+      // Find authorization endpoints from OIDC discovery
+      let authorizationEndpoint: string | null = null;
+      for (const r of oidcResults) {
+        if (r.status !== "fulfilled" || !r.value) continue;
+        if (r.value.config.authorization_endpoint) {
+          authorizationEndpoint = r.value.config.authorization_endpoint;
+          break;
+        }
+      }
+      if (!authorizationEndpoint) return null;
+      // Detect configured scopes from JS bundles
+      const scopeMatch = allJs.match(/scope\s*[:=]\s*["']([^"']+)["']/i);
+      const configuredScopes = scopeMatch ? scopeMatch[1] : "openid profile email";
+      // Test with escalated scopes
+      const escalatedScopes = `${configuredScopes} admin write:all delete:all manage:users`;
+      const testUrl = new URL(authorizationEndpoint);
+      testUrl.searchParams.set("response_type", "code");
+      testUrl.searchParams.set("client_id", "test_client");
+      testUrl.searchParams.set("scope", escalatedScopes);
+      testUrl.searchParams.set("redirect_uri", target.baseUrl + "/oauth/callback");
+      const res = await scanFetch(testUrl.href, { timeoutMs: 5000, redirect: "manual" });
+      const location = res.headers.get("location") || "";
+      const body = res.status < 400 ? await res.text() : "";
+      // If the server doesn't reject the escalated scopes, flag it
+      if (
+        (res.status === 302 || res.status === 301) &&
+        !location.includes("error") &&
+        !location.includes("invalid_scope")
+      ) {
+        return {
+          escalatable: true,
+          evidence: `Authorization endpoint accepted escalated scopes without error.\nRequested: ${escalatedScopes}\nRedirect: ${location.substring(0, 200)}`,
+        };
+      }
+      if (res.ok && !body.includes("invalid_scope") && !body.includes("error")) {
+        return {
+          escalatable: true,
+          evidence: `Authorization endpoint returned 200 with escalated scopes.\nRequested: ${escalatedScopes}`,
+        };
+      }
+      return null;
+    })(),
+  ]);
+
+  // Collect Phase 2 findings
+
+  // PKCE enforcement
+  if (pkceResults.status === "fulfilled" && pkceResults.value?.missing) {
+    const v = pkceResults.value;
+    findings.push({
+      id: `oauth-pkce-${findings.length}`, module: "OAuth", severity: "high",
+      title: "OAuth PKCE not enforced for public clients",
+      description: "The OAuth flow does not use Proof Key for Code Exchange (PKCE). Without PKCE, authorization codes can be intercepted and exchanged by attackers, especially on mobile and SPA clients.",
+      evidence: `No code_challenge or code_verifier usage detected in client code.\nAuthorization endpoints: ${v.endpoints.join(", ")}`,
+      remediation: "Implement PKCE (RFC 7636) for all OAuth authorization code flows. Generate a code_verifier, derive a code_challenge with S256, and include both in the authorization and token requests.",
+      codeSnippet: `// Generate PKCE parameters\nconst codeVerifier = crypto.randomBytes(32).toString("base64url");\nconst codeChallenge = crypto\n  .createHash("sha256").update(codeVerifier).digest("base64url");\n\n// Include in authorization request\nauthUrl.searchParams.set("code_challenge", codeChallenge);\nauthUrl.searchParams.set("code_challenge_method", "S256");\n\n// Include verifier in token exchange\nawait fetch(tokenEndpoint, {\n  method: "POST",\n  body: new URLSearchParams({ code, code_verifier: codeVerifier, grant_type: "authorization_code" }),\n});`,
+      cwe: "CWE-345", owasp: "A07:2021",
+    });
+  }
+
+  // State parameter validation
+  if (stateValidationResults.status === "fulfilled" && stateValidationResults.value) {
+    const v = stateValidationResults.value;
+    const isStatic = v.issue === "static";
+    findings.push({
+      id: `oauth-state-validation-${findings.length}`, module: "OAuth", severity: isStatic ? "high" : "medium",
+      title: isStatic ? "OAuth state parameter uses static/predictable value" : "OAuth state parameter missing from authorization flow",
+      description: isStatic
+        ? "The OAuth state parameter uses a hardcoded or predictable value. This defeats CSRF protection since an attacker can predict or reuse the state value."
+        : "The OAuth authorization flow does not include a state parameter. Without state, the application is vulnerable to CSRF-based login attacks and authorization code injection.",
+      evidence: v.evidence,
+      remediation: "Generate a cryptographically random state value per authorization request. Store it in a secure, HTTP-only cookie and validate it matches on callback.",
+      codeSnippet: `// Generate cryptographically random state\nconst state = crypto.randomBytes(32).toString("hex");\ncookies().set("oauth_state", state, {\n  httpOnly: true, secure: true, sameSite: "lax", maxAge: 600,\n});\nauthUrl.searchParams.set("state", state);\n\n// Validate in callback\nconst expected = cookies().get("oauth_state")?.value;\nif (!expected || expected !== req.query.state) {\n  throw new Error("Invalid OAuth state — possible CSRF attack");\n}`,
+      cwe: "CWE-352", owasp: "A07:2021",
+    });
+  }
+
+  // Redirect URI validation (advanced bypasses)
+  if (redirectVariationResults.status === "fulfilled") {
+    const hits = redirectVariationResults.value as { path: string; results: { technique: string; evidence: string }[] }[];
+    if (hits && hits.length > 0) {
+      for (const hit of hits) {
+        const techniques = hit.results.map((r) => r.technique).join(", ");
+        const allEvidence = hit.results.map((r) => r.evidence).join("\n");
+        findings.push({
+          id: `oauth-redirect-adv-${findings.length}`, module: "OAuth", severity: "critical",
+          title: `OAuth redirect_uri bypass via ${techniques} on ${hit.path}`,
+          description: `The OAuth callback endpoint is vulnerable to advanced redirect_uri manipulation techniques (${techniques}). Attackers can exploit these to steal authorization codes.`,
+          evidence: allEvidence,
+          remediation: "Use exact string matching for redirect_uri validation. Normalize and canonicalize URIs before comparison. Reject URIs with path traversal sequences, null bytes, fragments, or non-registered subdomains.",
+          codeSnippet: `// Strict redirect_uri validation\nfunction validateRedirectUri(uri: string, allowed: string[]): boolean {\n  try {\n    const parsed = new URL(uri);\n    // Reject path traversal, null bytes, userinfo\n    if (parsed.pathname.includes("..") || uri.includes("%00") || parsed.username) {\n      return false;\n    }\n    // Exact match against registered URIs\n    return allowed.includes(parsed.origin + parsed.pathname);\n  } catch {\n    return false;\n  }\n}`,
+          cwe: "CWE-601", owasp: "A07:2021",
+        });
+      }
+    }
+  }
+
+  // Token in fragment
+  if (fragmentTokenResults.status === "fulfilled" && fragmentTokenResults.value?.found) {
+    const v = fragmentTokenResults.value;
+    findings.push({
+      id: `oauth-fragment-token-${findings.length}`, module: "OAuth", severity: "high",
+      title: "Access token exposed in URL fragment (implicit flow)",
+      description: "The application handles access tokens from URL fragments (#access_token=), indicating use of the OAuth implicit flow. Tokens in fragments are exposed to browser history, referrer headers, browser extensions, and any JavaScript on the page.",
+      evidence: v.evidence.join("\n"),
+      remediation: "Migrate from implicit flow to authorization code flow with PKCE. Never pass access tokens in URL fragments. Use server-side token exchange instead.",
+      codeSnippet: `// Instead of parsing tokens from fragments:\n// BAD: const token = new URLSearchParams(location.hash.slice(1)).get("access_token");\n\n// Use authorization code flow with PKCE:\nconst authUrl = new URL(authorizationEndpoint);\nauthUrl.searchParams.set("response_type", "code"); // NOT "token"\nauthUrl.searchParams.set("code_challenge", codeChallenge);\nauthUrl.searchParams.set("code_challenge_method", "S256");\n\n// Exchange code for token server-side\nconst tokenRes = await fetch(tokenEndpoint, {\n  method: "POST",\n  body: new URLSearchParams({\n    grant_type: "authorization_code", code, code_verifier: codeVerifier,\n  }),\n});`,
+      cwe: "CWE-522", owasp: "A07:2021",
+    });
+  }
+
+  // Scope escalation
+  if (scopeEscalationResults.status === "fulfilled" && scopeEscalationResults.value?.escalatable) {
+    const v = scopeEscalationResults.value;
+    findings.push({
+      id: `oauth-scope-escalation-${findings.length}`, module: "OAuth", severity: "high",
+      title: "OAuth scope escalation possible — server accepts unauthorized scopes",
+      description: "The authorization server accepts scope values beyond what the client is authorized for without returning an error. Attackers can request elevated permissions (e.g., admin, write:all) to gain unauthorized access.",
+      evidence: v.evidence,
+      remediation: "Validate requested scopes against the client's pre-registered allowed scopes. Reject or downscope requests that include unauthorized scopes. Return an invalid_scope error for unrecognized scope values.",
+      codeSnippet: `// Server-side scope validation\nconst ALLOWED_SCOPES: Record<string, string[]> = {\n  "my-spa-client": ["openid", "profile", "email"],\n  "my-backend-client": ["openid", "profile", "email", "api:read"],\n};\n\nfunction validateScopes(clientId: string, requested: string[]): string[] {\n  const allowed = ALLOWED_SCOPES[clientId] ?? [];\n  const invalid = requested.filter((s) => !allowed.includes(s));\n  if (invalid.length > 0) {\n    throw new OAuthError("invalid_scope", \`Unauthorized scopes: \${invalid.join(", ")}\`);\n  }\n  return requested;\n}`,
+      cwe: "CWE-269", owasp: "A01:2021",
+    });
+  }
+
   return findings;
 };

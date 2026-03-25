@@ -317,5 +317,233 @@ export const stripeModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase: Stripe publishable key in client-side code (informational)
+  const pubKeyMatch = allJs.match(/pk_live_[a-zA-Z0-9]{20,}/);
+  if (pubKeyMatch) {
+    findings.push({
+      id: "stripe-publishable-key-client",
+      module: "Stripe",
+      severity: "info",
+      title: "Stripe publishable key found in client-side code",
+      description: "A live Stripe publishable key (pk_live_*) was found in client-side JavaScript. This is expected for Stripe.js integration, but worth noting for asset inventory. Ensure no additional metadata or internal identifiers are exposed alongside it.",
+      evidence: `Key found: ${pubKeyMatch[0].substring(0, 12)}...${pubKeyMatch[0].slice(-4)}`,
+      remediation: "No action required if this is intentional. Verify the key is the publishable key (pk_live_*) and not a secret key. Ensure the key is loaded via environment variables (e.g. NEXT_PUBLIC_STRIPE_KEY) rather than hardcoded.",
+      cwe: "CWE-200",
+      codeSnippet: `// Expected: publishable key loaded via env var\nconst stripe = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);\n\n// Avoid: hardcoded key in source\nconst stripe = loadStripe("pk_live_abc123...");`,
+    });
+  }
+
+  // Phase: Stripe secret key exposure in page source and JS bundles
+  const pageSource = target.pages.length > 0 ? "" : ""; // allJs already covers bundles
+  const allContent = allJs + "\n" + Array.from(target.jsContents.entries()).map(([url]) => url).join("\n");
+  const skLiveInSource = allContent.match(/sk_live_[a-zA-Z0-9]{20,}/g);
+  const skTestInSource = allContent.match(/sk_test_[a-zA-Z0-9]{20,}/g);
+  // Scan page HTML for secret keys (fetch each page and check)
+  const pageSecretKeyResults = await Promise.allSettled(
+    target.pages.slice(0, 5).map(async (pageUrl) => {
+      const res = await scanFetch(pageUrl, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const html = await res.text();
+      const liveMatch = html.match(/sk_live_[a-zA-Z0-9]{20,}/);
+      const testMatch = html.match(/sk_test_[a-zA-Z0-9]{20,}/);
+      if (liveMatch) return { pageUrl, key: liveMatch[0], type: "live" as const };
+      if (testMatch) return { pageUrl, key: testMatch[0], type: "test" as const };
+      return null;
+    }),
+  );
+
+  for (const r of pageSecretKeyResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const masked = `${v.key.substring(0, 12)}...${v.key.slice(-4)}`;
+    if (v.type === "live") {
+      findings.push({
+        id: `stripe-secret-key-page-source-${findings.length}`,
+        module: "Stripe",
+        severity: "critical",
+        title: `Stripe live secret key exposed in page source: ${v.pageUrl}`,
+        description: "A live Stripe secret key (sk_live_*) was found in the HTML page source. This key grants full API access including charges, refunds, and customer data.",
+        evidence: `Page: ${v.pageUrl}\nKey found: ${masked}`,
+        remediation: "Remove the secret key from page source IMMEDIATELY. Rotate the key in the Stripe dashboard. Secret keys must only exist server-side in environment variables.",
+        cwe: "CWE-798",
+        owasp: "A07:2021",
+        codeSnippet: `// NEVER render secret keys in HTML/templates\n// Bad: <script>const key = "sk_live_..."</script>\n\n// Good: keep secret keys server-side only\n// .env (not committed)\nSTRIPE_SECRET_KEY=sk_live_...\n\n// Server-only code\nconst stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);`,
+      });
+    } else {
+      findings.push({
+        id: `stripe-test-secret-key-page-source-${findings.length}`,
+        module: "Stripe",
+        severity: "high",
+        title: `Stripe test secret key exposed in page source: ${v.pageUrl}`,
+        description: "A Stripe test secret key (sk_test_*) was found in the HTML page source. While it cannot affect live data, it exposes your test environment credentials.",
+        evidence: `Page: ${v.pageUrl}\nKey found: ${masked}`,
+        remediation: "Remove the test secret key from page source. Move it to a server-side environment variable.",
+        cwe: "CWE-798",
+        owasp: "A07:2021",
+      });
+    }
+  }
+
+  // Phase: Stripe webhook signature bypass — test endpoints without Stripe-Signature header
+  const webhookSigPaths = [
+    "/api/webhook", "/api/webhooks", "/api/stripe/webhook",
+    "/api/stripe", "/api/payments/webhook", "/webhook",
+    "/webhooks/stripe", "/api/stripe/webhooks",
+  ];
+  const webhookSigResults = await Promise.allSettled(
+    webhookSigPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+      // Send a well-formed event WITHOUT Stripe-Signature header
+      const res = await scanFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "evt_test_signature_bypass",
+          object: "event",
+          type: "invoice.payment_succeeded",
+          data: { object: { id: "in_test_fake", customer: "cus_test_fake", amount_paid: 9900, status: "paid" } },
+        }),
+        timeoutMs: 5000,
+      });
+      // A properly secured endpoint should return 400/401/403 when no signature is present
+      if (res.status >= 400) return null;
+      const text = await res.text();
+      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+      if (text.length < 5) return null;
+      // Check if the response indicates the event was processed
+      if (/received|processed|success|ok|handled|acknowledged/i.test(text)) {
+        return { path, status: res.status, text: text.substring(0, 200) };
+      }
+      // Even a 200 with a non-error body is suspicious
+      if (res.status === 200 && !/error|invalid|missing.*signature|unauthorized/i.test(text.substring(0, 300))) {
+        return { path, status: res.status, text: text.substring(0, 200) };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of webhookSigResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({
+      id: `stripe-webhook-sig-bypass-${findings.length}`,
+      module: "Stripe",
+      severity: "critical",
+      title: `Webhook accepts events without Stripe-Signature: ${r.value.path}`,
+      description: "The webhook endpoint processed a Stripe event sent without a Stripe-Signature header. An attacker can forge webhook events to trigger fulfillment, grant subscriptions, or manipulate account state.",
+      evidence: `POST ${target.baseUrl + r.value.path} (no Stripe-Signature header)\nEvent type: invoice.payment_succeeded\nStatus: ${r.value.status}\nResponse: ${r.value.text}`,
+      remediation: "Always verify the Stripe-Signature header using stripe.webhooks.constructEvent(). Reject requests missing the header entirely.",
+      cwe: "CWE-345",
+      owasp: "A02:2021",
+      codeSnippet: `// Reject requests without valid Stripe-Signature\nexport async function POST(req: Request) {\n  const sig = req.headers.get("stripe-signature");\n  if (!sig) return new Response("Missing signature", { status: 400 });\n  let event: Stripe.Event;\n  try {\n    event = stripe.webhooks.constructEvent(\n      await req.text(), // raw body\n      sig,\n      process.env.STRIPE_WEBHOOK_SECRET!\n    );\n  } catch (err) {\n    return new Response("Invalid signature", { status: 400 });\n  }\n  // Only process verified events\n  switch (event.type) { /* ... */ }\n}`,
+    });
+  }
+
+  // Phase: Payment amount manipulation — test Stripe Checkout patterns for client-controlled amounts
+  const checkoutEndpoints = target.apiEndpoints.filter((ep) =>
+    /checkout|create-session|payment-intent|create-payment/i.test(ep),
+  );
+  // Also search JS for checkout API routes
+  const checkoutJsMatches = Array.from(allJs.matchAll(/["'`](\/api\/[a-zA-Z0-9/_-]*(?:checkout|create-session|payment-intent|create-payment)[a-zA-Z0-9/_-]*)["'`]/gi));
+  for (const m of checkoutJsMatches) {
+    if (m[1]) {
+      const url = target.baseUrl + m[1];
+      if (!checkoutEndpoints.includes(url)) checkoutEndpoints.push(url);
+    }
+  }
+
+  if (checkoutEndpoints.length > 0) {
+    const amountManipResults = await Promise.allSettled(
+      checkoutEndpoints.slice(0, 4).map(async (endpoint) => {
+        const manipPayloads = [
+          { amount: 1, currency: "usd", desc: "amount set to $0.01" },
+          { unit_amount: 1, desc: "unit_amount set to 1 cent" },
+          { price_data: { unit_amount: 1, currency: "usd", product_data: { name: "test" } }, desc: "inline price_data with $0.01" },
+          { line_items: [{ price_data: { unit_amount: 1, currency: "usd", product_data: { name: "test" } }, quantity: 1 }], desc: "line_items with manipulated price" },
+        ];
+        for (const { desc, ...body } of manipPayloads) {
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            timeoutMs: 5000,
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (looksLikeHtml(text) || text.length < 10) continue;
+          if (/checkout\.stripe\.com|cs_|session|client_secret|payment_intent|url.*https?/i.test(text) && !/error|invalid|minimum/i.test(text.substring(0, 200))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, desc, text: text.substring(0, 200) };
+          }
+        }
+        return null;
+      }),
+    );
+
+    for (const r of amountManipResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `stripe-amount-manipulation-${findings.length}`,
+        module: "Stripe",
+        severity: "critical",
+        title: `Payment amount manipulation on ${v.pathname}`,
+        description: `The checkout endpoint accepted a client-supplied ${v.desc} and returned a valid session. Attackers can pay arbitrary amounts for any product or service.`,
+        evidence: `POST ${v.endpoint}\nPayload: ${v.desc}\nResponse: ${v.text}`,
+        remediation: "Never accept amounts or price_data from the client. Use pre-created Stripe Price IDs stored server-side. Validate all checkout parameters against your product catalog.",
+        cwe: "CWE-472",
+        owasp: "A04:2021",
+        codeSnippet: `// Secure: use server-side Price IDs only\nexport async function POST(req: Request) {\n  const { productId } = await req.json();\n  const product = await db.product.findUnique({ where: { id: productId } });\n  if (!product) return Response.json({ error: "Not found" }, { status: 404 });\n  const session = await stripe.checkout.sessions.create({\n    line_items: [{\n      price: product.stripePriceId, // from DB, never from client\n      quantity: 1,\n    }],\n    mode: "payment",\n  });\n  return Response.json({ url: session.url });\n}`,
+      });
+      break;
+    }
+  }
+
+  // Phase: Stripe Connect account enumeration
+  const connectPaths = [
+    "/v1/accounts", "/api/connect/accounts", "/api/stripe/accounts",
+    "/api/merchants", "/api/sellers", "/api/connect",
+    "/api/stripe/connect", "/api/payouts/accounts",
+  ];
+  const connectResults = await Promise.allSettled(
+    connectPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+      const [getRes, listRes] = await Promise.all([
+        scanFetch(url, { timeoutMs: 5000 }),
+        scanFetch(url + "?limit=100", { timeoutMs: 5000 }),
+      ]);
+      for (const res of [getRes, listRes]) {
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
+        if (text.length < 10) continue;
+        // Look for account-related data in the response
+        if (/acct_[a-zA-Z0-9]+|"account"|"merchant"|"seller"|"connected_account"|"stripe_user_id"|"payouts_enabled"/i.test(text)) {
+          return { path, text: text.substring(0, 300), status: res.status };
+        }
+        // Check for list responses with account data
+        if (/\{"data"\s*:\s*\[|"has_more"|"total_count"/i.test(text) && /email|business|account/i.test(text)) {
+          return { path, text: text.substring(0, 300), status: res.status };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of connectResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `stripe-connect-enum-${findings.length}`,
+      module: "Stripe",
+      severity: "high",
+      title: `Stripe Connect account data exposed: ${v.path}`,
+      description: "A Connect-related endpoint exposes merchant or connected account information without proper authorization. Attackers can enumerate sellers, view payout details, or access business information of connected accounts.",
+      evidence: `GET ${target.baseUrl + v.path}\nStatus: ${v.status}\nResponse: ${v.text}`,
+      remediation: "Authenticate and authorize all Connect account endpoints. Only expose account data to the account owner or platform admins. Never list all connected accounts in a client-accessible endpoint.",
+      cwe: "CWE-200",
+      owasp: "A01:2021",
+      codeSnippet: `// Secure Connect account access\nexport async function GET(req: Request) {\n  const user = await getAuthUser(req);\n  if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  // Only return the current user's connected account\n  const account = await db.connectedAccount.findUnique({\n    where: { userId: user.id },\n  });\n  if (!account) return Response.json({ error: "Not found" }, { status: 404 });\n  // Return limited fields only\n  return Response.json({\n    id: account.stripeAccountId,\n    payoutsEnabled: account.payoutsEnabled,\n  });\n}`,
+    });
+  }
+
   return findings;
 };
