@@ -65,6 +65,7 @@ import { sessionModule } from "./modules/session";
 import { privacyModule } from "./modules/privacy";
 import { requestSmugglingModule } from "./modules/request-smuggling";
 import { responseSecurityModule } from "./modules/response-security";
+import { typeConfusionModule } from "./modules/type-confusion";
 import {
   MODULE_TIMEOUT_MS,
   MAX_FINDINGS_PER_MODULE,
@@ -123,6 +124,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Privacy & Tracking", description: "Detect trackers, fingerprinting, consent gaps, and PII exposure", category: "security", run: privacyModule },
   { name: "Request Smuggling", description: "Test for HTTP request smuggling, hop-by-hop abuse, and method override bypass", category: "security", run: requestSmugglingModule },
   { name: "Response Security", description: "MIME confusion, content-disposition, sensitive response caching", category: "security", run: responseSecurityModule },
+  { name: "Type Confusion", description: "JSON type coercion, content-type confusion, server prototype pollution, XXE", category: "security", run: typeConfusionModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [
