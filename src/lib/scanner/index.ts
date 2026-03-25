@@ -62,6 +62,7 @@ import { apiVersioningModule } from "./modules/api-versioning";
 import { cspModule } from "./modules/csp";
 import { storageModule } from "./modules/storage";
 import { sessionModule } from "./modules/session";
+import { privacyModule } from "./modules/privacy";
 import {
   MODULE_TIMEOUT_MS,
   MAX_FINDINGS_PER_MODULE,
@@ -117,6 +118,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "API Versioning", description: "Detect hidden API versions, path normalization bypass, and endpoint shadowing", category: "security", run: apiVersioningModule },
   { name: "Cloud Storage", description: "Check for misconfigured S3/GCS/Azure storage buckets", category: "security", run: storageModule },
   { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
+  { name: "Privacy & Tracking", description: "Detect trackers, fingerprinting, consent gaps, and PII exposure", category: "security", run: privacyModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [

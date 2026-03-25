@@ -55,6 +55,7 @@ const ATTACK_MODULES = [
   { name: "API Versioning", desc: "Hidden versions, path bypass, endpoint shadowing", icon: "🔀" },
   { name: "CSP Analysis", desc: "Unsafe directives, CDN/JSONP bypasses, Trusted Types, nonce checks", icon: "🛡" },
   { name: "Cloud Storage", desc: "Bucket listing, write access, CORS, ACL exposure, presigned URL leaks", icon: "☁" },
+  { name: "Privacy & Tracking", desc: "Session recording, ad pixels, fingerprinting, consent gaps, PII in URLs", icon: "👁" },
 ];
 
 interface RecentScan {
