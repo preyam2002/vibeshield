@@ -342,6 +342,7 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
               { method: "POST", path: "/api/scan/schedule", desc: "Create recurring scan schedule (1h-168h interval)", body: '{"url": "...", "mode?": "...", "intervalHours?": 24, "callbackUrl?": "..."}' },
               { method: "GET", path: "/api/scan/schedule", desc: "List all scheduled scans" },
               { method: "DELETE", path: "/api/scan/schedule?id=:id", desc: "Delete a scheduled scan" },
+              { method: "GET", path: "/api/scan/timeline?target=example.com", desc: "Security score timeline for a target. Returns trend, best/worst, and per-scan deltas." },
               { method: "POST", path: "/api/webhook-test", desc: "Test webhook integration", body: '{"url": "https://hooks.slack.com/...", "format": "slack|discord|json"}' },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
             ].map((ep) => (
