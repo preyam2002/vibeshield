@@ -31,7 +31,7 @@ export const nextjsModule: ScanModule = async (target) => {
   ];
 
   // Run all checks in parallel
-  const [ssrResults, nextDataResults, bypassResults, internalResults, rscResult] = await Promise.all([
+  const [ssrResults, nextDataResults, bypassResults, internalResults, rscResult, serverActionResult, imageSSRFResult] = await Promise.all([
     // SSR data routes
     detectedBuildId ? Promise.allSettled(
       target.pages.slice(0, 10).map(async (page) => {
@@ -92,6 +92,53 @@ export const nextjsModule: ScanModule = async (target) => {
         const text = await res.text();
         if (text.includes(":") && !text.startsWith("<!DOCTYPE") && /password|secret|api.?key|token|private/i.test(text)) {
           return { text: text.substring(0, 300) };
+        }
+        return null;
+      }).catch(() => null),
+
+    // Server Action enumeration — look for action IDs in JS bundles and test them
+    (async () => {
+      const actionIdPattern = /["']([a-f0-9]{40})["']/g;
+      const actionIds: string[] = [];
+      let m;
+      while ((m = actionIdPattern.exec(allJs)) !== null && actionIds.length < 10) {
+        if (!actionIds.includes(m[1])) actionIds.push(m[1]);
+      }
+      if (actionIds.length === 0) return null;
+
+      const results = await Promise.allSettled(
+        actionIds.slice(0, 5).map(async (actionId) => {
+          const res = await scanFetch(target.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "text/plain;charset=UTF-8",
+              "Next-Action": actionId,
+            },
+            body: JSON.stringify([]),
+            timeoutMs: 5000,
+          });
+          if (res.status === 200 || res.status === 303) {
+            const text = await res.text();
+            if (text.length > 5) return { actionId, status: res.status, text };
+          }
+          return null;
+        }),
+      );
+
+      const accepted: { actionId: string; status: number; text: string }[] = [];
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) accepted.push(r.value);
+      }
+
+      return accepted.length > 0 ? { count: accepted.length, total: actionIds.length, sample: accepted[0] } : null;
+    })(),
+
+    // _next/image SSRF — test if image optimizer accepts arbitrary URLs
+    scanFetch(`${target.baseUrl}/_next/image?url=${encodeURIComponent("https://example.com/test.png")}&w=64&q=75`, { timeoutMs: 5000 })
+      .then(async (res) => {
+        if (res.status === 200) {
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("image")) return { status: 200, external: true };
         }
         return null;
       }).catch(() => null),
@@ -157,6 +204,33 @@ export const nextjsModule: ScanModule = async (target) => {
       remediation: "Ensure NODE_ENV=production in your deployment.",
       cwe: "CWE-489",
       codeSnippet: `// Dockerfile\nENV NODE_ENV=production\nRUN npm run build\nCMD ["npm", "start"]\n\n// next.config.ts — block dev routes in production\nconst nextConfig = { poweredByHeader: false };`,
+    });
+  }
+
+  // Server Action findings
+  if (serverActionResult) {
+    findings.push({
+      id: "nextjs-server-actions-exposed", module: "Next.js",
+      severity: serverActionResult.count >= 3 ? "medium" : "low",
+      title: `${serverActionResult.count}/${serverActionResult.total} Server Actions accept unauthenticated requests`,
+      description: "Next.js Server Actions were found to accept POST requests without authentication. Server Actions are direct function calls from client to server — if they perform sensitive operations (database writes, payments, etc.), they should validate the caller's identity.",
+      evidence: `Tested ${serverActionResult.total} action IDs found in JS bundle.\n${serverActionResult.count} accepted requests.\nSample action: ${serverActionResult.sample.actionId}\nResponse: ${serverActionResult.sample.text.substring(0, 200)}`,
+      remediation: "Add authentication checks inside each Server Action. Don't rely on middleware alone.",
+      cwe: "CWE-306", owasp: "A07:2021",
+      codeSnippet: `// Always verify auth inside Server Actions\n"use server";\nimport { getServerSession } from "next-auth";\n\nexport async function updateProfile(data: FormData) {\n  const session = await getServerSession();\n  if (!session) throw new Error("Unauthorized");\n  // ... safe to proceed\n}`,
+    });
+  }
+
+  // _next/image SSRF finding
+  if (imageSSRFResult?.external) {
+    findings.push({
+      id: "nextjs-image-ssrf", module: "Next.js", severity: "medium",
+      title: "Next.js Image Optimization accepts external URLs",
+      description: "The /_next/image endpoint proxies arbitrary external URLs. This can be abused for SSRF (scanning internal networks), bandwidth amplification, or accessing internal services.",
+      evidence: `/_next/image?url=https://example.com/test.png → 200 (image proxied)`,
+      remediation: "Restrict allowed image domains in next.config.ts using the remotePatterns option.",
+      cwe: "CWE-918", owasp: "A10:2021",
+      codeSnippet: `// next.config.ts — restrict image optimization to known domains\nconst nextConfig = {\n  images: {\n    remotePatterns: [\n      { protocol: "https", hostname: "your-cdn.com" },\n      { protocol: "https", hostname: "avatars.githubusercontent.com" },\n    ],\n  },\n};`,
     });
   }
 
