@@ -1275,6 +1275,40 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               );
             })()}
 
+            {/* Security headers scorecard */}
+            {!isRunning && scan.status === "completed" && (() => {
+              const headerChecks = [
+                { name: "CSP", findingId: "content-security-policy", label: "Content-Security-Policy" },
+                { name: "HSTS", findingId: "strict-transport-security", label: "Strict-Transport-Security" },
+                { name: "XFO", findingId: "x-frame-options", label: "X-Frame-Options" },
+                { name: "XCTO", findingId: "x-content-type", label: "X-Content-Type-Options" },
+                { name: "RP", findingId: "referrer-policy", label: "Referrer-Policy" },
+                { name: "PP", findingId: "permissions-policy", label: "Permissions-Policy" },
+              ];
+              const headerFindings = scan.findings.filter((f) => f.module === "Security Headers" || f.module === "CSP Analysis" || f.module === "Clickjacking");
+              const results = headerChecks.map((h) => {
+                const missing = headerFindings.some((f) => f.id.includes(h.findingId) || f.title.toLowerCase().includes(h.label.toLowerCase().split("-")[0]));
+                return { ...h, present: !missing };
+              });
+              const passCount = results.filter((r) => r.present).length;
+              if (headerFindings.length === 0 && passCount === results.length) return null;
+              return (
+                <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                    Headers ({passCount}/{results.length})
+                  </h3>
+                  <div className="space-y-1">
+                    {results.map((r) => (
+                      <div key={r.name} className="flex items-center gap-2 text-[10px]">
+                        <span className={r.present ? "text-emerald-400" : "text-red-400"}>{r.present ? "✓" : "✗"}</span>
+                        <span className={r.present ? "text-zinc-500" : "text-zinc-400"}>{r.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Attack surface */}
             {scan.surface && (
               <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
