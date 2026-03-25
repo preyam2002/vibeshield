@@ -13,18 +13,15 @@ const ENV_ENDPOINTS = [
   "/api/settings",
 ];
 
-/** NEXT_PUBLIC_ vars that should never be public — they indicate a misconfigured build or copy-paste mistake */
-const DANGEROUS_PUBLIC_VARS = [
-  /NEXT_PUBLIC_[A-Z_]{0,30}(?:DATABASE|DB)_URL/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}PRIVATE.?KEY/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}SECRET/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}WEBHOOK/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}SERVICE.?ROLE/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}PASSWORD/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}ADMIN/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}SMTP/i,
-  /NEXT_PUBLIC_[A-Z_]{0,30}REDIS/i,
-];
+/** Public env var prefixes that should never contain secrets — they get bundled into client JS */
+const PUBLIC_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "REACT_APP_", "NUXT_PUBLIC_", "PUBLIC_"];
+const DANGEROUS_SUFFIXES = ["DATABASE_URL", "DB_URL", "PRIVATE_KEY", "PRIVATE.KEY", "SECRET", "WEBHOOK", "SERVICE_ROLE", "SERVICE.ROLE", "PASSWORD", "ADMIN_KEY", "SMTP", "REDIS", "SIGNING_KEY", "ENCRYPTION_KEY"];
+
+const DANGEROUS_PUBLIC_VARS = PUBLIC_PREFIXES.flatMap((prefix) =>
+  DANGEROUS_SUFFIXES.map((suffix) =>
+    new RegExp(`${prefix.replace(/_$/, "_")}[A-Z_]{0,30}${suffix.replace(/\./g, ".?")}`, "i"),
+  ),
+);
 
 /** Patterns to find in JS bundles that indicate env leaks */
 const JS_ENV_PATTERNS: {

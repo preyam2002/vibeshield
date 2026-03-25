@@ -322,6 +322,54 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Supabase API key found embedded in a URL. If this is the service role key, it bypasses all RLS.",
     remediation: "Remove the key from URLs. Use proper header-based authentication.",
   },
+  // OpenRouter (popular AI proxy for vibe-coded apps)
+  {
+    name: "OpenRouter API Key",
+    pattern: /sk-or-v1-[a-f0-9]{64}/g,
+    severity: "critical",
+    description: "OpenRouter API key exposed. Attackers can make API calls to any AI model billed to your account.",
+    remediation: "Rotate in OpenRouter dashboard. Proxy all AI calls through your backend.",
+  },
+  // Mistral AI
+  {
+    name: "Mistral AI API Key",
+    pattern: /(?:MISTRAL_API_KEY|mistral_api_key)[\s"':=]+["']([a-zA-Z0-9]{32,})["']/g,
+    severity: "critical",
+    description: "Mistral AI API key exposed. Attackers can make inference calls billed to your account.",
+    remediation: "Rotate in Mistral console. Proxy through your backend.",
+  },
+  // ElevenLabs (voice AI)
+  {
+    name: "ElevenLabs API Key",
+    pattern: /(?:ELEVENLABS_API_KEY|elevenlabs.*key|xi-api-key)[\s"':=]+["']([a-f0-9]{32})["']/g,
+    severity: "high",
+    description: "ElevenLabs API key exposed. Attackers can generate voice clones and audio billed to your account.",
+    remediation: "Rotate in ElevenLabs. Move voice API calls to server-side.",
+  },
+  // Cloudflare
+  {
+    name: "Cloudflare API Token",
+    pattern: /(?:CF_API_TOKEN|CLOUDFLARE_API_TOKEN|cloudflare.*token)[\s"':=]+["']([a-zA-Z0-9_-]{40,})["']/g,
+    severity: "critical",
+    description: "Cloudflare API token exposed. Attackers can manage your DNS, workers, and security settings.",
+    remediation: "Rotate in Cloudflare dashboard. Move to server-side environment variables.",
+  },
+  // Perplexity
+  {
+    name: "Perplexity API Key",
+    pattern: /pplx-[a-f0-9]{48,}/g,
+    severity: "critical",
+    description: "Perplexity API key exposed. Attackers can make search/AI calls billed to your account.",
+    remediation: "Rotate in Perplexity settings. Proxy through your backend.",
+  },
+  // Cohere
+  {
+    name: "Cohere API Key",
+    pattern: /(?:COHERE_API_KEY|cohere_api_key)[\s"':=]+["']([a-zA-Z0-9]{40,})["']/g,
+    severity: "critical",
+    description: "Cohere API key exposed. Attackers can make inference calls billed to your account.",
+    remediation: "Rotate in Cohere dashboard. Proxy through your backend.",
+  },
 ];
 
 // Placeholder/test values that look like secrets but aren't
