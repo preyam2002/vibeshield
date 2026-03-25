@@ -71,12 +71,9 @@ export const apiSecurityModule: ScanModule = async (target) => {
         // Check if the polluted property propagated — just echoing back the key isn't enough
         let parsed: Record<string, unknown> | null = null;
         try { parsed = JSON.parse(text); } catch { /* skip */ }
-        const isPolluted = parsed && (
-          ("polluted" in parsed && parsed.polluted === true) ||
-          (typeof parsed === "object" && parsed !== null && "toString" in parsed && typeof (parsed as Record<string, unknown>).toString !== "function")
-        );
+        const isPolluted = parsed && "polluted" in parsed && parsed.polluted === true;
         // Also flag if the server returns the __proto__ key directly (stored pollution)
-        const storedProto = parsed && key === "__proto__" && "__proto__" in parsed;
+        const storedProto = parsed && key === "__proto__" && Object.prototype.hasOwnProperty.call(parsed, "__proto__");
         if (isPolluted || storedProto) {
           findings.push({
             id: `api-proto-pollution-${findings.length}`,
@@ -168,7 +165,9 @@ export const apiSecurityModule: ScanModule = async (target) => {
             let parsed: Record<string, unknown> | null = null;
             try { parsed = JSON.parse(text); } catch { /* skip */ }
 
-            if (parsed && fieldName in parsed) {
+            // Skip if the field already existed in the GET baseline (not a new assignment)
+            const fieldAlreadyInBaseline = getText.includes(`"${fieldName}"`) && getText.includes(fieldVal);
+            if (parsed && fieldName in parsed && !fieldAlreadyInBaseline) {
               findings.push({
                 id: `api-mass-assignment-${findings.length}`,
                 module: "API Security",
