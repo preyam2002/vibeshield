@@ -237,5 +237,46 @@ export const websocketModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for WS message handler without input validation
+  const dangerousHandlers = [
+    { re: /\.onmessage\s*=\s*(?:function|\()\s*[^)]*\)\s*(?:=>)?\s*\{[^}]*(?:eval|innerHTML|document\.write|Function\()/i, vuln: "eval/innerHTML in message handler" },
+    { re: /\.onmessage\s*=\s*(?:function|\()\s*[^)]*\)\s*(?:=>)?\s*\{[^}]*JSON\.parse[^}]*(?!try)/i, vuln: "JSON.parse without try/catch" },
+  ];
+  for (const { re, vuln } of dangerousHandlers) {
+    if (re.test(allJs)) {
+      findings.push({
+        id: `websocket-unsafe-handler-${findings.length}`,
+        module: "WebSocket",
+        severity: "high",
+        title: `Unsafe WebSocket message handler: ${vuln}`,
+        description: `A WebSocket message handler uses ${vuln}. Since WebSocket messages can be injected or tampered with (especially without origin validation), processing them with dangerous functions like eval or innerHTML enables XSS via WebSocket.`,
+        evidence: `Pattern detected: ${vuln}`,
+        remediation: "Never use eval, innerHTML, or document.write with WebSocket message data. Always validate and sanitize incoming messages. Use try/catch around JSON.parse.",
+        cwe: "CWE-79",
+        owasp: "A03:2021",
+        confidence: 65,
+        codeSnippet: `// Safe WebSocket message handling\nsocket.onmessage = (event) => {\n  let data;\n  try {\n    data = JSON.parse(event.data);\n  } catch {\n    console.error("Invalid message");\n    return;\n  }\n  // Validate the message schema\n  if (typeof data.type !== "string") return;\n  // Use textContent instead of innerHTML\n  element.textContent = data.text;\n};`,
+      });
+      break;
+    }
+  }
+
+  // Check for reconnection without re-authentication
+  const hasReconnect = /reconnect|auto.?connect|retry.?connect/i.test(allJs);
+  const hasWsAuth = /(?:token|auth|jwt|bearer|session)[^}]*(?:websocket|socket|ws)/i.test(allJs) || /(?:websocket|socket|ws)[^}]*(?:token|auth|jwt|bearer|session)/i.test(allJs);
+  if (hasReconnect && !hasWsAuth && hasWsCode) {
+    findings.push({
+      id: "websocket-reconnect-no-auth",
+      module: "WebSocket",
+      severity: "low",
+      title: "WebSocket auto-reconnect may skip authentication",
+      description: "The app has WebSocket reconnection logic but no apparent token/auth handling in the WebSocket setup. If the session expires between disconnection and reconnection, the reconnected socket may operate without valid authentication.",
+      evidence: "Reconnection patterns detected but no auth token pattern found in WebSocket code",
+      remediation: "Re-authenticate on every WebSocket reconnection. Send a fresh auth token during the handshake or as the first message after reconnecting.",
+      cwe: "CWE-306",
+      confidence: 45,
+    });
+  }
+
   return findings;
 };
