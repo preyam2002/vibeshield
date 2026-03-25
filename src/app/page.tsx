@@ -49,6 +49,7 @@ const ATTACK_MODULES = [
   { name: "Command Injection", desc: "OS command injection via user-controlled params", icon: "💀" },
   { name: "NoSQL Injection", desc: "MongoDB operator injection and auth bypass", icon: "🍃" },
   { name: "Cache Poisoning", desc: "CDN/proxy cache poisoning via header injection", icon: "🧊" },
+  { name: "Business Logic", desc: "Negative values, zero-price bypass, idempotency", icon: "🧮" },
 ];
 
 interface RecentScan {

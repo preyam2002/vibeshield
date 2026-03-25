@@ -54,6 +54,7 @@ import { pathTraversalModule } from "./modules/path-traversal";
 import { commandInjectionModule } from "./modules/command-injection";
 import { nosqlInjectionModule } from "./modules/nosql-injection";
 import { cachePoisoningModule } from "./modules/cache-poisoning";
+import { businessLogicModule } from "./modules/business-logic";
 
 const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
@@ -93,6 +94,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Command Injection", description: "Test for OS command injection vulnerabilities", category: "security", run: commandInjectionModule },
   { name: "NoSQL Injection", description: "Test for MongoDB/NoSQL operator injection and auth bypass", category: "security", run: nosqlInjectionModule },
   { name: "Cache Poisoning", description: "Test for CDN/proxy cache poisoning via header injection", category: "security", run: cachePoisoningModule },
+  { name: "Business Logic", description: "Test for negative values, zero-price bypass, and idempotency issues", category: "security", run: businessLogicModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [
