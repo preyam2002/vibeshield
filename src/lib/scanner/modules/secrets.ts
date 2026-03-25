@@ -426,6 +426,30 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Inngest signing key exposed. Attackers can forge event payloads to your functions.",
     remediation: "Rotate in Inngest dashboard. Never expose signing keys in client code.",
   },
+  // Supabase direct PostgreSQL connection string (often leaked via DATABASE_URL)
+  {
+    name: "Supabase Direct DB Connection",
+    pattern: /postgres(?:ql)?:\/\/postgres(?:\.[a-z]+)?:[^@]+@db\.[a-z0-9]+\.supabase\.co/g,
+    severity: "critical",
+    description: "Direct Supabase PostgreSQL connection string exposed. This bypasses RLS entirely and grants full database access.",
+    remediation: "Rotate the password in Supabase dashboard. Database connections must only be server-side.",
+  },
+  // Unkey (API key management)
+  {
+    name: "Unkey Root Key",
+    pattern: /unkey_[a-zA-Z0-9]{28,}/g,
+    severity: "critical",
+    description: "Unkey root key exposed. Attackers can create, revoke, and manage all your API keys.",
+    remediation: "Rotate in Unkey dashboard. Root keys must never be in client code.",
+  },
+  // Axiom (logging)
+  {
+    name: "Axiom API Token",
+    pattern: /xaat-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/g,
+    severity: "high",
+    description: "Axiom API token exposed. Attackers can read your application logs, which may contain sensitive data.",
+    remediation: "Rotate in Axiom settings. Move to server-side.",
+  },
   // R2/S3 presigned URL patterns (not secret per se, but dangerous if long-lived)
   {
     name: "Long-lived Presigned S3/R2 URL",

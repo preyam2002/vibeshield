@@ -20,6 +20,11 @@ const ERROR_PATTERNS: { pattern: RegExp; tech: string }[] = [
   { pattern: /MongoServerError|MongoError/i, tech: "MongoDB" },
   { pattern: /AxiosError.*ERR_/i, tech: "Axios" },
   { pattern: /ConvexError|convex.*internal/i, tech: "Convex" },
+  { pattern: /ZodError|"issues":\s*\[.*"code":\s*"invalid_type"/i, tech: "Zod Validation" },
+  { pattern: /NextRouter.*error|NEXT_NOT_FOUND|getServerSideProps.*error/i, tech: "Next.js" },
+  { pattern: /ClerkAPIError|clerk.*error/i, tech: "Clerk Auth" },
+  { pattern: /ResendError|resend\.emails/i, tech: "Resend" },
+  { pattern: /UploadThingError|uploadthing/i, tech: "UploadThing" },
 ];
 
 const SENSITIVE_INFO_PATTERNS: { pattern: RegExp; description: string }[] = [
@@ -148,6 +153,32 @@ export const infoLeakModule: ScanModule = async (target) => {
   }
 
   // Path traversal is handled by the dedicated path-traversal module
+
+  // Check for verbose response headers that leak server information
+  const leakyHeaders: { name: string; value: string; description: string }[] = [];
+  const headers = target.headers;
+  if (headers["x-powered-by"]) leakyHeaders.push({ name: "X-Powered-By", value: headers["x-powered-by"], description: "reveals server framework" });
+  if (headers["server"] && !/^(cloudflare|vercel|netlify|next\.js)$/i.test(headers["server"])) {
+    const ver = headers["server"];
+    if (/\d+\.\d+/.test(ver)) leakyHeaders.push({ name: "Server", value: ver, description: "reveals server software version" });
+  }
+  if (headers["x-aspnet-version"]) leakyHeaders.push({ name: "X-AspNet-Version", value: headers["x-aspnet-version"], description: "reveals ASP.NET version" });
+  if (headers["x-debug-token"]) leakyHeaders.push({ name: "X-Debug-Token", value: headers["x-debug-token"], description: "debug mode active in production" });
+  if (headers["x-debug-token-link"]) leakyHeaders.push({ name: "X-Debug-Token-Link", value: headers["x-debug-token-link"], description: "Symfony profiler link exposed" });
+
+  if (leakyHeaders.length > 0) {
+    findings.push({
+      id: "infoleak-verbose-headers",
+      module: "Information Leakage",
+      severity: leakyHeaders.some((h) => h.name.includes("Debug")) ? "medium" : "low",
+      title: `Verbose response headers (${leakyHeaders.length})`,
+      description: `The server exposes headers that reveal internal technology details: ${leakyHeaders.map((h) => `${h.name} ${h.description}`).join(", ")}. Attackers use this to target known vulnerabilities.`,
+      evidence: leakyHeaders.map((h) => `${h.name}: ${h.value}`).join("\n"),
+      remediation: "Remove or hide these headers in production.",
+      cwe: "CWE-200",
+      codeSnippet: `// next.config.ts\nconst nextConfig = {\n  poweredByHeader: false, // removes X-Powered-By: Next.js\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Server", value: "web" }, // generic value\n    ]}];\n  },\n};`,
+    });
+  }
 
   // Check for dangerouslySetInnerHTML — only flag if excessive and no CSP
   const allJs = Array.from(target.jsContents.values()).join("\n");
