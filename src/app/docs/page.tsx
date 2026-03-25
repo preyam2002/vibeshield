@@ -36,7 +36,7 @@ export default function DocsPage() {
 
 # Scan modes:
 #   "quick"    - 13 essential modules, ~15s (headers, SSL, CSP, secrets, cookies)
-#   "security" - all 42 security modules, ~45s (default)
+#   "security" - all 45 security modules, ~45s (default)
 #   "full"     - security + 6 stress tests (load, race, rate limit), ~90s
 # -d '{"url": "...", "mode": "quick"}'
 
@@ -173,13 +173,10 @@ jobs:
         with:
           sarif_file: results.sarif
 
-      - name: Check grade
+      - name: Check thresholds
         run: |
-          SCORE=\${{ steps.results.outputs.score }}
-          if [ "$SCORE" -lt 50 ]; then
-            echo "::error::Security score $SCORE/100 is below threshold (50)"
-            exit 1
-          fi`}
+          # CI endpoint returns 422 if thresholds are violated
+          curl -sf "${baseUrl}/api/scan/\${{ steps.scan.outputs.scan_id }}/ci?min-score=50&max-critical=0&format=annotations" || exit 1`}
           </pre>
         </section>
 
@@ -291,6 +288,7 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/csv", desc: "Download CSV report" },
               { method: "GET", path: "/api/scan/:id/pdf", desc: "Printable HTML/PDF report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
+              { method: "GET", path: "/api/scan/:id/ci", desc: "CI-friendly results. Query: ?min-score=70&max-critical=0&format=annotations. Returns 422 on fail." },
               { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
               { method: "GET", path: "/api/scans", desc: "List recent scans. Filter: ?target=domain&status=completed" },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
