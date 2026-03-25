@@ -323,5 +323,71 @@ export const cspModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for connect-src wildcard (allows exfiltration to any domain)
+  const connectSrc = directives.get("connect-src") || "";
+  if (/^\*\s*$|^\*\s|;\s*\*/.test(connectSrc) || (!directives.has("connect-src") && /^\*\s*$/.test(directives.get("default-src") || ""))) {
+    findings.push({
+      id: `csp-connect-wildcard-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "medium",
+      title: "CSP connect-src allows any destination",
+      description: "The connect-src directive (or default-src fallback) allows connections to any origin. If an XSS vulnerability exists, attackers can exfiltrate data to any server via fetch/XMLHttpRequest/WebSocket.",
+      evidence: `connect-src: ${connectSrc || "(inherits default-src: " + (directives.get("default-src") || "not set") + ")"}`,
+      remediation: "Restrict connect-src to your API domains. This limits data exfiltration even if XSS is found.",
+      cwe: "CWE-693",
+      codeSnippet: `// Restrict connect-src to your domains\nconnect-src 'self' https://api.yourdomain.com https://your-supabase.supabase.co;`,
+    });
+  }
+
+  // Check for style-src 'unsafe-inline' (enables CSS injection attacks)
+  const styleSrc = directives.get("style-src") || directives.get("default-src") || "";
+  if (styleSrc.includes("'unsafe-inline'") && scriptSrc.includes("'strict-dynamic'")) {
+    // Only flag if they've bothered with strict-dynamic for scripts but left styles wide open
+    findings.push({
+      id: `csp-style-unsafe-inline-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "low",
+      title: "CSP style-src allows unsafe-inline",
+      description: "While script-src uses strict-dynamic, style-src still allows unsafe-inline. CSS injection can be used for data exfiltration via attribute selectors (e.g., stealing CSRF tokens or input values without JavaScript).",
+      evidence: `style-src: ${styleSrc}`,
+      remediation: "Use nonces for inline styles, or accept the tradeoff since CSS-only exfiltration is limited in practice.",
+      cwe: "CWE-693",
+    });
+  }
+
+  // Check for missing Trusted Types (modern DOM XSS protection)
+  const hasTrustedTypes = directives.has("require-trusted-types-for") || directives.has("trusted-types");
+  const hasDangerousSinks = /dangerouslySetInnerHTML|\.innerHTML\s*=|\.insertAdjacentHTML|document\.write/i.test(
+    Array.from(target.jsContents.values()).join("\n").substring(0, 500000),
+  );
+  if (!hasTrustedTypes && hasDangerousSinks && scriptSrc.includes("'strict-dynamic'")) {
+    findings.push({
+      id: `csp-no-trusted-types-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "low",
+      title: "CSP missing Trusted Types (DOM XSS protection)",
+      description: "Your app uses DOM manipulation APIs (innerHTML, insertAdjacentHTML, etc.) and has a strict CSP, but doesn't enforce Trusted Types. Trusted Types prevent DOM XSS by requiring sanitized inputs for dangerous sinks.",
+      evidence: "DOM manipulation sinks found in JS bundles, no require-trusted-types-for directive",
+      remediation: "Add require-trusted-types-for 'script' and trusted-types to your CSP. Start in report-only mode to find violations.",
+      cwe: "CWE-79",
+      codeSnippet: `// CSP header — enforce Trusted Types\nrequire-trusted-types-for 'script';\ntrusted-types default;\n\n// Create a Trusted Types policy\nconst policy = trustedTypes.createPolicy("default", {\n  createHTML: (input) => DOMPurify.sanitize(input),\n});`,
+    });
+  }
+
+  // Check for script-src 'strict-dynamic' without nonce (defeats the purpose)
+  if (scriptSrc.includes("'strict-dynamic'") && !/nonce-/.test(scriptSrc) && !/'sha256-/.test(scriptSrc)) {
+    findings.push({
+      id: `csp-strict-dynamic-no-nonce-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "high",
+      title: "CSP uses strict-dynamic without nonce or hash",
+      description: "strict-dynamic is present but there's no nonce or hash value. Without a nonce, strict-dynamic allows any parser-inserted script to load additional scripts, which can be exploited via DOM XSS.",
+      evidence: `script-src: ${scriptSrc}`,
+      remediation: "Add a per-request nonce to your CSP and include it in your script tags.",
+      cwe: "CWE-693",
+      codeSnippet: `// middleware.ts — generate nonce per request\nimport { NextResponse } from "next/server";\nexport function middleware(req) {\n  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");\n  const csp = \`script-src 'strict-dynamic' 'nonce-\${nonce}';\`;\n  const res = NextResponse.next();\n  res.headers.set("Content-Security-Policy", csp);\n  res.headers.set("x-nonce", nonce);\n  return res;\n}`,
+    });
+  }
+
   return findings;
 };
