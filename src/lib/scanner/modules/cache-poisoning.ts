@@ -192,5 +192,94 @@ export const cachePoisoningModule: ScanModule = async (target) => {
     break;
   }
 
+  // Phase 5: Web cache deception — check if authenticated pages get cached
+  // Try appending a static extension to an API/page URL to trick cache into storing dynamic content
+  const deceptionExtensions = [".css", ".js", ".png", ".svg", ".ico", "/style.css", "/logo.png"];
+  const deceptionResults = await Promise.allSettled(
+    target.apiEndpoints
+      .filter((ep) => /me|profile|user|account|dashboard|settings/i.test(ep))
+      .slice(0, 2)
+      .flatMap((endpoint) =>
+        deceptionExtensions.slice(0, 3).map(async (ext) => {
+          const testUrl = endpoint + ext;
+          const res = await scanFetch(testUrl, { timeoutMs: 5000 });
+          if (!res.ok) return null;
+          const text = await res.text();
+          const cacheHeader = res.headers.get("x-cache") || res.headers.get("cf-cache-status") || "";
+          const age = res.headers.get("age");
+          const isCachedResponse = /hit|miss/i.test(cacheHeader) || age !== null;
+          // If dynamic content is returned AND it looks like it could be cached
+          if (text.length > 50 && !text.includes("<!DOCTYPE") && (isCachedResponse || !res.headers.get("cache-control")?.includes("no-store"))) {
+            return {
+              endpoint: new URL(endpoint).pathname,
+              ext,
+              status: res.status,
+              cacheHeader,
+              bodyLen: text.length,
+            };
+          }
+          return null;
+        }),
+      ),
+  );
+
+  for (const r of deceptionResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `cache-deception-${count++}`,
+      module: "Cache Poisoning",
+      severity: "high",
+      title: `Web cache deception: ${v.endpoint}${v.ext} returns dynamic content`,
+      description: `Appending "${v.ext}" to ${v.endpoint} still returns dynamic API content (${v.bodyLen} bytes). CDNs may cache this response because of the static file extension, exposing one user's private data to everyone.${v.cacheHeader ? ` Cache header: ${v.cacheHeader}` : ""}`,
+      evidence: `GET ${v.endpoint}${v.ext} → ${v.status} (${v.bodyLen} bytes)${v.cacheHeader ? `\nX-Cache: ${v.cacheHeader}` : ""}\nResponse is dynamic content served with a static extension`,
+      remediation: "Configure path-based cache rules strictly. Only cache explicit static file patterns. Return 404 for API routes with unexpected extensions.",
+      cwe: "CWE-525",
+      owasp: "A05:2021",
+      confidence: 70,
+      codeSnippet: `// middleware.ts — block cache deception attempts\nexport function middleware(req: NextRequest) {\n  const path = req.nextUrl.pathname;\n  // Block API requests with static file extensions\n  if (path.startsWith("/api/") && /\\.(css|js|png|jpg|svg|ico|woff2?)$/.test(path)) {\n    return NextResponse.json({ error: "Not found" }, { status: 404 });\n  }\n}\n\n// Also set Cache-Control: no-store on all authenticated API responses\nres.headers.set("Cache-Control", "no-store, private");`,
+    });
+    break;
+  }
+
+  // Phase 6: Unkeyed query parameter injection
+  // Test if adding unknown query params changes the response (param might get reflected but not included in cache key)
+  const unkeyedParamResults = await Promise.allSettled(
+    [...baselines.entries()].slice(0, 3).map(async ([url, baseline]) => {
+      const testUrl = new URL(url);
+      testUrl.searchParams.set("vibeshield_cb", `"><script>x</script>`);
+      const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+      const body = await res.text();
+      // Check if the injected value appears in the response body (reflected)
+      if (body.includes(`"><script>x</script>`) && !baseline.body.includes(`"><script>x</script>`)) {
+        const cacheHeader = res.headers.get("x-cache") || res.headers.get("cf-cache-status") || "";
+        return {
+          pathname: new URL(url).pathname,
+          cacheHeader,
+        };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of unkeyedParamResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `cache-unkeyed-param-${count++}`,
+      module: "Cache Poisoning",
+      severity: "high",
+      title: `Unkeyed parameter reflected on ${v.pathname} (potential cache poisoning + XSS)`,
+      description: `An unknown query parameter was injected and reflected in the response body. If this parameter is not part of the CDN's cache key, an attacker can poison the cache with XSS payloads that execute for all visitors.`,
+      evidence: `GET ${v.pathname}?vibeshield_cb="><script>x</script>\nValue reflected in response body${v.cacheHeader ? `\nCache: ${v.cacheHeader}` : ""}`,
+      remediation: "Don't reflect unknown query parameters in responses. Configure your CDN to include all query parameters in the cache key, or strip unknown params.",
+      cwe: "CWE-79",
+      owasp: "A03:2021",
+      confidence: 80,
+      codeSnippet: `// middleware.ts — strip unknown query params\nconst ALLOWED_PARAMS = new Set(["page", "sort", "q", "id"]);\nexport function middleware(req: NextRequest) {\n  const url = req.nextUrl.clone();\n  let stripped = false;\n  for (const key of url.searchParams.keys()) {\n    if (!ALLOWED_PARAMS.has(key)) {\n      url.searchParams.delete(key);\n      stripped = true;\n    }\n  }\n  if (stripped) return NextResponse.redirect(url, 301);\n}`,
+    });
+    break;
+  }
+
   return findings;
 };

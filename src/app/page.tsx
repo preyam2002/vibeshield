@@ -49,7 +49,7 @@ const ATTACK_MODULES = [
   { name: "Path Traversal", desc: "Unicode/UTF-8 overlong, double encoding, null byte, URL path traversal", icon: "📂" },
   { name: "Command Injection", desc: "Time-based + output-based, IFS/brace/quote filter evasion", icon: "💀" },
   { name: "NoSQL Injection", desc: "MongoDB operator injection, auth bypass, prototype pollution", icon: "🍃" },
-  { name: "Cache Poisoning", desc: "CDN poisoning, method override, Vary header, Set-Cookie leak", icon: "🧊" },
+  { name: "Cache Poisoning", desc: "CDN poisoning, cache deception, unkeyed param XSS, method override", icon: "🧊" },
   { name: "Business Logic", desc: "Negative values, zero-price, integer overflow, coupon stacking", icon: "🧮" },
   { name: "OAuth/OIDC", desc: "Redirect URI bypass variants, PKCE, nonce, implicit flow", icon: "🔐" },
   { name: "API Versioning", desc: "Hidden versions, path bypass, endpoint shadowing", icon: "🔀" },
