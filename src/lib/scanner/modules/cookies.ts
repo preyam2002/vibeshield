@@ -64,6 +64,29 @@ export const cookiesModule: ScanModule = async (target) => {
 
   }
 
+  // Check for overly persistent session cookies (>90 days)
+  const longLivedSensitive = target.cookies.filter((c) => {
+    if (!SENSITIVE_COOKIE_NAMES.some((p) => p.test(c.name))) return false;
+    // Check for max-age or expires in raw value (cookie parsing may not extract these)
+    const rawEntry = c.value || "";
+    const maxAgeMatch = rawEntry.match(/max-age=(\d+)/i);
+    if (maxAgeMatch && parseInt(maxAgeMatch[1]) > 90 * 86400) return true;
+    return false;
+  });
+  if (longLivedSensitive.length > 0) {
+    findings.push({
+      id: "cookies-long-lived-session",
+      module: "Cookies",
+      severity: "low",
+      title: `${longLivedSensitive.length} session cookie${longLivedSensitive.length > 1 ? "s" : ""} with excessive lifetime`,
+      description: "Session cookies are set to persist for over 90 days. Long-lived sessions increase the window for session hijacking attacks.",
+      evidence: longLivedSensitive.map((c) => c.name).join(", "),
+      remediation: "Set session cookie Max-Age to 24 hours or less for security-sensitive applications. Use refresh tokens for longer sessions.",
+      cwe: "CWE-613",
+      codeSnippet: `// Set reasonable cookie expiration\nres.cookies.set("session", token, {\n  maxAge: 60 * 60 * 24, // 24 hours\n  httpOnly: true,\n  secure: true,\n  sameSite: "lax",\n});`,
+    });
+  }
+
   // Consolidate broad domain scope into a single finding
   const broadCookies = target.cookies.filter(
     (c) => !NON_SENSITIVE_PATTERNS.test(c.name) && c.path === "/" && c.domain && c.domain.startsWith("."),

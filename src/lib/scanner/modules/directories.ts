@@ -97,6 +97,35 @@ const CHECKS: DirCheck[] = [
   // IDE/editor config
   { path: "/.vscode/settings.json", severity: "low", title: "VS Code settings exposed", description: "IDE configuration may reveal project structure and development tools.", remediation: "Block access to .vscode/ directory.", contentCheck: /\{/ },
   { path: "/.idea/workspace.xml", severity: "low", title: "JetBrains workspace exposed", description: "IDE workspace config may contain file paths and project settings.", remediation: "Block access to .idea/ directory." },
+
+  // Additional .env variants
+  { path: "/.env.production.local", severity: "critical", title: "Exposed .env.production.local", description: "Production local override env file is accessible — likely contains real secrets.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },
+  { path: "/.env.staging", severity: "critical", title: "Exposed .env.staging", description: "Staging environment file is accessible.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },
+  { path: "/.env.test", severity: "high", title: "Exposed .env.test", description: "Test environment file is accessible.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },
+  { path: "/.env.backup", severity: "critical", title: "Exposed .env backup", description: "Backup of environment file is accessible.", remediation: "Remove .env backups from web root.", contentCheck: /[A-Z_]+=/ },
+  { path: "/.env.example", severity: "low", title: "Exposed .env.example", description: "Example env file may reveal expected variable names and configuration structure.", remediation: "Review if variable names reveal sensitive architecture.", contentCheck: /[A-Z_]+=/ },
+
+  // Terraform / IaC
+  { path: "/terraform.tfstate", severity: "critical", title: "Terraform state file exposed", description: "Terraform state contains all resource IDs, secrets, and infrastructure details in plaintext.", remediation: "Never serve .tfstate files. Use remote state backends.", contentCheck: /terraform|resources/i },
+  { path: "/.terraform/terraform.tfstate", severity: "critical", title: "Terraform state in .terraform dir exposed", description: "Terraform state file accessible from .terraform directory.", remediation: "Block access to .terraform directory.", contentCheck: /terraform|resources/i },
+  { path: "/terraform.tfvars", severity: "critical", title: "Terraform variables file exposed", description: "Terraform variables file may contain secrets, API keys, and infrastructure credentials.", remediation: "Remove from web root.", contentCheck: /=/ },
+
+  // Package manager auth
+  { path: "/.npmrc", severity: "high", title: ".npmrc exposed", description: "npm config may contain private registry auth tokens.", remediation: "Block access to .npmrc.", contentCheck: /registry|token|auth/i },
+  { path: "/.yarnrc.yml", severity: "high", title: ".yarnrc.yml exposed", description: "Yarn config may contain private registry auth tokens.", remediation: "Block access to .yarnrc.yml." },
+
+  // Secrets files
+  { path: "/secrets.json", severity: "critical", title: "secrets.json exposed", description: "Secrets file is publicly accessible.", remediation: "Remove from web root.", contentCheck: /\{/ },
+  { path: "/secrets.yml", severity: "critical", title: "secrets.yml exposed", description: "Secrets YAML file is publicly accessible.", remediation: "Remove from web root." },
+  { path: "/credentials.json", severity: "critical", title: "credentials.json exposed", description: "Credentials file is publicly accessible — may contain service account keys.", remediation: "Remove from web root.", contentCheck: /\{/ },
+  { path: "/service-account.json", severity: "critical", title: "GCP service account key exposed", description: "Google Cloud service account key file is publicly downloadable.", remediation: "Remove immediately and rotate the key.", contentCheck: /private_key|client_email/i },
+
+  // Cloud configs
+  { path: "/vercel.json", severity: "low", title: "vercel.json exposed", description: "Vercel config reveals rewrites, redirects, and env var hints.", remediation: "Block access or review for sensitive info.", contentCheck: /\{/ },
+
+  // BI / Admin tools
+  { path: "/metabase", severity: "high", title: "Metabase dashboard exposed", description: "Metabase analytics dashboard is publicly accessible.", remediation: "Restrict access to authenticated users." },
+  { path: "/airflow", severity: "high", title: "Apache Airflow UI exposed", description: "Airflow job scheduler UI is publicly accessible.", remediation: "Restrict access behind authentication." },
 ];
 
 export const directoriesModule: ScanModule = async (target) => {

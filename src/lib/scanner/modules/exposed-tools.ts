@@ -271,6 +271,61 @@ const TOOL_CHECKS: ToolCheck[] = [
     description: "Convex generated API code is publicly accessible, revealing all backend functions and their signatures.",
     remediation: "Block access to .convex directory in production.",
   },
+  // Metabase / BI Tools
+  {
+    path: "/metabase",
+    name: "Metabase",
+    contentPatterns: [/metabase/i, /dashboard/i, /query/i],
+    severity: "high",
+    description: "Metabase analytics dashboard is publicly accessible. May expose business data and database queries.",
+    remediation: "Restrict Metabase access behind authentication and VPN.",
+  },
+  // DevTools / admin paths
+  {
+    path: "/devtools",
+    name: "Developer Tools Panel",
+    contentPatterns: [/dev/i, /tool/i, /debug/i, /admin/i],
+    severity: "high",
+    description: "A developer tools panel is publicly accessible.",
+    remediation: "Remove developer tools from production or protect behind authentication.",
+  },
+  {
+    path: "/api/debug",
+    name: "Debug API Endpoint",
+    contentPatterns: [/debug/i, /env/i, /config/i, /version/i],
+    severity: "high",
+    description: "A debug API endpoint is publicly accessible and may expose internal state, environment variables, or configuration.",
+    remediation: "Remove debug endpoints from production builds.",
+    requireJson: true,
+  },
+  {
+    path: "/api/internal",
+    name: "Internal API",
+    contentPatterns: [/.+/],
+    severity: "medium",
+    description: "An internal API endpoint is publicly accessible. Internal APIs often lack the same security controls as public APIs.",
+    remediation: "Block access to internal API routes or protect with authentication.",
+    requireJson: true,
+  },
+  // Webpack Bundle Analyzer
+  {
+    path: "/report.html",
+    name: "Webpack Bundle Analyzer",
+    contentPatterns: [/webpack/i, /bundle/i, /module/i, /chunk/i],
+    severity: "medium",
+    description: "Webpack Bundle Analyzer report is publicly accessible, revealing all bundled modules and their sizes.",
+    remediation: "Remove bundle analysis reports from production builds.",
+  },
+  // LocalStack / mock AWS
+  {
+    path: "/_localstack/health",
+    name: "LocalStack (Mock AWS)",
+    contentPatterns: [/running|available|services/i],
+    severity: "high",
+    description: "LocalStack mock AWS service is publicly accessible. This is a development tool that should never be in production.",
+    remediation: "Remove LocalStack from production deployments.",
+    requireJson: true,
+  },
 ];
 
 export const exposedToolsModule: ScanModule = async (target) => {

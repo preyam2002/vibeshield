@@ -140,6 +140,21 @@ export const headersModule: ScanModule = async (target) => {
   // is handled by the dedicated CSP Analysis module. Headers module only flags
   // the missing header itself (above).
 
+  // Cross-Origin isolation headers
+  if (!target.headers["cross-origin-opener-policy"]) {
+    findings.push({
+      id: "headers-no-coop",
+      module: "Security Headers",
+      severity: "low",
+      title: "Missing Cross-Origin-Opener-Policy (COOP) header",
+      description: "Without COOP, your site may be vulnerable to cross-origin attacks like Spectre that can read data from your page's process.",
+      remediation: "Add header: Cross-Origin-Opener-Policy: same-origin",
+      cwe: "CWE-693",
+      owasp: "A05:2021",
+      codeSnippet: `// next.config.ts headers()\n{ key: "Cross-Origin-Opener-Policy", value: "same-origin" }`,
+    });
+  }
+
   // SRI check for external scripts
   const sriFinding = checkSriMissing(target);
   if (sriFinding) findings.push(sriFinding);
