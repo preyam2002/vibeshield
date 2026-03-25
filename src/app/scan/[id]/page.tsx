@@ -1114,6 +1114,51 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </div>
             </div>
 
+            {/* Vulnerability category heatmap */}
+            {!isRunning && scan.status === "completed" && scan.findings.length > 0 && (() => {
+              const categories: Record<string, { label: string; modules: string[] }> = {
+                auth: { label: "Auth & Access", modules: ["Authentication", "IDOR", "JWT Security", "OAuth/OIDC", "Session Management", "Email Enumeration"] },
+                injection: { label: "Injection", modules: ["SQL Injection & XSS", "CRLF Injection", "Command Injection", "NoSQL Injection", "SSRF", "Path Traversal", "Type Confusion"] },
+                config: { label: "Configuration", modules: ["Security Headers", "SSL/TLS", "Cookies", "CORS", "CSP Analysis", "Clickjacking", "HTTP Methods", "Response Security"] },
+                data: { label: "Data Exposure", modules: ["Secret Detection", "Source Maps", "Information Leakage", "Environment Leak", "Directory & File Exposure", "Privacy & Tracking"] },
+                infra: { label: "Infrastructure", modules: ["Supabase", "Firebase", "Cloud Storage", "Stripe", "Exposed Dev Tools", "Dependencies", "Subdomain Takeover"] },
+                logic: { label: "App Logic", modules: ["Business Logic", "CSRF", "File Upload", "Open Redirect", "API Security", "API Versioning", "Request Smuggling", "Cache Poisoning", "GraphQL", "WebSocket", "AI Security", "Next.js"] },
+              };
+              const catData = Object.entries(categories).map(([key, { label, modules }]) => {
+                const findings = scan.findings.filter((f) => modules.includes(f.module));
+                const maxSev = findings.length === 0 ? null :
+                  findings.some((f) => f.severity === "critical") ? "critical" :
+                  findings.some((f) => f.severity === "high") ? "high" :
+                  findings.some((f) => f.severity === "medium") ? "medium" : "low";
+                return { key, label, count: findings.length, maxSev };
+              }).filter((c) => c.count > 0);
+              if (catData.length < 2) return null;
+              const sevColors: Record<string, string> = {
+                critical: "bg-red-500/30 border-red-500/40 text-red-300",
+                high: "bg-orange-500/20 border-orange-500/30 text-orange-300",
+                medium: "bg-yellow-500/15 border-yellow-500/25 text-yellow-300",
+                low: "bg-blue-500/10 border-blue-500/20 text-blue-300",
+              };
+              return (
+                <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                    Risk Areas
+                  </h3>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {catData.sort((a, b) => b.count - a.count).map((cat) => (
+                      <div
+                        key={cat.key}
+                        className={`rounded-lg border px-2.5 py-2 ${sevColors[cat.maxSev || "low"]}`}
+                      >
+                        <div className="text-[10px] font-medium">{cat.label}</div>
+                        <div className="text-[9px] opacity-70">{cat.count} finding{cat.count !== 1 ? "s" : ""}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Module performance timeline */}
             {!isRunning && scan.status === "completed" && (() => {
               const timed = scan.modules
