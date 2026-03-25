@@ -143,8 +143,8 @@ export default function Home() {
 
       const data = await res.json();
       router.push(`/scan/${data.id}`);
-    } catch {
-      setError("Failed to connect. Is the server running?");
+    } catch (err) {
+      setError(err instanceof TypeError ? "Network error — check your connection and try again." : "Failed to start scan. Please try again.");
       setLoading(false);
     }
   };
@@ -277,6 +277,7 @@ export default function Home() {
           <div className="flex flex-wrap items-center justify-center gap-3 mt-8">
             {[
               "OWASP Top 10",
+              "Code Fixes",
               "SARIF Export",
               "CI/CD Ready",
               "Zero Config",
@@ -386,7 +387,7 @@ export default function Home() {
             {[
               { step: "1", title: "Paste your URL", desc: "Any live web app. No code access, no agents to install." },
               { step: "2", title: "We attack it", desc: `${ATTACK_MODULES.length} modules run in parallel. Recon, security checks, and stress tests.` },
-              { step: "3", title: "Get your report", desc: "Severity-ranked findings with evidence and exact fix instructions." },
+              { step: "3", title: "Get your report", desc: "Severity-ranked findings with evidence, copy-paste code fixes, and export to PDF/SARIF." },
             ].map((item) => (
               <div key={item.step} className="text-center">
                 <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 font-bold text-sm mb-3">

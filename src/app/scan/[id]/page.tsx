@@ -551,7 +551,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                       const criticalAndHigh = scan.findings.filter((f) => f.severity === "critical" || f.severity === "high");
                       const medium = scan.findings.filter((f) => f.severity === "medium");
                       const items = [...criticalAndHigh, ...medium.slice(0, 5)];
-                      const prompt = `Fix these security vulnerabilities found in ${scan.target}:\n\n${items.map((f, i) => `${i + 1}. [${f.severity.toUpperCase()}] ${f.title}\n   ${f.remediation}`).join("\n\n")}${medium.length > 5 ? `\n\n...and ${medium.length - 5} more medium findings (download full report for details)` : ""}`;
+                      const prompt = `Fix these security vulnerabilities found in ${scan.target}:\n\n${items.map((f, i) => `${i + 1}. [${f.severity.toUpperCase()}] ${f.title}\n   ${f.remediation}${f.codeSnippet ? `\n   Example fix:\n   ${f.codeSnippet.split("\n").join("\n   ")}` : ""}`).join("\n\n")}${medium.length > 5 ? `\n\n...and ${medium.length - 5} more medium findings (download full report for details)` : ""}`;
                       navigator.clipboard.writeText(prompt);
                       const btn = document.getElementById("fix-all-btn");
                       if (btn) { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy Fix-All Prompt"; }, 2000); }
