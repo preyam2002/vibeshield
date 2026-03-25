@@ -282,7 +282,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchScan]);
 
-  // Keyboard shortcuts: / to focus search, Escape to clear
+  // Keyboard shortcuts: / to focus search, Escape to clear, j/k to navigate findings
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -293,6 +293,16 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         e.preventDefault();
         const input = document.querySelector<HTMLInputElement>('input[placeholder="Search findings..."]');
         input?.focus();
+      }
+      // j/k vim-style navigation between findings
+      if ((e.key === "j" || e.key === "k") && !e.metaKey && !e.ctrlKey) {
+        const cards = Array.from(document.querySelectorAll<HTMLElement>('[id^="finding-"]'));
+        if (cards.length === 0) return;
+        const currentIdx = cards.findIndex((c) => c.getBoundingClientRect().top >= 0);
+        const nextIdx = e.key === "j"
+          ? Math.min((currentIdx === -1 ? 0 : currentIdx) + 1, cards.length - 1)
+          : Math.max((currentIdx === -1 ? 0 : currentIdx) - 1, 0);
+        cards[nextIdx]?.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     };
     window.addEventListener("keydown", handler);
@@ -664,6 +674,33 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Quick scan upsell */}
+        {!isRunning && scan.status === "completed" && scan.mode === "quick" && scan.summary.total > 0 && (
+          <div className="mb-4 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center justify-between gap-3">
+            <div className="text-xs text-orange-300/80">
+              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {48 - 13} more security modules including injection, SSRF, and stress testing.
+            </div>
+            <button
+              onClick={async () => {
+                setRescanning(true);
+                try {
+                  const res = await fetch("/api/scan", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: scan.target, mode: "full" }),
+                  });
+                  const data = await res.json();
+                  router.push(`/scan/${data.id}`);
+                } catch { setRescanning(false); }
+              }}
+              disabled={rescanning}
+              className="text-[10px] bg-orange-600/20 border border-orange-500/30 hover:bg-orange-600/30 text-orange-300 px-3 py-1.5 rounded-lg transition-colors shrink-0 disabled:opacity-50"
+            >
+              {rescanning ? "Starting..." : "Run Full Scan"}
+            </button>
           </div>
         )}
 
