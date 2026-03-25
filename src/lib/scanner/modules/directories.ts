@@ -82,6 +82,21 @@ const CHECKS: DirCheck[] = [
 
   // Supabase
   { path: "/supabase/config.toml", severity: "high", title: "Supabase local config exposed", description: "Supabase local configuration may contain project settings and connection details.", remediation: "Block access to /supabase/ directory.", contentCheck: /\[|project_id|api/i },
+
+  // AI/LLM config
+  { path: "/.cursorrules", severity: "low", title: "Cursor rules file exposed", description: "AI coding assistant configuration is accessible, revealing project conventions and architecture details.", remediation: "Block access to dotfiles in production." },
+  { path: "/.cursor/rules", severity: "low", title: "Cursor rules directory exposed", description: "AI coding assistant rules directory is accessible.", remediation: "Block access to dotfiles." },
+  { path: "/CLAUDE.md", severity: "low", title: "Claude Code config exposed", description: "Claude Code project instructions are accessible, revealing architecture decisions and coding conventions.", remediation: "Block access to CLAUDE.md in production." },
+  { path: "/.github/copilot-instructions.md", severity: "low", title: "Copilot instructions exposed", description: "GitHub Copilot instructions reveal project conventions.", remediation: "Block access to .github/ directory." },
+
+  // Sensitive backup patterns
+  { path: "/backup.zip", severity: "critical", title: "Backup archive exposed", description: "A backup archive is publicly downloadable — may contain source code, configs, and secrets.", remediation: "Remove backup files from web root.", contentCheck: /PK/ },
+  { path: "/backup.tar.gz", severity: "critical", title: "Backup archive exposed", description: "A backup tar.gz is publicly downloadable.", remediation: "Remove backup files from web root." },
+  { path: "/site.sql", severity: "critical", title: "SQL export exposed", description: "A database export is publicly accessible.", remediation: "Remove from web root.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
+
+  // IDE/editor config
+  { path: "/.vscode/settings.json", severity: "low", title: "VS Code settings exposed", description: "IDE configuration may reveal project structure and development tools.", remediation: "Block access to .vscode/ directory.", contentCheck: /\{/ },
+  { path: "/.idea/workspace.xml", severity: "low", title: "JetBrains workspace exposed", description: "IDE workspace config may contain file paths and project settings.", remediation: "Block access to .idea/ directory." },
 ];
 
 export const directoriesModule: ScanModule = async (target) => {
