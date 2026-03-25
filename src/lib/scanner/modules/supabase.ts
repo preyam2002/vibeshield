@@ -100,6 +100,7 @@ export const supabaseModule: ScanModule = async (target) => {
         remediation: `Add RLS policies to the "${table}" table:\n1. ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;\n2. CREATE POLICY "Users can only see own data" ON ${table} FOR SELECT USING (auth.uid() = user_id);`,
         cwe: "CWE-862",
         owasp: "A01:2021",
+        codeSnippet: `-- Run in Supabase SQL Editor:\nALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY "Users read own data"\n  ON ${table} FOR SELECT\n  USING (auth.uid() = user_id);\n\nCREATE POLICY "Users insert own data"\n  ON ${table} FOR INSERT\n  WITH CHECK (auth.uid() = user_id);`,
       });
     }
   }

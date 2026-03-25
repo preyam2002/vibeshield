@@ -272,6 +272,20 @@ export default function Home() {
               </div>
             )}
           </form>
+
+          {/* Trust badges */}
+          <div className="flex flex-wrap items-center justify-center gap-3 mt-8">
+            {[
+              "OWASP Top 10",
+              "SARIF Export",
+              "CI/CD Ready",
+              "Zero Config",
+            ].map((badge) => (
+              <span key={badge} className="text-[10px] font-medium text-zinc-500 bg-zinc-900/50 border border-zinc-800/50 rounded-full px-3 py-1">
+                {badge}
+              </span>
+            ))}
+          </div>
         </div>
 
         {/* Recent scans */}
