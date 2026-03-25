@@ -72,7 +72,7 @@ export default function Home() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [mode, setMode] = useState<"full" | "security">("full");
+  const [mode, setMode] = useState<"full" | "security" | "quick">("full");
   const [visibleModules, setVisibleModules] = useState(0);
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [stats, setStats] = useState<{ totalScans: number; totalFindings: number; uniqueTargets: number } | null>(null);
@@ -237,20 +237,20 @@ export default function Home() {
                 No signup required. No code access needed.
               </p>
               <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setMode("full")}
-                  className={`text-[10px] px-2.5 py-1 transition-colors ${mode === "full" ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
-                >
-                  Full scan
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("security")}
-                  className={`text-[10px] px-2.5 py-1 transition-colors ${mode === "security" ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
-                >
-                  Security only
-                </button>
+                {([
+                  { key: "quick" as const, label: "Quick (~10s)" },
+                  { key: "security" as const, label: "Security" },
+                  { key: "full" as const, label: "Full + Stress" },
+                ]).map((m) => (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setMode(m.key)}
+                    className={`text-[10px] px-2.5 py-1 transition-colors ${mode === m.key ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
               </div>
             </div>
 

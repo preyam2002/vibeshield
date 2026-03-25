@@ -27,7 +27,7 @@ interface ScanResult {
   id: string;
   target: string;
   status: "queued" | "scanning" | "completed" | "failed";
-  mode?: "full" | "security";
+  mode?: "full" | "security" | "quick";
   startedAt: string;
   completedAt?: string;
   findings: Finding[];

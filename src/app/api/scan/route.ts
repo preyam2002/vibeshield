@@ -27,10 +27,10 @@ const isPrivateHost = (host: string): boolean => {
 };
 
 export async function POST(req: Request) {
-  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" };
+  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick" };
   const url = typeof body.url === "string" ? body.url.trim() : "";
   const callbackUrl = typeof body.callbackUrl === "string" ? body.callbackUrl.trim() : undefined;
-  const mode = body.mode === "security" ? "security" : "full";
+  const mode = body.mode === "security" ? "security" : body.mode === "quick" ? "quick" : "full";
 
   if (!url) {
     return NextResponse.json({ error: "URL is required" }, { status: 400 });

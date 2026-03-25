@@ -106,12 +106,20 @@ const STRESS_MODULES: ScanModuleDefinition[] = [
 
 const ALL_MODULES = [...SECURITY_MODULES, ...STRESS_MODULES];
 
-export type ScanMode = "full" | "security";
+// Quick mode: only the fastest, highest-signal modules (~10s total)
+const QUICK_MODULE_NAMES = new Set([
+  "Security Headers", "SSL/TLS", "CORS", "Secret Detection", "Source Maps",
+  "Cookies", "Clickjacking", "Directory & File Exposure", "Dependencies",
+  "JWT Security", "HTTP Methods", "Environment Leak",
+]);
+const QUICK_MODULES = SECURITY_MODULES.filter((m) => QUICK_MODULE_NAMES.has(m.name));
+
+export type ScanMode = "full" | "security" | "quick";
 
 export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string, mode: ScanMode = "full") => {
   createScan(scanId, targetUrl, mode);
 
-  const activeModules = mode === "security" ? SECURITY_MODULES : ALL_MODULES;
+  const activeModules = mode === "quick" ? QUICK_MODULES : mode === "security" ? SECURITY_MODULES : ALL_MODULES;
   const moduleStatuses = [
     { name: "Recon", status: "pending" as const, findingsCount: 0 },
     ...activeModules.map((m) => ({
@@ -186,15 +194,20 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
     }
   };
 
-  // Run security modules in batches for speed, stress modules sequentially
-  const BATCH_SIZE = 15;
-  for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
-    const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
-    await Promise.all(batch.map(runModule));
-  }
-  if (mode === "full") {
-    for (const mod of STRESS_MODULES) {
-      await runModule(mod);
+  // Quick mode: run all modules in one batch (they're fast)
+  // Security/full: batch security modules, then stress sequentially
+  if (mode === "quick") {
+    await Promise.all(QUICK_MODULES.map(runModule));
+  } else {
+    const BATCH_SIZE = 15;
+    for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
+      const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(runModule));
+    }
+    if (mode === "full") {
+      for (const mod of STRESS_MODULES) {
+        await runModule(mod);
+      }
     }
   }
 

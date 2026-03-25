@@ -14,7 +14,7 @@ const evictOldScans = () => {
   }
 };
 
-export const createScan = (id: string, target: string, mode: "full" | "security" = "full"): ScanResult => {
+export const createScan = (id: string, target: string, mode: "full" | "security" | "quick" = "full"): ScanResult => {
   evictOldScans();
   const result: ScanResult = {
     id,
