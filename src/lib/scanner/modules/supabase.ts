@@ -47,6 +47,7 @@ export const supabaseModule: ScanModule = async (target) => {
           remediation: "Remove the service_role key from client code IMMEDIATELY. Regenerate it in the Supabase dashboard. Only the anon key should be client-side.",
           cwe: "CWE-798",
           owasp: "A07:2021",
+          codeSnippet: `// Only use anon key client-side\nconst supabase = createClient(\n  process.env.NEXT_PUBLIC_SUPABASE_URL!,\n  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY! // NOT service_role!\n);\n\n// Use service_role only on the server\n// app/api/admin/route.ts\nimport { createClient } from "@supabase/supabase-js";\nconst admin = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!);`,
         });
       }
     } catch {
@@ -105,8 +106,8 @@ export const supabaseModule: ScanModule = async (target) => {
     }
   }
 
-  // Test write access, auth settings, and storage in parallel
-  const [writeResults, authResult, storageResult] = await Promise.all([
+  // Test write access, delete access, auth settings, and storage in parallel
+  const [writeResults, deleteResults, authResult, storageResult] = await Promise.all([
     // Write access tests in parallel
     Promise.allSettled(
       ["users", "profiles", "posts", "comments"].map(async (table) => {
@@ -116,6 +117,18 @@ export const supabaseModule: ScanModule = async (target) => {
           body: JSON.stringify({ _vibeshield_test: true }),
         });
         if (res.status === 201 || res.status === 409) return { table, status: res.status };
+        return null;
+      }),
+    ),
+    // DELETE access tests — check if anon can delete (uses impossible filter so nothing is actually deleted)
+    Promise.allSettled(
+      ["users", "profiles", "posts", "orders"].map(async (table) => {
+        const res = await scanFetch(`${supabaseUrl}/rest/v1/${table}?id=eq.00000000-0000-0000-0000-000000000000`, {
+          method: "DELETE",
+          headers: { apikey: testKey, Authorization: `Bearer ${testKey}`, Prefer: "return=minimal" },
+        });
+        // 200/204 = delete allowed (even if 0 rows affected), 401/403 = blocked
+        if (res.status === 200 || res.status === 204) return { table, status: res.status };
         return null;
       }),
     ),
@@ -140,6 +153,22 @@ export const supabaseModule: ScanModule = async (target) => {
       remediation: `Add RLS INSERT policies to "${table}" to restrict who can write data.`,
       cwe: "CWE-862", owasp: "A01:2021",
       codeSnippet: `-- Enable RLS and add insert policy\nALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;\nCREATE POLICY "Users can only insert own data"\n  ON "${table}" FOR INSERT\n  WITH CHECK (auth.uid() = user_id);`,
+    });
+  }
+
+  for (const r of deleteResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { table, status } = r.value;
+    // Only flag if we didn't already find this table in read/write checks
+    if (findings.some((f) => f.id.includes(table))) continue;
+    findings.push({
+      id: `supabase-rls-delete-${table}`, module: "Supabase", severity: "critical",
+      title: `Table "${table}" allows anonymous DELETE`,
+      description: `The "${table}" table accepts DELETE requests with just the anon key. Anyone can delete data from this table.`,
+      evidence: `DELETE ${supabaseUrl}/rest/v1/${table}?id=eq.00000000-...\nStatus: ${status} (delete permitted)`,
+      remediation: `Add RLS DELETE policies to "${table}" to restrict who can delete data.`,
+      cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `-- Restrict deletes to row owners\nALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;\nCREATE POLICY "Users can only delete own data"\n  ON "${table}" FOR DELETE\n  USING (auth.uid() = user_id);`,
     });
   }
 

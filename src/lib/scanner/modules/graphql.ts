@@ -160,6 +160,39 @@ export const graphqlModule: ScanModule = async (target) => {
       } catch { /* skip */ }
     }
 
+    // Test if mutations are discoverable and accessible without auth
+    try {
+      const mutationProbe = await scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: `{__schema{mutationType{fields{name}}}}` }),
+        timeoutMs: 5000,
+      });
+      if (mutationProbe.ok) {
+        const data = await mutationProbe.json() as { data?: { __schema?: { mutationType?: { fields?: { name: string }[] } } } };
+        const mutations = data?.data?.__schema?.mutationType?.fields;
+        if (mutations && mutations.length > 0) {
+          const dangerousMutations = mutations.filter((m) =>
+            /delete|remove|destroy|drop|reset|admin|grant|revoke|update.*role|set.*password/i.test(m.name),
+          );
+          if (dangerousMutations.length > 0) {
+            endpointFindings.push({
+              id: `graphql-dangerous-mutations-${endpoint}`,
+              module: "GraphQL",
+              severity: "high",
+              title: `${dangerousMutations.length} dangerous GraphQL mutations exposed`,
+              description: `Found ${mutations.length} mutations via introspection, including ${dangerousMutations.length} that appear destructive or privileged: ${dangerousMutations.map((m) => m.name).slice(0, 5).join(", ")}. If these lack proper authorization, attackers can modify or delete data.`,
+              evidence: `Dangerous mutations: ${dangerousMutations.map((m) => m.name).join(", ")}\nTotal mutations: ${mutations.length}`,
+              remediation: "Add authentication and authorization checks to all mutations. Disable introspection to prevent mutation discovery.",
+              cwe: "CWE-862",
+              owasp: "A01:2021",
+              codeSnippet: `// Protect mutations with auth middleware\nconst resolvers = {\n  Mutation: {\n    deleteUser: async (_, args, context) => {\n      if (!context.user?.isAdmin) throw new Error("Unauthorized");\n      // ...\n    },\n  },\n};`,
+            });
+          }
+        }
+      }
+    } catch { /* skip */ }
+
     return endpointFindings;
   });
 
