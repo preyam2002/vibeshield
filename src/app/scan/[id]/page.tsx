@@ -373,6 +373,41 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     setTimeout(() => setMdCopied(false), 2000);
   };
 
+  const [issueCopied, setIssueCopied] = useState(false);
+  const copyAsGitHubIssue = () => {
+    if (!scan) return;
+    const critical = scan.findings.filter((f) => f.severity === "critical");
+    const high = scan.findings.filter((f) => f.severity === "high");
+    const medium = scan.findings.filter((f) => f.severity === "medium");
+    const low = scan.findings.filter((f) => f.severity === "low");
+    const lines = [
+      `## Security Scan Results — ${new URL(scan.target).hostname}`,
+      `**Grade:** ${scan.grade} (${scan.score}/100) | **${scan.summary.total} findings**`,
+      "",
+    ];
+    if (critical.length > 0) {
+      lines.push("### :red_circle: Critical");
+      for (const f of critical) lines.push(`- [ ] **${f.title}**${f.cwe ? ` (${f.cwe})` : ""}\n  ${f.remediation}`);
+      lines.push("");
+    }
+    if (high.length > 0) {
+      lines.push("### :orange_circle: High");
+      for (const f of high) lines.push(`- [ ] **${f.title}**${f.cwe ? ` (${f.cwe})` : ""}\n  ${f.remediation}`);
+      lines.push("");
+    }
+    if (medium.length > 0) {
+      lines.push(`### :yellow_circle: Medium (${medium.length})`);
+      for (const f of medium.slice(0, 10)) lines.push(`- [ ] ${f.title}${f.cwe ? ` (${f.cwe})` : ""}`);
+      if (medium.length > 10) lines.push(`- ...and ${medium.length - 10} more`);
+      lines.push("");
+    }
+    if (low.length > 0) lines.push(`<details><summary>${low.length} low severity findings</summary>\n\n${low.map((f) => `- ${f.title}`).join("\n")}\n</details>\n`);
+    lines.push("---", `*Scanned by [VibeShield](https://vibeshield.dev) on ${new Date(scan.completedAt || scan.startedAt).toLocaleDateString()}*`);
+    navigator.clipboard.writeText(lines.join("\n"));
+    setIssueCopied(true);
+    setTimeout(() => setIssueCopied(false), 2000);
+  };
+
   const handleCancel = async () => {
     setCancelling(true);
     try {
@@ -497,6 +532,9 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   <div className="absolute right-0 top-full mt-1 bg-zinc-900 border border-zinc-800 rounded-lg py-1 min-w-[140px] opacity-0 invisible group-hover/export:opacity-100 group-hover/export:visible transition-all z-50 shadow-xl">
                     <button onClick={copyAsMarkdown} className="w-full text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">
                       {mdCopied ? "Copied!" : "Copy Markdown"}
+                    </button>
+                    <button onClick={copyAsGitHubIssue} className="w-full text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">
+                      {issueCopied ? "Copied!" : "Copy as GitHub Issue"}
                     </button>
                     <a href={`/api/scan/${id}/pdf`} target="_blank" rel="noopener" className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">PDF Report</a>
                     <a href={`/api/scan/${id}/report`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">Markdown</a>
