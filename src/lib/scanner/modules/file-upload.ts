@@ -313,6 +313,34 @@ export const fileUploadModule: ScanModule = async (target) => {
         evidence: `POST ${v.endpoint} with JPEG/JS polyglot → uploaded\nServed at: ${v.fileUrl}\nContent-Type: ${v.contentType}`,
         remediation: "Validate file content with magic byte detection. Always serve uploads with Content-Type matching the validated type. Set Content-Disposition: attachment.", cwe: "CWE-434", owasp: "A04:2021",
         codeSnippet: `// Validate content AND force correct Content-Type\nimport { fileTypeFromBuffer } from 'file-type';\n\nconst type = await fileTypeFromBuffer(buffer);\n// Serve with validated Content-Type, not whatever the file claims\nres.setHeader('Content-Type', type?.mime || 'application/octet-stream');\nres.setHeader('Content-Disposition', 'attachment');\nres.setHeader('X-Content-Type-Options', 'nosniff');` });
+    } else if (v.type === "ct-mismatch") {
+      findings.push({ id: `file-upload-ct-mismatch-${findings.length}`, module: "File Upload", severity: "high",
+        title: `Content-Type mismatch bypass on ${v.pathname}`,
+        description: `The upload endpoint accepted a file named .jpg but with text/html Content-Type, and the file is served as ${v.servedContentType}. The server trusts the client-supplied Content-Type header over file magic bytes, enabling stored XSS via file uploads.`,
+        evidence: `POST ${v.endpoint} with filename "innocent.jpg" Content-Type: text/html\nServed at: ${v.fileUrl}\nServed Content-Type: ${v.servedContentType}`,
+        remediation: "Detect file type by reading magic bytes (file signatures), not by trusting the Content-Type header or extension. Serve uploaded files with Content-Type derived from server-side detection and set X-Content-Type-Options: nosniff.",
+        cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `import { fileTypeFromBuffer } from 'file-type';\n\nconst buffer = Buffer.from(await file.arrayBuffer());\nconst detected = await fileTypeFromBuffer(buffer);\n// Trust magic bytes, not Content-Type header\nconst safeMime = detected?.mime || 'application/octet-stream';\nres.setHeader('Content-Type', safeMime);\nres.setHeader('X-Content-Type-Options', 'nosniff');` });
+    } else if (v.type === "ct-mismatch-accepted") {
+      findings.push({ id: `file-upload-ct-mismatch-accepted-${findings.length}`, module: "File Upload", severity: "medium",
+        title: `Content-Type mismatch accepted on ${v.pathname}`,
+        description: "The upload endpoint accepted a .jpg file with text/html Content-Type without rejecting the mismatch. If files are served with the original Content-Type, this enables stored XSS.",
+        evidence: `POST ${v.endpoint} with filename "innocent.jpg" Content-Type: text/html\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate that the Content-Type header matches the file extension and magic bytes. Reject mismatched uploads.", cwe: "CWE-434", owasp: "A04:2021" });
+    } else if (v.type === "encoded-traversal") {
+      findings.push({ id: `file-upload-encoded-traversal-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `URL-encoded path traversal in file upload on ${v.pathname}`,
+        description: `The upload endpoint accepted a filename with URL-encoded traversal sequences ("${v.filename}"). The server may decode these after path validation, allowing writes outside the upload directory.`,
+        evidence: `POST ${v.endpoint} with filename "${v.filename}"\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Decode filenames fully before validation. Strip all path separators (/, \\, %2f, %5c) and traversal sequences. Generate random filenames server-side.", cwe: "CWE-22", owasp: "A01:2021",
+        codeSnippet: `import path from 'path';\nimport crypto from 'crypto';\n\n// Fully decode and sanitize\nlet name = decodeURIComponent(decodeURIComponent(filename));\nname = name.replace(/[\\/\\\\]/g, '').replace(/\\.\\./g, '');\n// Best: ignore original name entirely\nconst safeName = crypto.randomUUID() + path.extname(name).toLowerCase();\nconst uploadDir = path.resolve('/app/uploads');\nconst dest = path.join(uploadDir, safeName);\nif (!dest.startsWith(uploadDir)) throw new Error('Invalid path');` });
+    } else if (v.type === "large-file-dos") {
+      findings.push({ id: `file-upload-large-dos-${findings.length}`, module: "File Upload", severity: "medium",
+        title: `No upload size limit enforced on ${v.pathname}`,
+        description: "The upload endpoint accepted a request claiming 10GB Content-Length without immediate rejection (HTTP 413). Missing size limits allow denial-of-service attacks by exhausting disk space or memory.",
+        evidence: `POST ${v.endpoint} with Content-Length: 10737418240 (10GB)\nResponse: ${v.status} (accepted)`,
+        remediation: "Enforce upload size limits at the web server (e.g., client_max_body_size in nginx) and application level. Return 413 Payload Too Large for oversized requests before reading the body.", cwe: "CWE-770", owasp: "A05:2021",
+        codeSnippet: `// Express/Node.js\napp.use('/api/upload', express.raw({ limit: '10mb' }));\n\n// Next.js route config\nexport const config = { api: { bodyParser: { sizeLimit: '10mb' } } };\n\n// nginx\nclient_max_body_size 10m;` });
     } else if (v.type === "oversize-error") {
       findings.push({ id: `file-upload-error-${findings.length}`, module: "File Upload", severity: "low",
         title: `Upload endpoint error disclosure on ${v.pathname}`,

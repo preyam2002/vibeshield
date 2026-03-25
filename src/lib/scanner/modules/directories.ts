@@ -28,6 +28,12 @@ const CHECKS: DirCheck[] = [
   { path: "/config.php", severity: "high", title: "Exposed config.php", description: "PHP config file accessible.", remediation: "Move config outside web root." },
   { path: "/configuration.php", severity: "high", title: "Exposed configuration.php", description: "Configuration file accessible.", remediation: "Move outside web root." },
 
+  // WordPress/CMS detection
+  { path: "/wp-admin/", severity: "medium", title: "WordPress admin panel found", description: "WordPress admin login is publicly accessible — attackers can attempt brute-force or credential stuffing attacks.", remediation: "Restrict wp-admin access by IP or add two-factor authentication.", contentCheck: /wordpress|wp-login|log in/i },
+  { path: "/wp-config.php.bak", severity: "critical", title: "WordPress config backup exposed", description: "A backup of wp-config.php is accessible — contains database credentials, auth keys, and salts in plaintext.", remediation: "Remove .bak files from web root immediately and rotate all credentials.", contentCheck: /DB_NAME|DB_USER|DB_PASSWORD|AUTH_KEY/i },
+  { path: "/xmlrpc.php", severity: "medium", title: "WordPress XML-RPC enabled", description: "XML-RPC interface is accessible — can be used for brute-force amplification attacks and DDoS pingback abuse.", remediation: "Disable XML-RPC if not needed. Block in .htaccess or use a security plugin.", contentCheck: /XML-RPC|xmlrpc/i },
+  { path: "/wp-json/wp/v2/users", severity: "medium", title: "WordPress user enumeration via REST API", description: "WordPress REST API exposes user list including usernames — attackers can use these for targeted login attacks.", remediation: "Disable the users endpoint or restrict access. Use a security plugin to block user enumeration.", contentCheck: /"slug"|"name"|"id"/i },
+
   // Debug/dev tools
   { path: "/__nextapi", severity: "medium", title: "Next.js internal API exposed", description: "Next.js internal API endpoint is accessible.", remediation: "Ensure internal Next.js routes are not publicly accessible." },
   { path: "/_next/data", severity: "info", title: "Next.js data routes accessible", description: "Next.js SSR data routes are accessible.", remediation: "Review what data is being sent via SSR props." },
@@ -62,6 +68,7 @@ const CHECKS: DirCheck[] = [
   // Docker/CI
   { path: "/Dockerfile", severity: "medium", title: "Dockerfile exposed", description: "Dockerfile is accessible, revealing your build configuration and potentially base images with known vulnerabilities.", remediation: "Block access to Dockerfile.", contentCheck: /FROM|RUN|COPY|EXPOSE/i },
   { path: "/docker-compose.yml", severity: "high", title: "docker-compose.yml exposed", description: "Docker Compose config may contain service passwords and internal network details.", remediation: "Block access.", contentCheck: /services|version|volumes/i },
+  { path: "/.dockerenv", severity: "medium", title: "Docker environment marker exposed", description: "The .dockerenv file confirms the application is running inside a Docker container — useful for attackers to tailor container escape exploits.", remediation: "Block access to .dockerenv." },
   { path: "/.github/workflows", severity: "low", title: "GitHub Actions workflows exposed", description: "CI/CD configuration is accessible.", remediation: "Block access to .github directory." },
   { path: "/Jenkinsfile", severity: "medium", title: "Jenkinsfile exposed", description: "Jenkins pipeline config is accessible — reveals build steps, deployment targets, and potentially credential IDs.", remediation: "Block access to Jenkinsfile.", contentCheck: /pipeline|node|stage/i },
   { path: "/.gitlab-ci.yml", severity: "medium", title: "GitLab CI config exposed", description: "GitLab CI/CD configuration reveals build pipeline, deployment targets, and environment variables.", remediation: "Block access to .gitlab-ci.yml.", contentCheck: /stages|script|image/i },

@@ -376,5 +376,65 @@ export const businessLogicModule: ScanModule = async (target) => {
     break;
   }
 
+  for (const r of currencyLocaleResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `biz-currency-manip-${findings.length}`, module: "Business Logic", severity: "medium",
+      title: `Currency/locale manipulation accepted on ${v.pathname}`,
+      description: `The endpoint accepted ${v.desc} without error and returned pricing data. If the server uses client-supplied currency or locale to determine prices, attackers can exploit exchange rate differences or locale-specific pricing to pay less.`,
+      evidence: `GET ${v.endpoint} with params: ${JSON.stringify(v.params)}\nResponse: ${v.text}`,
+      remediation: "Determine pricing server-side based on authenticated user profile or IP geolocation. Never let client-supplied currency or locale parameters directly affect pricing calculations.",
+      cwe: "CWE-20", owasp: "A04:2021",
+      codeSnippet: `// Determine currency server-side\nexport async function GET(req: Request) {\n  const user = await getUser(req);\n  const currency = user.currency || getCurrencyFromGeo(req);\n  // Ignore client-supplied ?currency param for pricing\n  const prices = await db.prices.findMany({ where: { currency } });\n  return Response.json({ prices, currency });\n}`,
+    });
+    break;
+  }
+
+  for (const r of langHeaderResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `biz-locale-pricing-${findings.length}`, module: "Business Logic", severity: "high",
+      title: `Accept-Language header affects pricing on ${v.pathname}`,
+      description: "Changing the Accept-Language header returns different prices. Attackers can manipulate the locale header to access region-specific pricing that may be cheaper.",
+      evidence: `Endpoint: ${v.endpoint}\nen-US prices: ${v.prices1.join(", ")}\nja-JP prices: ${v.prices2.join(", ")}`,
+      remediation: "Pricing should be determined by the user's account region or server-side geolocation, not by the Accept-Language header which is trivially spoofable.",
+      cwe: "CWE-807", owasp: "A04:2021",
+      codeSnippet: `// Don't use Accept-Language for pricing decisions\nconst pricing = await getPricingForRegion(\n  user.region || getRegionFromIP(req)\n);\n// Accept-Language should only affect display language, not prices`,
+    });
+    break;
+  }
+
+  for (const r of qtyManipResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `biz-qty-manip-${findings.length}`, module: "Business Logic", severity: "high",
+      title: `${v.desc} accepted on ${v.pathname}`,
+      description: `The endpoint accepted a ${v.desc} (${v.quantity}) without validation. ${v.quantity < 0 ? "Negative quantities can reverse charges or generate credits." : v.quantity < 1 ? "Fractional quantities can bypass minimum-order logic or cause rounding errors." : "Extremely large quantities can cause integer overflow in total calculations or exhaust inventory."}`,
+      evidence: `POST ${v.endpoint}\nQuantity: ${v.quantity}\nResponse: ${v.text}`,
+      remediation: "Validate quantities server-side: reject negative values, enforce integer-only quantities (unless fractional is intentional), and set reasonable upper bounds.",
+      cwe: "CWE-20", owasp: "A04:2021",
+      codeSnippet: `// Validate quantities with Zod\nimport { z } from "zod";\nconst QuantitySchema = z.number()\n  .int("Quantity must be a whole number")\n  .min(1, "Minimum quantity is 1")\n  .max(10000, "Maximum quantity is 10,000");\n\nconst qty = QuantitySchema.parse(req.body.quantity);`,
+    });
+    break;
+  }
+
+  for (const r of toctouResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `biz-toctou-${findings.length}`, module: "Business Logic", severity: "high",
+      title: `Possible TOCTOU race condition on ${v.pathname}`,
+      description: "Two simultaneous requests to this endpoint both succeeded independently, suggesting a lack of concurrency control. Attackers can exploit this race condition to double-spend, redeem coupons multiple times, or overdraw balances.",
+      evidence: `Two simultaneous POST requests to ${v.endpoint}\nResponse 1: ${v.text1}\nResponse 2: ${v.text2}`,
+      remediation: "Use database-level locking (SELECT FOR UPDATE), optimistic concurrency control (version columns), or idempotency keys to prevent race conditions in critical business operations.",
+      cwe: "CWE-367", owasp: "A04:2021",
+      codeSnippet: `// Use database transaction with row-level locking\nawait db.$transaction(async (tx) => {\n  const balance = await tx.account.findUnique({\n    where: { id: userId },\n    // Lock the row to prevent concurrent reads\n  });\n  if (balance.amount < withdrawAmount) throw new Error("Insufficient funds");\n  await tx.account.update({\n    where: { id: userId },\n    data: { amount: { decrement: withdrawAmount } },\n  });\n});\n\n// Or use idempotency keys\nconst key = req.headers.get("idempotency-key");\nif (await redis.setnx(\`idem:\${key}\`, "1")) {\n  // Process request\n} else {\n  // Return cached response\n}`,
+    });
+    break;
+  }
+
   return findings;
 };
