@@ -986,6 +986,72 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </div>
             )}
 
+            {/* Security checklist */}
+            {!isRunning && scan.status === "completed" && (() => {
+              const modules = scan.modules.filter((m) => m.status === "completed");
+              const failedModules = new Set(scan.findings.map((f) => f.module));
+              const passedChecks: { name: string; label: string }[] = [];
+              const failedChecks: { name: string; label: string; count: number }[] = [];
+
+              const checkLabels: Record<string, string> = {
+                "Security Headers": "Security headers configured",
+                "SSL/TLS": "HTTPS/TLS properly set up",
+                "Cookies": "Cookie security flags set",
+                "CORS": "CORS policy is restrictive",
+                "Secret Detection": "No exposed API keys",
+                "Source Maps": "Source maps not public",
+                "CSRF": "CSRF protection in place",
+                "Clickjacking": "Clickjacking protection",
+                "Authentication": "Auth endpoints protected",
+                "SQL Injection & XSS": "No injection vulnerabilities",
+                "Open Redirect": "No open redirects",
+                "IDOR": "No IDOR vulnerabilities",
+                "Environment Leak": "No env variable leaks",
+                "Dependencies": "Dependencies up to date",
+                "JWT Security": "JWT implementation secure",
+              };
+
+              for (const mod of modules) {
+                const label = checkLabels[mod.name];
+                if (!label) continue;
+                if (failedModules.has(mod.name)) {
+                  const count = scan.findings.filter((f) => f.module === mod.name).length;
+                  failedChecks.push({ name: mod.name, label, count });
+                } else {
+                  passedChecks.push({ name: mod.name, label });
+                }
+              }
+
+              if (passedChecks.length === 0 && failedChecks.length === 0) return null;
+              return (
+                <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                    Security Checklist
+                  </h3>
+                  <div className="space-y-1.5">
+                    {passedChecks.slice(0, 8).map((c) => (
+                      <div key={c.name} className="flex items-center gap-2 text-xs">
+                        <span className="text-emerald-500 shrink-0">✓</span>
+                        <span className="text-zinc-500">{c.label}</span>
+                      </div>
+                    ))}
+                    {failedChecks.slice(0, 6).map((c) => (
+                      <div key={c.name} className="flex items-center gap-2 text-xs">
+                        <span className="text-red-400 shrink-0">✗</span>
+                        <span className="text-zinc-400">{c.label}</span>
+                        <span className="text-zinc-700 text-[10px]">({c.count})</span>
+                      </div>
+                    ))}
+                  </div>
+                  {passedChecks.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-zinc-800/30 text-[10px] text-zinc-600">
+                      {passedChecks.length}/{passedChecks.length + failedChecks.length} checks passed
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Grade roadmap */}
             {!isRunning && scan.status === "completed" && scan.findings.length > 0 && scan.score < 95 && (() => {
               const penalty = (count: number, weight: number, decay: number) =>
