@@ -10,6 +10,24 @@ export const csrfModule: ScanModule = async (target) => {
     (c) => !c.sameSite || c.sameSite.toLowerCase() !== "none",
   );
 
+  // Flag SameSite=None cookies without Secure (exploitable for CSRF)
+  const insecureSameSiteNone = target.cookies.filter(
+    (c) => c.sameSite?.toLowerCase() === "none" && !c.secure,
+  );
+  if (insecureSameSiteNone.length > 0) {
+    findings.push({
+      id: "csrf-samesite-none-insecure",
+      module: "CSRF",
+      severity: "medium",
+      title: `SameSite=None cookie without Secure flag: ${insecureSameSiteNone.map((c) => c.name).join(", ")}`,
+      description: "Cookies with SameSite=None are sent on cross-site requests. Without the Secure flag, they're sent over HTTP too, enabling both CSRF and session hijacking on non-HTTPS connections.",
+      evidence: `Cookies: ${insecureSameSiteNone.map((c) => `${c.name} (SameSite=None, Secure=${c.secure})`).join("; ")}`,
+      remediation: "Set Secure flag on all SameSite=None cookies. Better yet, use SameSite=Lax unless cross-site sending is specifically needed.",
+      cwe: "CWE-352", owasp: "A01:2021",
+      codeSnippet: `// Set SameSite=Lax (or Strict) by default\nres.headers.set("Set-Cookie", "session=abc; HttpOnly; Secure; SameSite=Lax; Path=/");`,
+    });
+  }
+
   // Check forms for CSRF tokens
   for (const form of target.forms.slice(0, 10)) {
     if (form.method === "GET") continue;
@@ -77,6 +95,63 @@ export const csrfModule: ScanModule = async (target) => {
       cwe: "CWE-352", owasp: "A01:2021",
       codeSnippet: `// API route — require custom header to trigger CORS preflight\nexport async function POST(req: Request) {\n  // Custom headers like X-Requested-With trigger CORS preflight,\n  // which blocks cross-origin simple requests\n  if (!req.headers.get("x-requested-with")) {\n    return Response.json({ error: "Missing required header" }, { status: 403 });\n  }\n  // ... handle request\n}`,
     });
+  }
+
+  // Test if JSON endpoints accept form-encoded content (enables simple CSRF via <form>)
+  const contentTypeResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 8).map(async (endpoint) => {
+      // First, check if endpoint expects JSON
+      const jsonRes = await scanFetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ test: "csrf-check" }), timeoutMs: 5000,
+      });
+      if (!jsonRes.ok) return null;
+
+      // Now try text/plain (bypasses CORS preflight) with JSON body
+      const plainRes = await scanFetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ test: "csrf-check" }), timeoutMs: 5000,
+      });
+      if (plainRes.ok) {
+        const plainText = await plainRes.text();
+        if (plainText.length > 10 && !/error|invalid|unsupported.*content/i.test(plainText.substring(0, 200))) {
+          return { endpoint, pathname: new URL(endpoint).pathname, type: "text/plain" as const };
+        }
+      }
+
+      // Try form-encoded (also a "simple" CSRF request)
+      const formRes = await scanFetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "test=csrf-check", timeoutMs: 5000,
+      });
+      if (formRes.ok) {
+        const formText = await formRes.text();
+        if (formText.length > 10 && !/error|invalid|unsupported/i.test(formText.substring(0, 200))) {
+          return { endpoint, pathname: new URL(endpoint).pathname, type: "form-encoded" as const };
+        }
+      }
+
+      return null;
+    }),
+  );
+
+  let ctBypassCount = 0;
+  for (const r of contentTypeResults) {
+    if (ctBypassCount >= 2) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (!hasSameSiteCookie) {
+      ctBypassCount++;
+      findings.push({
+        id: `csrf-content-type-${findings.length}`, module: "CSRF", severity: "medium",
+        title: `JSON endpoint accepts ${v.type} on ${v.pathname}`,
+        description: `This JSON API endpoint also processes ${v.type} requests. Since ${v.type} is a "simple" content type that doesn't trigger CORS preflight, a malicious site can submit cross-origin requests using a <form> element.`,
+        evidence: `POST ${v.endpoint} with Content-Type: ${v.type} succeeded`,
+        remediation: "Reject requests with unexpected Content-Type. Require application/json and validate the Content-Type header server-side.",
+        cwe: "CWE-352", owasp: "A01:2021",
+        codeSnippet: `// Enforce Content-Type on API routes\nexport async function POST(req: Request) {\n  const ct = req.headers.get("content-type") || "";\n  if (!ct.includes("application/json")) {\n    return Response.json({ error: "Content-Type must be application/json" }, { status: 415 });\n  }\n  const body = await req.json();\n}`,
+      });
+    }
   }
 
   return findings;

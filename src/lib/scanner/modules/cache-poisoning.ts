@@ -145,5 +145,52 @@ export const cachePoisoningModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 4: Fat GET / method override cache poisoning
+  const fatGetResults = await Promise.allSettled(
+    [...baselines.entries()].slice(0, 3).map(async ([url, baseline]) => {
+      // Test if GET request with body or method override headers is cached differently
+      const overrideHeaders: [string, string][] = [
+        ["X-HTTP-Method-Override", "POST"],
+        ["X-Method-Override", "POST"],
+        ["X-HTTP-Method", "POST"],
+      ];
+      for (const [headerName, headerVal] of overrideHeaders) {
+        const res = await scanFetch(url, {
+          headers: { [headerName]: headerVal, "Content-Type": "application/x-www-form-urlencoded" },
+          timeoutMs: 5000,
+        });
+        const resHeaders: Record<string, string> = {};
+        res.headers.forEach((v, k) => { resHeaders[k] = v; });
+        // If the response differs from baseline, the method override was processed
+        const text = await res.text();
+        if (res.status !== baseline.status || Math.abs(text.length - baseline.body.length) > text.length * 0.3) {
+          return {
+            url, pathname: new URL(url).pathname,
+            header: headerName,
+            baseStatus: baseline.status, overrideStatus: res.status,
+          };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of fatGetResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `cache-fat-get-${count++}`,
+      module: "Cache Poisoning",
+      severity: "medium",
+      title: `Method override accepted on cached ${v.pathname}`,
+      description: `The server processes ${v.header} header on GET requests, returning a different response (${v.baseStatus} vs ${v.overrideStatus}). If the CDN caches based on URL only, an attacker can poison the cache with a POST-like response served to all users.`,
+      evidence: `GET ${v.url} → ${v.baseStatus}\nGET ${v.url} with ${v.header}: POST → ${v.overrideStatus}`,
+      remediation: "Ignore HTTP method override headers in production. Configure your CDN to include the request method in the cache key.",
+      cwe: "CWE-444", owasp: "A05:2021",
+      codeSnippet: `// Reject method override headers in middleware\nexport function middleware(req: NextRequest) {\n  const override = req.headers.get("x-http-method-override");\n  if (override) {\n    return NextResponse.json({ error: "Method override not allowed" }, { status: 400 });\n  }\n}`,
+    });
+    break;
+  }
+
   return findings;
 };

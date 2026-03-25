@@ -27,7 +27,7 @@ export const businessLogicModule: ScanModule = async (target) => {
   if (bizEndpoints.length === 0) return findings;
 
   // Run all tests in parallel
-  const [negativeResults, zeroResults, duplicateResults, paramTamperResults] = await Promise.all([
+  const [negativeResults, zeroResults, duplicateResults, paramTamperResults, overflowResults, couponResults] = await Promise.all([
     // Test 1: Negative value injection
     Promise.allSettled(
       bizEndpoints.slice(0, 5).flatMap((endpoint) =>
@@ -108,13 +108,65 @@ export const businessLogicModule: ScanModule = async (target) => {
           const text = await res.text();
           if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
           if (text.length < 10) return null;
-          // Check if negative value was reflected or accepted
           if (text.includes("-1") && /price|amount|total|quantity/i.test(text)) {
             return { endpoint, pathname: new URL(endpoint).pathname, param, text: text.substring(0, 200) };
           }
           return null;
         }),
       ),
+    ),
+
+    // Test 5: Integer overflow / MAX_SAFE_INTEGER quantity
+    Promise.allSettled(
+      bizEndpoints.slice(0, 3).filter((ep) => /cart|order|checkout|purchase/i.test(ep)).map(async (endpoint) => {
+        const overflowPayloads = [
+          { quantity: 999999999, amount: 1 },
+          { quantity: Number.MAX_SAFE_INTEGER, amount: 1 },
+          { quantity: 2147483647, price: 1 },  // INT32_MAX
+        ];
+        for (const body of overflowPayloads) {
+          const res = await scanFetch(endpoint, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body), timeoutMs: 5000,
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
+          if (text.length < 10) continue;
+          // If accepted without error, may cause integer overflow in total calculation
+          if (/success|created|order|session|url/i.test(text) && !/error|invalid|too (large|many|high)|exceeded|limit|maximum/i.test(text.substring(0, 300))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, qty: body.quantity, text: text.substring(0, 200) };
+          }
+        }
+        return null;
+      }),
+    ),
+
+    // Test 6: Coupon/promo code stacking
+    Promise.allSettled(
+      bizEndpoints.slice(0, 3).filter((ep) => /coupon|discount|promo|redeem/i.test(ep)).map(async (endpoint) => {
+        // Try applying multiple coupon codes at once
+        const stackPayloads = [
+          { codes: ["TEST", "DISCOUNT", "PROMO"], coupon: "TEST" },
+          { coupon: ["TEST", "DISCOUNT"], code: "PROMO" },
+          { coupons: "TEST,DISCOUNT,PROMO" },
+        ];
+        for (const body of stackPayloads) {
+          const res = await scanFetch(endpoint, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body), timeoutMs: 5000,
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (looksLikeHtml(text)) continue;
+          if (text.length < 10) continue;
+          // If server processes array of coupons, it may stack discounts
+          if (/applied|success|discount|saved/i.test(text) && !/error|invalid|expired|single|one coupon/i.test(text.substring(0, 300))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, text: text.substring(0, 200) };
+          }
+        }
+        return null;
+      }),
     ),
   ]);
 
@@ -175,6 +227,36 @@ export const businessLogicModule: ScanModule = async (target) => {
       remediation: "Validate all business parameters server-side. Use allowlists for valid ranges. Never trust client-submitted business values.",
       cwe: "CWE-20", owasp: "A04:2021",
       codeSnippet: `// Validate query params server-side\nconst quantity = Math.max(1, Math.min(100, parseInt(params.quantity) || 1));\nconst price = await db.products.findById(params.id).then(p => p.price);\n// Never use client-submitted price/amount values`,
+    });
+    break;
+  }
+
+  for (const r of overflowResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `biz-overflow-${findings.length}`, module: "Business Logic", severity: "high",
+      title: `Integer overflow quantity accepted on ${v.pathname}`,
+      description: `The endpoint accepted quantity=${v.qty} without validation. Extremely large quantities can cause integer overflow in price calculations (e.g., qty * price wrapping to a negative or zero total).`,
+      evidence: `POST ${v.endpoint}\nQuantity: ${v.qty}\nResponse: ${v.text}`,
+      remediation: "Set maximum limits on quantity fields. Validate that total calculations don't overflow. Use BigInt or decimal libraries for monetary math.",
+      cwe: "CWE-190", owasp: "A04:2021",
+      codeSnippet: `// Validate quantity within safe bounds\nconst MAX_QUANTITY = 10000;\nconst qty = Math.min(MAX_QUANTITY, Math.max(1, Math.floor(Number(input))));\nif (!Number.isSafeInteger(qty * priceCents)) {\n  throw new Error("Calculation overflow");\n}`,
+    });
+    break;
+  }
+
+  for (const r of couponResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `biz-coupon-stack-${findings.length}`, module: "Business Logic", severity: "medium",
+      title: `Possible coupon stacking on ${v.pathname}`,
+      description: "The coupon/promo endpoint accepted an array or multiple codes without rejecting them. If discounts are applied cumulatively, attackers can stack coupons to get products for free or at deep discounts.",
+      evidence: `POST ${v.endpoint} with multiple coupon codes\nResponse: ${v.text}`,
+      remediation: "Only accept a single coupon code per order. Validate server-side that only one discount is applied. Cap maximum discount percentage.",
+      cwe: "CWE-799", owasp: "A04:2021",
+      codeSnippet: `// Enforce single coupon per order\nconst coupon = z.string().parse(req.body.coupon); // reject arrays\nconst discount = await validateCoupon(coupon, order);\nif (discount.percent > 50) throw new Error("Max 50% discount");`,
     });
     break;
   }
