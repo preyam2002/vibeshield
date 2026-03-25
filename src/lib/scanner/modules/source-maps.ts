@@ -27,8 +27,23 @@ export const sourceMapsModule: ScanModule = async (target) => {
         if (!res.ok) return null;
         const text = await res.text();
         try {
-          const json = JSON.parse(text);
-          if (json.version && json.sources && json.mappings) return mapUrl;
+          const json = JSON.parse(text) as { version?: number; sources?: string[]; mappings?: string; sourcesContent?: string[] };
+          if (json.version && json.sources && json.mappings) {
+            const sensitiveFiles = json.sources.filter((s) =>
+              /\.env|config|secret|credential|password|\.pem|\.key|admin|internal/i.test(s),
+            );
+            const leakedSecrets: string[] = [];
+            if (json.sourcesContent) {
+              for (const content of json.sourcesContent.slice(0, 20)) {
+                if (!content) continue;
+                if (/(?:sk_live|sk_test)_[a-zA-Z0-9]{20,}/.test(content)) leakedSecrets.push("Stripe secret key");
+                if (/(?:SUPABASE_SERVICE_ROLE|service_role).*eyJ/.test(content)) leakedSecrets.push("Supabase service role key");
+                if (/(?:DATABASE_URL|MONGO_URI|REDIS_URL)\s*=\s*\S+/.test(content)) leakedSecrets.push("Database connection string");
+                if (/-----BEGIN (?:RSA )?PRIVATE KEY-----/.test(content)) leakedSecrets.push("Private key");
+              }
+            }
+            return { url: mapUrl, sourceCount: json.sources.length, sensitiveFiles, leakedSecrets };
+          }
         } catch { /* skip */ }
         return null;
       }),
@@ -42,19 +57,28 @@ export const sourceMapsModule: ScanModule = async (target) => {
     ),
   ]);
 
+  const mapData: { url: string; sourceCount: number; sensitiveFiles: string[]; leakedSecrets: string[] }[] = [];
   for (const r of mapResults) {
-    if (r.status === "fulfilled" && r.value) exposedMaps.push(r.value);
+    if (r.status === "fulfilled" && r.value) {
+      mapData.push(r.value);
+      exposedMaps.push(r.value.url);
+    }
   }
 
+  const allSensitiveFiles = mapData.flatMap((m) => m.sensitiveFiles);
+  const allLeakedSecrets = [...new Set(mapData.flatMap((m) => m.leakedSecrets))];
+  const totalSources = mapData.reduce((sum, m) => sum + m.sourceCount, 0);
+
   if (exposedMaps.length > 0) {
+    const severity = allLeakedSecrets.length > 0 ? "critical" : "high";
     findings.push({
       id: "sourcemaps-exposed",
       module: "Source Maps",
-      severity: "high",
-      title: `${exposedMaps.length} source map${exposedMaps.length > 1 ? "s" : ""} publicly accessible`,
-      description: "Source maps are accessible, allowing anyone to view your unminified source code including comments, variable names, and business logic.",
-      evidence: `Accessible source maps:\n${exposedMaps.slice(0, 5).join("\n")}${exposedMaps.length > 5 ? `\n...and ${exposedMaps.length - 5} more` : ""}`,
-      remediation: "Disable source maps in production. For Next.js: set productionBrowserSourceMaps: false in next.config.js. For Vite: set build.sourcemap: false.",
+      severity,
+      title: `${exposedMaps.length} source map${exposedMaps.length > 1 ? "s" : ""} publicly accessible${allLeakedSecrets.length > 0 ? " (secrets found!)" : ""}`,
+      description: `Source maps are accessible, exposing ${totalSources} source files including comments, variable names, and business logic.${allSensitiveFiles.length > 0 ? ` Sensitive files found: ${allSensitiveFiles.slice(0, 5).join(", ")}.` : ""}${allLeakedSecrets.length > 0 ? ` SECRETS LEAKED: ${allLeakedSecrets.join(", ")}.` : ""}`,
+      evidence: `Accessible source maps:\n${exposedMaps.slice(0, 5).join("\n")}${exposedMaps.length > 5 ? `\n...and ${exposedMaps.length - 5} more` : ""}${allLeakedSecrets.length > 0 ? `\n\nLeaked secrets: ${allLeakedSecrets.join(", ")}` : ""}${allSensitiveFiles.length > 0 ? `\n\nSensitive source files: ${allSensitiveFiles.slice(0, 10).join(", ")}` : ""}`,
+      remediation: `Disable source maps in production.${allLeakedSecrets.length > 0 ? " IMMEDIATELY rotate all leaked secrets." : ""} For Next.js: set productionBrowserSourceMaps: false in next.config.js. For Vite: set build.sourcemap: false.`,
       cwe: "CWE-540",
       owasp: "A05:2021",
       codeSnippet: `// next.config.ts\nexport default {\n  productionBrowserSourceMaps: false,\n};\n\n// vite.config.ts\nexport default defineConfig({\n  build: { sourcemap: false },\n});`,

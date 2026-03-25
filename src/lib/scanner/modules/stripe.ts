@@ -79,6 +79,34 @@ export const stripeModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for Stripe secret key in client-side code
+  const secretKeyMatch = allJs.match(/sk_live_[a-zA-Z0-9]{20,}/);
+  if (secretKeyMatch) {
+    findings.push({
+      id: "stripe-secret-key-exposed", module: "Stripe", severity: "critical",
+      title: "Stripe secret key exposed in client-side JavaScript",
+      description: "A live Stripe secret key (sk_live_*) is embedded in client-side code. Anyone can use this to create charges, read customer data, issue refunds, and more.",
+      evidence: `Key found: ${secretKeyMatch[0].substring(0, 12)}...${secretKeyMatch[0].slice(-4)}`,
+      remediation: "Remove the secret key from client code IMMEDIATELY. Rotate the key in the Stripe dashboard. Only use publishable keys (pk_live_*) client-side.",
+      cwe: "CWE-798", owasp: "A07:2021",
+      codeSnippet: `// Client-side: only use the publishable key\nconst stripe = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);\n\n// Server-side: use the secret key\n// app/api/checkout/route.ts\nimport Stripe from "stripe";\nconst stripe = new Stripe(process.env.STRIPE_SECRET_KEY!); // no NEXT_PUBLIC_`,
+    });
+  }
+
+  // Check for test key in production
+  const testKeyMatch = allJs.match(/sk_test_[a-zA-Z0-9]{20,}/);
+  if (testKeyMatch) {
+    findings.push({
+      id: "stripe-test-key-exposed", module: "Stripe", severity: "high",
+      title: "Stripe test secret key in client-side code",
+      description: "A Stripe test secret key (sk_test_*) is embedded in client code. While it can't affect live data, it reveals your test environment and should be server-side only.",
+      evidence: `Key found: ${testKeyMatch[0].substring(0, 12)}...`,
+      remediation: "Move the test secret key to a server-side environment variable.",
+      cwe: "CWE-798",
+      codeSnippet: `// .env.local (not committed to git)\nSTRIPE_SECRET_KEY=sk_test_...\n\n// Server-only API route\nconst stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);`,
+    });
+  }
+
   // Check for success URL bypass
   const successUrls = allJs.match(/success_url.*?["'](https?:\/\/[^"']+)["']/gi);
   if (successUrls) {
