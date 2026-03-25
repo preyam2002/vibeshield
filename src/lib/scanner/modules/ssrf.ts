@@ -50,75 +50,77 @@ export const ssrfModule: ScanModule = async (target) => {
 
   let ssrfCount = 0;
 
-  for (const endpoint of testedEndpoints) {
-    if (findings.length >= MAX_FINDINGS) break;
+  // Test all endpoints in parallel — each runs GET + POST tests concurrently
+  const endpointResults = await Promise.allSettled(
+    testedEndpoints.map(async (endpoint) => {
+      const pathname = new URL(endpoint).pathname;
+      const hits: Finding[] = [];
 
-    // Test GET: parallelize all param+payload combinations for this endpoint
-    const getTests = SSRF_PARAMS.slice(0, 8).flatMap((param) =>
-      SSRF_PAYLOADS.slice(0, 3).map(({ payload, name }) => ({ param, payload, name })),
-    );
+      // GET and POST tests in parallel
+      const getTests = SSRF_PARAMS.slice(0, 8).flatMap((param) =>
+        SSRF_PAYLOADS.slice(0, 3).map(({ payload, name }) => ({ param, payload, name })),
+      );
 
-    const getResults = await Promise.allSettled(
-      getTests.map(async ({ param, payload, name }) => {
-        const testUrl = new URL(endpoint);
-        testUrl.searchParams.set(param, payload);
-        const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
-        const text = await res.text();
-        return { param, payload, name, testUrl, res, text };
-      }),
-    );
+      const [getResults, postResults] = await Promise.all([
+        Promise.allSettled(
+          getTests.map(async ({ param, payload, name }) => {
+            const testUrl = new URL(endpoint);
+            testUrl.searchParams.set(param, payload);
+            const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+            const text = await res.text();
+            if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, name)) {
+              return { type: "get" as const, param, name, url: testUrl.href, status: res.status, text: text.substring(0, 200), pathname };
+            }
+            return null;
+          }),
+        ),
+        Promise.allSettled(
+          SSRF_PAYLOADS.slice(0, 3).map(async ({ payload, name }) => {
+            const res = await scanFetch(endpoint, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: payload, uri: payload, source: payload }), timeoutMs: 5000,
+            });
+            const text = await res.text();
+            if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, name)) {
+              return { type: "post" as const, name, endpoint, payload, status: res.status, text: text.substring(0, 200), pathname };
+            }
+            return null;
+          }),
+        ),
+      ]);
 
-    for (const result of getResults) {
-      if (findings.length >= MAX_FINDINGS) break;
-      if (result.status !== "fulfilled") continue;
-      const { param, name, testUrl, res, text } = result.value;
-      if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, name)) {
-        findings.push({
-          id: `ssrf-get-${ssrfCount++}`,
-          module: "SSRF",
-          severity: "critical",
-          title: `SSRF: ${name} accessible via ${param} parameter on ${new URL(endpoint).pathname}`,
-          description: `The endpoint fetches user-supplied URLs server-side without validating the target. An attacker can access internal services, cloud metadata, and private networks.`,
-          evidence: `GET ${testUrl.href}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
-          remediation: "Validate and sanitize URLs before fetching. Block requests to internal IP ranges (127.0.0.0/8, 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16). Use an allowlist of permitted domains.",
-          cwe: "CWE-918",
-          owasp: "A10:2021",
-        });
+      for (const r of getResults) {
+        if (r.status === "fulfilled" && r.value) return r.value;
       }
-    }
-
-    // Test POST with URL in body — parallelize payloads
-    if (findings.length >= MAX_FINDINGS) break;
-    const postResults = await Promise.allSettled(
-      SSRF_PAYLOADS.slice(0, 3).map(async ({ payload, name }) => {
-        const res = await scanFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: payload, uri: payload, source: payload }),
-          timeoutMs: 5000,
-        });
-        const text = await res.text();
-        return { payload, name, res, text };
-      }),
-    );
-
-    for (const result of postResults) {
-      if (findings.length >= MAX_FINDINGS) break;
-      if (result.status !== "fulfilled") continue;
-      const { payload, name, res, text } = result.value;
-      if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, name)) {
-        findings.push({
-          id: `ssrf-post-${ssrfCount++}`,
-          module: "SSRF",
-          severity: "critical",
-          title: `SSRF: ${name} accessible via POST body on ${new URL(endpoint).pathname}`,
-          description: `The endpoint fetches user-supplied URLs from POST body without validation. An attacker can access internal services and cloud metadata.`,
-          evidence: `POST ${endpoint} with url: ${payload}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
-          remediation: "Validate and sanitize URLs before fetching. Block internal IP ranges. Use domain allowlists.",
-          cwe: "CWE-918",
-          owasp: "A10:2021",
-        });
+      for (const r of postResults) {
+        if (r.status === "fulfilled" && r.value) return r.value;
       }
+      return null;
+    }),
+  );
+
+  for (const r of endpointResults) {
+    if (findings.length >= MAX_FINDINGS) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (v.type === "get") {
+      findings.push({
+        id: `ssrf-get-${ssrfCount++}`, module: "SSRF", severity: "critical",
+        title: `SSRF: ${v.name} accessible via ${v.param} parameter on ${v.pathname}`,
+        description: "The endpoint fetches user-supplied URLs server-side without validating the target.",
+        evidence: `GET ${v.url}\nStatus: ${v.status}\nResponse preview: ${v.text}`,
+        remediation: "Validate and sanitize URLs before fetching. Block requests to internal IP ranges. Use an allowlist of permitted domains.",
+        cwe: "CWE-918", owasp: "A10:2021",
+      });
+    } else {
+      findings.push({
+        id: `ssrf-post-${ssrfCount++}`, module: "SSRF", severity: "critical",
+        title: `SSRF: ${v.name} accessible via POST body on ${v.pathname}`,
+        description: "The endpoint fetches user-supplied URLs from POST body without validation.",
+        evidence: `POST ${v.endpoint} with url: ${v.payload}\nStatus: ${v.status}\nResponse preview: ${v.text}`,
+        remediation: "Validate and sanitize URLs before fetching. Block internal IP ranges. Use domain allowlists.",
+        cwe: "CWE-918", owasp: "A10:2021",
+      });
     }
   }
 
