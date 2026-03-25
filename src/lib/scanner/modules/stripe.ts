@@ -8,83 +8,73 @@ export const stripeModule: ScanModule = async (target) => {
 
   if (!target.technologies.includes("Stripe") && !/stripe/i.test(allJs)) return findings;
 
-  // Check for webhook endpoint without signature verification
+  // Check for webhook endpoint without signature verification + price manipulation in parallel
   const webhookPaths = [
     "/api/webhook", "/api/webhooks", "/api/stripe/webhook",
     "/api/stripe", "/api/payments/webhook", "/webhook",
     "/webhooks/stripe",
   ];
 
-  for (const path of webhookPaths) {
-    try {
-      const res = await scanFetch(target.baseUrl + path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "checkout.session.completed",
-          data: { object: { id: "cs_test_fake", payment_status: "paid", amount_total: 0 } },
-        }),
-      });
-
-      // If it doesn't return 400 (missing signature), webhook verification might be missing
-      if (res.status === 200 || res.status === 201) {
-        const text = await res.text();
-        // Skip if SPA returning its shell HTML for any POST route
-        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
-        // Skip empty responses — likely not a real webhook handler
-        if (text.length < 5) continue;
-        findings.push({
-          id: `stripe-webhook-no-verify-${findings.length}`,
-          module: "Stripe",
-          severity: "critical",
-          title: `Stripe webhook accepts unverified events: ${path}`,
-          description: "The webhook endpoint accepted a fake Stripe event without signature verification. Attackers can send fake payment confirmations to grant themselves access to paid features.",
-          evidence: `POST ${target.baseUrl + path}\nSent fake checkout.session.completed event\nStatus: ${res.status}`,
-          remediation: "Verify Stripe webhook signatures using stripe.webhooks.constructEvent(). Never trust webhook data without signature verification.",
-          cwe: "CWE-345",
-          owasp: "A02:2021",
-        });
-      }
-    } catch {
-      // skip
-    }
-  }
-
-  // Check for client-side price manipulation
   const priceEndpoints = target.apiEndpoints.filter((ep) =>
     /checkout|payment|price|subscribe|billing/i.test(ep),
   );
 
-  for (const endpoint of priceEndpoints.slice(0, 3)) {
-    try {
-      // Try sending a modified price
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ price: 1, amount: 1, priceId: "price_test" }),
-      });
-      if (res.ok) {
+  const [webhookResults, priceResults] = await Promise.all([
+    // Webhook tests in parallel
+    Promise.allSettled(
+      webhookPaths.map(async (path) => {
+        const res = await scanFetch(target.baseUrl + path, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "checkout.session.completed", data: { object: { id: "cs_test_fake", payment_status: "paid", amount_total: 0 } } }),
+        });
+        if (res.status !== 200 && res.status !== 201) return null;
         const text = await res.text();
-        // Skip SPA shells and empty responses
-        if (looksLikeHtml(text)) continue;
-        if (text.length < 10) continue;
-        // Only flag if response looks like it created something (contains checkout/session/url references)
+        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+        if (text.length < 5) return null;
+        return { path, status: res.status };
+      }),
+    ),
+    // Price manipulation tests in parallel
+    Promise.allSettled(
+      priceEndpoints.slice(0, 3).map(async (endpoint) => {
+        const res = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ price: 1, amount: 1, priceId: "price_test" }),
+        });
+        if (!res.ok) return null;
+        const text = await res.text();
+        if (looksLikeHtml(text) || text.length < 10) return null;
         if (/checkout|session|url|redirect|payment/i.test(text)) {
-          findings.push({
-            id: `stripe-price-manip-${findings.length}`,
-            module: "Stripe",
-            severity: "high",
-            title: `Potential price manipulation on ${new URL(endpoint).pathname}`,
-            description: "The payment endpoint accepts client-sent price/amount values and returns checkout-related data. If these are used to create Stripe sessions, attackers can pay arbitrary amounts.",
-            evidence: `POST ${endpoint} with amount:1 → ${res.status}\nResponse preview: ${text.substring(0, 200)}`,
-            remediation: "Never accept prices from the client. Look up prices server-side using Stripe Price IDs from your database.",
-            cwe: "CWE-472",
-          });
+          return { endpoint, pathname: new URL(endpoint).pathname, status: res.status, text: text.substring(0, 200) };
         }
-      }
-    } catch {
-      // skip
-    }
+        return null;
+      }),
+    ),
+  ]);
+
+  for (const r of webhookResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({
+      id: `stripe-webhook-no-verify-${findings.length}`, module: "Stripe", severity: "critical",
+      title: `Stripe webhook accepts unverified events: ${r.value.path}`,
+      description: "The webhook endpoint accepted a fake Stripe event without signature verification.",
+      evidence: `POST ${target.baseUrl + r.value.path}\nSent fake checkout.session.completed event\nStatus: ${r.value.status}`,
+      remediation: "Verify Stripe webhook signatures using stripe.webhooks.constructEvent().",
+      cwe: "CWE-345", owasp: "A02:2021",
+    });
+  }
+
+  for (const r of priceResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `stripe-price-manip-${findings.length}`, module: "Stripe", severity: "high",
+      title: `Potential price manipulation on ${v.pathname}`,
+      description: "The payment endpoint accepts client-sent price/amount values and returns checkout-related data.",
+      evidence: `POST ${v.endpoint} with amount:1 → ${v.status}\nResponse preview: ${v.text}`,
+      remediation: "Never accept prices from the client. Look up prices server-side using Stripe Price IDs from your database.",
+      cwe: "CWE-472",
+    });
   }
 
   // Check for success URL bypass

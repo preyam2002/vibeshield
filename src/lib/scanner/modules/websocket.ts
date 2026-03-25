@@ -28,28 +28,25 @@ export const websocketModule: ScanModule = async (target) => {
     }
   }
 
-  // Check for Socket.IO without auth
+  // Check for Socket.IO without auth — paths in parallel
   if (/socket\.io/i.test(allJs)) {
-    const socketPaths = ["/socket.io/", "/socket.io/socket.io.js"];
-    for (const path of socketPaths) {
-      try {
+    const socketResults = await Promise.allSettled(
+      ["/socket.io/", "/socket.io/socket.io.js"].map(async (path) => {
         const res = await scanFetch(target.baseUrl + path);
-        if (res.ok) {
-          findings.push({
-            id: `websocket-socketio-exposed-${findings.length}`,
-            module: "WebSocket",
-            severity: "medium",
-            title: "Socket.IO endpoint publicly accessible",
-            description: "Socket.IO is accessible without authentication. Attackers may be able to subscribe to real-time events and receive other users' data.",
-            evidence: `GET ${target.baseUrl + path} → ${res.status}`,
-            remediation: "Add authentication middleware to Socket.IO connections. Verify auth tokens on the 'connection' event.",
-            cwe: "CWE-306",
-          });
-          break;
-        }
-      } catch {
-        // skip
-      }
+        return res.ok ? { path, status: res.status } : null;
+      }),
+    );
+    for (const r of socketResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      findings.push({
+        id: `websocket-socketio-exposed-${findings.length}`, module: "WebSocket", severity: "medium",
+        title: "Socket.IO endpoint publicly accessible",
+        description: "Socket.IO is accessible without authentication.",
+        evidence: `GET ${target.baseUrl + r.value.path} → ${r.value.status}`,
+        remediation: "Add authentication middleware to Socket.IO connections.",
+        cwe: "CWE-306",
+      });
+      break;
     }
   }
 

@@ -118,46 +118,43 @@ export const jwtModule: ScanModule = async (target) => {
     }
   }
 
-  // Test alg:none bypass on API endpoints
+  // Test alg:none bypass on API endpoints — all in parallel
   if (target.apiEndpoints.length > 0) {
     const fakeJwt = Buffer.from('{"alg":"none","typ":"JWT"}').toString("base64url") +
       "." + Buffer.from('{"sub":"1","role":"admin"}').toString("base64url") +
       ".";
 
-    for (const endpoint of target.apiEndpoints.slice(0, 5)) {
-      try {
-        // First, fetch without auth to get baseline
-        const baseRes = await scanFetch(endpoint);
-        const baseText = await baseRes.text();
+    const normalize = (s: string) => s.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "TIME").replace(/\d{10,13}/g, "TS");
 
-        const res = await scanFetch(endpoint, {
-          headers: { Authorization: `Bearer ${fakeJwt}` },
-        });
-        if (res.ok) {
-          const text = await res.text();
-          // Skip if SPA returning its shell HTML regardless of auth header
-          if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
-          // Skip if response is same as unauthenticated — JWT was ignored, not accepted
-          // Normalize timestamps/dates to handle dynamic fields like health check timestamps
-          const normalize = (s: string) => s.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "TIME").replace(/\d{10,13}/g, "TS");
-          if (normalize(text) === normalize(baseText)) continue;
-          if (text.length > 10 && !text.includes("unauthorized") && !text.includes("invalid")) {
-            findings.push({
-              id: `jwt-none-bypass-${findings.length}`,
-              module: "JWT Security",
-              severity: "critical",
-              title: `API accepts alg:none JWT on ${new URL(endpoint).pathname}`,
-              description: "The API accepted a JWT with algorithm 'none' and no signature. Anyone can forge admin tokens.",
-              evidence: `Sent forged JWT with alg:none, role:admin\nEndpoint: ${endpoint}\nStatus: ${res.status}\nResponse length: ${text.length}`,
-              remediation: "Reject JWTs with alg:none. Use a JWT library that validates the algorithm.",
-              cwe: "CWE-347",
-              owasp: "A02:2021",
-            });
-          }
+    const bypassResults = await Promise.allSettled(
+      target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
+        const [baseRes, authRes] = await Promise.all([
+          scanFetch(endpoint),
+          scanFetch(endpoint, { headers: { Authorization: `Bearer ${fakeJwt}` } }),
+        ]);
+        const baseText = await baseRes.text();
+        if (!authRes.ok) return null;
+        const text = await authRes.text();
+        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+        if (normalize(text) === normalize(baseText)) return null;
+        if (text.length > 10 && !text.includes("unauthorized") && !text.includes("invalid")) {
+          return { endpoint, pathname: new URL(endpoint).pathname, status: authRes.status, length: text.length };
         }
-      } catch {
-        // skip
-      }
+        return null;
+      }),
+    );
+
+    for (const r of bypassResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `jwt-none-bypass-${findings.length}`, module: "JWT Security", severity: "critical",
+        title: `API accepts alg:none JWT on ${v.pathname}`,
+        description: "The API accepted a JWT with algorithm 'none' and no signature. Anyone can forge admin tokens.",
+        evidence: `Sent forged JWT with alg:none, role:admin\nEndpoint: ${v.endpoint}\nStatus: ${v.status}\nResponse length: ${v.length}`,
+        remediation: "Reject JWTs with alg:none. Use a JWT library that validates the algorithm.",
+        cwe: "CWE-347", owasp: "A02:2021",
+      });
     }
   }
 
