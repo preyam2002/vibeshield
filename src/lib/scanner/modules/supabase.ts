@@ -249,6 +249,85 @@ export const supabaseModule: ScanModule = async (target) => {
     });
   }
 
+  // Test UPDATE access on tables — anon should not be able to modify data
+  const updateResults = await Promise.allSettled(
+    ["users", "profiles", "posts", "orders", "settings"].map(async (table) => {
+      const res = await scanFetch(`${supabaseUrl}/rest/v1/${table}?id=eq.00000000-0000-0000-0000-000000000000`, {
+        method: "PATCH",
+        headers: { apikey: testKey, Authorization: `Bearer ${testKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ _vibeshield_test: true }),
+      });
+      if (res.status === 200 || res.status === 204) return { table, status: res.status };
+      return null;
+    }),
+  );
+
+  for (const r of updateResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { table, status } = r.value;
+    if (findings.some((f) => f.id.includes(table))) continue;
+    findings.push({
+      id: `supabase-rls-update-${table}`, module: "Supabase", severity: "critical",
+      title: `Table "${table}" allows anonymous UPDATE`,
+      description: `The "${table}" table accepts PATCH/UPDATE requests with just the anon key. Anyone can modify existing data.`,
+      evidence: `PATCH ${supabaseUrl}/rest/v1/${table}?id=eq.00000000-...\nStatus: ${status} (update permitted)`,
+      remediation: `Add RLS UPDATE policies to "${table}" to restrict who can modify data.`,
+      cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `-- Restrict updates to row owners\nALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;\nCREATE POLICY "Users can only update own data"\n  ON "${table}" FOR UPDATE\n  USING (auth.uid() = user_id)\n  WITH CHECK (auth.uid() = user_id);`,
+    });
+  }
+
+  // Test RPC (database functions) for missing auth
+  const rpcNames = [
+    "get_user", "get_users", "search_users", "get_profile",
+    "get_orders", "process_payment", "send_email", "generate_report",
+    "admin_action", "reset_password", "grant_access", "update_role",
+    "get_stats", "get_analytics", "export_data", "delete_account",
+  ];
+  // Also discover RPC function names from JS bundles
+  const rpcMatches = allJs.matchAll(/\.rpc\(\s*["']([a-zA-Z_][a-zA-Z0-9_]*)["']/g);
+  for (const m of rpcMatches) {
+    if (!rpcNames.includes(m[1])) rpcNames.push(m[1]);
+  }
+
+  const rpcResults = await Promise.allSettled(
+    rpcNames.map(async (fn) => {
+      const res = await scanFetch(`${supabaseUrl}/rest/v1/rpc/${fn}`, {
+        method: "POST",
+        headers: { apikey: testKey, Authorization: `Bearer ${testKey}`, "Content-Type": "application/json" },
+        body: "{}",
+        timeoutMs: 5000,
+      });
+      // 404 = doesn't exist, 401/403 = protected, 200/400/422 = exists and accessible
+      if (res.status === 404 || res.status === 401 || res.status === 403) return null;
+      const text = await res.text();
+      if (text.length < 3) return null;
+      return { fn, status: res.status, text: text.substring(0, 300) };
+    }),
+  );
+
+  const accessibleRpcs: string[] = [];
+  const dangerousRpcs: string[] = [];
+  for (const r of rpcResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { fn } = r.value;
+    accessibleRpcs.push(fn);
+    if (/admin|delete|reset|grant|role|payment|export/i.test(fn)) dangerousRpcs.push(fn);
+  }
+
+  if (accessibleRpcs.length > 0) {
+    findings.push({
+      id: "supabase-rpc-no-auth", module: "Supabase",
+      severity: dangerousRpcs.length > 0 ? "critical" : "high",
+      title: `${accessibleRpcs.length} Supabase RPC function${accessibleRpcs.length > 1 ? "s" : ""} callable with anon key`,
+      description: `Found ${accessibleRpcs.length} database functions accessible without user authentication: ${accessibleRpcs.join(", ")}.${dangerousRpcs.length > 0 ? ` ${dangerousRpcs.length} appear privileged: ${dangerousRpcs.join(", ")}.` : ""} These functions can be invoked by anyone with the anon key.`,
+      evidence: `Accessible RPC functions:\n${accessibleRpcs.map((fn) => `  rpc/${fn}`).join("\n")}`,
+      remediation: "Add SECURITY DEFINER with proper auth checks, or use SECURITY INVOKER and ensure the calling role has appropriate permissions. Always verify auth.uid() inside the function.",
+      cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `-- Protect RPC functions with auth checks\nCREATE OR REPLACE FUNCTION get_user_data()\nRETURNS json\nLANGUAGE plpgsql\nSECURITY DEFINER\nAS $$\nDECLARE\n  user_id uuid;\nBEGIN\n  user_id := auth.uid();\n  IF user_id IS NULL THEN\n    RAISE EXCEPTION 'Not authenticated';\n  END IF;\n  RETURN (SELECT row_to_json(u) FROM users u WHERE u.id = user_id);\nEND;\n$$;`,
+    });
+  }
+
   // Test Realtime channel authorization
   const realtimeChannels = ["public", "private", "admin", "notifications", "chat", "updates"];
   // Also discover channel names from JS

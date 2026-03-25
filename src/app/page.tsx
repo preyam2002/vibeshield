@@ -8,7 +8,7 @@ const ATTACK_MODULES = [
   { name: "Supabase RLS", desc: "RLS bypass, edge function auth, realtime channel leaks", icon: "🛡" },
   { name: "Firebase Rules", desc: "Firestore/RTDB rules, Cloud Functions auth, service account leak", icon: "🔥" },
   { name: "Auth Bypass", desc: "Path traversal, case bypass, verb tampering, token validation", icon: "🚪" },
-  { name: "IDOR", desc: "Sequential ID enumeration on all endpoints", icon: "🔢" },
+  { name: "IDOR", desc: "Sequential ID enum, method-based access, privilege escalation", icon: "🔢" },
   { name: "SQL Injection", desc: "SQLi payloads + time-based blind injection", icon: "💉" },
   { name: "XSS", desc: "Reflected XSS + DOM source/sink analysis on JS bundles", icon: "📜" },
   { name: "SSTI", desc: "Server-Side Template Injection detection", icon: "⚙" },
