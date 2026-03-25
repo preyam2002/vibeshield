@@ -112,39 +112,39 @@ const ENV_LEAK_HEADERS = [
 export const envLeakModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // 1. Check known env/config endpoints
-  for (const path of ENV_ENDPOINTS) {
-    try {
+  // 1. Check known env/config endpoints in parallel
+  const envResults = await Promise.allSettled(
+    ENV_ENDPOINTS.map(async (path) => {
       const url = target.baseUrl + path;
-      const res = await scanFetch(url);
-      if (res.status !== 200) continue;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (res.status !== 200) return null;
 
       const text = await res.text();
-      if (isSoft404(text, target)) continue;
-      // Real env endpoints return plain text or JSON, not HTML
-      if (looksLikeHtml(text)) continue;
+      if (isSoft404(text, target)) return null;
+      if (looksLikeHtml(text)) return null;
 
-      // Check if response looks like env vars or config
       const looksLikeEnv =
         /(?:DATABASE|SECRET|KEY|TOKEN|PASSWORD|API_KEY|REDIS|MONGO|POSTGRES|SMTP)/i.test(text) ||
         /(?:process\.env|NODE_ENV|PORT\s*[:=])/i.test(text);
 
-      if (!looksLikeEnv) continue;
+      return looksLikeEnv ? { path, url, text } : null;
+    }),
+  );
 
-      findings.push({
-        id: `env-leak-endpoint-${findings.length}`,
-        module: "Environment Leak",
-        severity: "critical",
-        title: `Environment variables exposed at ${path}`,
-        description: "An endpoint is serving environment configuration data that may include secrets, database credentials, and API keys.",
-        evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 400)}`,
-        remediation: "Remove this endpoint from production. Environment variables should never be served over HTTP.",
-        cwe: "CWE-215",
-        owasp: "A05:2021",
-      });
-    } catch {
-      // skip
-    }
+  for (const r of envResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { path, url, text } = r.value;
+    findings.push({
+      id: `env-leak-endpoint-${findings.length}`,
+      module: "Environment Leak",
+      severity: "critical",
+      title: `Environment variables exposed at ${path}`,
+      description: "An endpoint is serving environment configuration data that may include secrets, database credentials, and API keys.",
+      evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 400)}`,
+      remediation: "Remove this endpoint from production. Environment variables should never be served over HTTP.",
+      cwe: "CWE-215",
+      owasp: "A05:2021",
+    });
   }
 
   // 2. Scan JS bundles for env leaks

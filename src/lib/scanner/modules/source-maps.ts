@@ -6,33 +6,44 @@ export const sourceMapsModule: ScanModule = async (target) => {
   const exposedMaps: string[] = [];
   const conventionMaps: string[] = [];
 
-  // Check for sourceMappingURL in JS bundles
+  // Build list of source map URLs from JS bundles
+  const mapUrlsToCheck: string[] = [];
   for (const [scriptUrl, content] of target.jsContents) {
     const mapMatch = content.match(/\/\/[#@]\s*sourceMappingURL\s*=\s*(\S+)/);
     if (!mapMatch) continue;
-
     let mapUrl = mapMatch[1];
     if (mapUrl.startsWith("data:")) continue;
+    if (!mapUrl.startsWith("http")) mapUrl = new URL(mapUrl, scriptUrl).href;
+    mapUrlsToCheck.push(mapUrl);
+  }
 
-    if (!mapUrl.startsWith("http")) {
-      mapUrl = new URL(mapUrl, scriptUrl).href;
-    }
+  // Check all source maps and convention maps in parallel
+  const conventionUrls = target.scripts.slice(0, 25).map((s) => s + ".map");
 
-    try {
-      const res = await scanFetch(mapUrl);
-      if (res.ok) {
+  const [mapResults, conventionResults] = await Promise.all([
+    Promise.allSettled(
+      mapUrlsToCheck.map(async (mapUrl) => {
+        const res = await scanFetch(mapUrl, { timeoutMs: 5000 });
+        if (!res.ok) return null;
         const text = await res.text();
-        // Validate it's an actual source map (has required fields)
         try {
           const json = JSON.parse(text);
-          if (json.version && json.sources && json.mappings) {
-            exposedMaps.push(mapUrl);
-          }
-        } catch {
-          // Not valid JSON — not a real source map
-        }
-      }
-    } catch {}
+          if (json.version && json.sources && json.mappings) return mapUrl;
+        } catch { /* skip */ }
+        return null;
+      }),
+    ),
+    Promise.allSettled(
+      conventionUrls.map(async (mapUrl) => {
+        const res = await scanFetch(mapUrl, { timeoutMs: 5000 });
+        if (res.ok && (res.headers.get("content-type") || "").includes("json")) return mapUrl;
+        return null;
+      }),
+    ),
+  ]);
+
+  for (const r of mapResults) {
+    if (r.status === "fulfilled" && r.value) exposedMaps.push(r.value);
   }
 
   if (exposedMaps.length > 0) {
@@ -49,17 +60,9 @@ export const sourceMapsModule: ScanModule = async (target) => {
     });
   }
 
-  // Also try common source map paths (skip already-found maps)
   const knownMaps = new Set(exposedMaps);
-  for (const scriptUrl of target.scripts.slice(0, 25)) {
-    const mapUrl = scriptUrl + ".map";
-    if (knownMaps.has(mapUrl)) continue;
-    try {
-      const res = await scanFetch(mapUrl);
-      if (res.ok && (res.headers.get("content-type") || "").includes("json")) {
-        conventionMaps.push(mapUrl);
-      }
-    } catch {}
+  for (const r of conventionResults) {
+    if (r.status === "fulfilled" && r.value && !knownMaps.has(r.value)) conventionMaps.push(r.value);
   }
 
   if (conventionMaps.length > 0) {

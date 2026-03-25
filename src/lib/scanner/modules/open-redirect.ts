@@ -74,7 +74,8 @@ export const openRedirectModule: ScanModule = async (target) => {
     }
   }
 
-  // Also check existing redirect-looking URLs (limit to 20)
+  // Also check existing redirect-looking URLs in parallel
+  const redirectTests: { link: string; param: string; val: string }[] = [];
   for (const link of target.linkUrls.slice(0, 20)) {
     try {
       const url = new URL(link);
@@ -82,34 +83,40 @@ export const openRedirectModule: ScanModule = async (target) => {
         if (url.searchParams.has(param)) {
           const val = url.searchParams.get(param) || "";
           if (val.startsWith("http") || val.startsWith("//")) {
-            // Test with evil URL
-            url.searchParams.set(param, "https://evil.com");
-            const res = await scanFetch(url.href, { redirect: "manual" });
-            if (res.status >= 300 && res.status < 400) {
-              const location = res.headers.get("location") || "";
-              const isExternal = (() => {
-                try { return new URL(location, url.origin).hostname === "evil.com"; }
-                catch { return /^(https?:)?\/\/evil\.com(\/|$)/i.test(location); }
-              })();
-              if (isExternal) {
-                findings.push({
-                  id: `openredirect-existing-${findings.length}`,
-                  module: "Open Redirect",
-                  severity: "medium",
-                  title: `Open redirect in existing URL parameter "${param}"`,
-                  description: "A URL with a redirect parameter accepts arbitrary external URLs.",
-                  evidence: `Original URL had ${param}=${val}\nModified to evil.com → redirected`,
-                  remediation: "Validate redirect targets against a whitelist.",
-                  cwe: "CWE-601",
-                });
-              }
-            }
+            redirectTests.push({ link, param, val });
           }
         }
       }
-    } catch {
-      // skip
-    }
+    } catch { /* skip */ }
+  }
+
+  const redirectResults = await Promise.allSettled(
+    redirectTests.map(async ({ link, param, val }) => {
+      const url = new URL(link);
+      url.searchParams.set(param, "https://evil.com");
+      const res = await scanFetch(url.href, { redirect: "manual", timeoutMs: 5000 });
+      if (res.status < 300 || res.status >= 400) return null;
+      const location = res.headers.get("location") || "";
+      const isExternal = (() => {
+        try { return new URL(location, url.origin).hostname === "evil.com"; }
+        catch { return /^(https?:)?\/\/evil\.com(\/|$)/i.test(location); }
+      })();
+      return isExternal ? { param, val } : null;
+    }),
+  );
+
+  for (const r of redirectResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({
+      id: `openredirect-existing-${findings.length}`,
+      module: "Open Redirect",
+      severity: "medium",
+      title: `Open redirect in existing URL parameter "${r.value.param}"`,
+      description: "A URL with a redirect parameter accepts arbitrary external URLs.",
+      evidence: `Original URL had ${r.value.param}=${r.value.val}\nModified to evil.com → redirected`,
+      remediation: "Validate redirect targets against a whitelist.",
+      cwe: "CWE-601",
+    });
   }
 
   return findings;

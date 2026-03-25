@@ -35,91 +35,103 @@ export const infoLeakModule: ScanModule = async (target) => {
     { suffix: "/%00", desc: "null byte" },
   ];
 
+  // Test all endpoint+payload combos and malformed input in parallel
+  const endpoints = target.apiEndpoints.slice(0, 8);
   const seenEndpoints = new Set<string>();
-  for (const endpoint of target.apiEndpoints.slice(0, 8)) {
-    const pathname = new URL(endpoint).pathname;
-    if (seenEndpoints.has(pathname)) continue;
 
-    for (const payload of errorPayloads) {
-      if (seenEndpoints.has(pathname)) break;
-      try {
-        const url = endpoint + payload.suffix;
-        const res = await scanFetch(url);
-        const text = await res.text();
+  const [errorResults, malformedResults] = await Promise.all([
+    // Error payload tests — one task per endpoint (payloads sequential per endpoint for early-exit)
+    Promise.allSettled(
+      endpoints.map(async (endpoint) => {
+        const pathname = new URL(endpoint).pathname;
+        for (const payload of errorPayloads) {
+          try {
+            const url = endpoint + payload.suffix;
+            const res = await scanFetch(url, { timeoutMs: 5000 });
+            const text = await res.text();
 
-        // Check for stack traces
-        for (const ep of ERROR_PATTERNS) {
-          if (ep.pattern.test(text)) {
-            seenEndpoints.add(pathname);
-            findings.push({
-              id: `infoleak-stacktrace-${findings.length}`,
-              module: "Information Leakage",
-              severity: "medium",
-              title: `Stack trace leaked (${ep.tech}) on ${pathname}`,
-              description: `A ${ep.tech} stack trace was returned when sending ${payload.desc}. Stack traces reveal internal file paths, function names, and application structure.`,
-              evidence: `URL: ${url}\nTech: ${ep.tech}\nResponse excerpt: ${text.substring(0, 400)}`,
-              remediation: "Implement proper error handling that returns generic error messages in production. Never expose stack traces to users.",
-              cwe: "CWE-209",
-              owasp: "A05:2021",
-            });
-            break;
-          }
-        }
-
-        // Check for sensitive info patterns (only if no stack trace found)
-        // Cap at 2 findings per pattern type to avoid noise from similar endpoints
-        if (!seenEndpoints.has(pathname)) {
-          for (const si of SENSITIVE_INFO_PATTERNS) {
-            if (si.pattern.test(text)) {
-              const existingCount = findings.filter((f) => f.title.includes(si.description)).length;
-              seenEndpoints.add(pathname);
-              if (existingCount < 2) {
-                findings.push({
-                  id: `infoleak-sensitive-${findings.length}`,
-                  module: "Information Leakage",
-                  severity: "low",
-                  title: `${si.description} leaked on ${pathname}`,
-                  description: `Sensitive information (${si.description}) was found in the response.`,
-                  evidence: `URL: ${url}\nPattern: ${si.description}`,
-                  remediation: "Sanitize error responses in production. Use a global error handler.",
-                  cwe: "CWE-200",
-                });
+            for (const ep of ERROR_PATTERNS) {
+              if (ep.pattern.test(text)) {
+                return { type: "stacktrace" as const, pathname, tech: ep.tech, desc: payload.desc, url, text };
               }
-              break;
+            }
+
+            for (const si of SENSITIVE_INFO_PATTERNS) {
+              if (si.pattern.test(text)) {
+                return { type: "sensitive" as const, pathname, description: si.description, url };
+              }
+            }
+          } catch { /* skip */ }
+        }
+        return null;
+      }),
+    ),
+
+    // Malformed input tests — all in parallel
+    Promise.allSettled(
+      target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
+        const res = await scanFetch(endpoint, { method: "POST", body: "{invalid json", timeoutMs: 5000 });
+        const text = await res.text();
+        if (text.length > 100 && (res.status === 500 || res.status === 400)) {
+          for (const ep of ERROR_PATTERNS) {
+            if (ep.pattern.test(text)) {
+              return { pathname: new URL(endpoint).pathname, tech: ep.tech, status: res.status, text };
             }
           }
         }
-      } catch {
-        // skip
+        return null;
+      }),
+    ),
+  ]);
+
+  for (const r of errorResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (seenEndpoints.has(v.pathname)) continue;
+    seenEndpoints.add(v.pathname);
+
+    if (v.type === "stacktrace") {
+      findings.push({
+        id: `infoleak-stacktrace-${findings.length}`,
+        module: "Information Leakage",
+        severity: "medium",
+        title: `Stack trace leaked (${v.tech}) on ${v.pathname}`,
+        description: `A ${v.tech} stack trace was returned when sending ${v.desc}. Stack traces reveal internal file paths, function names, and application structure.`,
+        evidence: `URL: ${v.url}\nTech: ${v.tech}\nResponse excerpt: ${v.text.substring(0, 400)}`,
+        remediation: "Implement proper error handling that returns generic error messages in production. Never expose stack traces to users.",
+        cwe: "CWE-209",
+        owasp: "A05:2021",
+      });
+    } else {
+      const existingCount = findings.filter((f) => f.title.includes(v.description)).length;
+      if (existingCount < 2) {
+        findings.push({
+          id: `infoleak-sensitive-${findings.length}`,
+          module: "Information Leakage",
+          severity: "low",
+          title: `${v.description} leaked on ${v.pathname}`,
+          description: `Sensitive information (${v.description}) was found in the response.`,
+          evidence: `URL: ${v.url}\nPattern: ${v.description}`,
+          remediation: "Sanitize error responses in production. Use a global error handler.",
+          cwe: "CWE-200",
+        });
       }
     }
   }
 
-  // Check response headers for verbose error info
-  for (const endpoint of target.apiEndpoints.slice(0, 5)) {
-    try {
-      const res = await scanFetch(endpoint, { method: "POST", body: "{invalid json" });
-      const text = await res.text();
-      if (text.length > 100 && (res.status === 500 || res.status === 400)) {
-        for (const ep of ERROR_PATTERNS) {
-          if (ep.pattern.test(text)) {
-            findings.push({
-              id: `infoleak-malformed-${findings.length}`,
-              module: "Information Leakage",
-              severity: "medium",
-              title: `Verbose error on malformed input to ${new URL(endpoint).pathname}`,
-              description: `Sending malformed data triggers detailed error output revealing ${ep.tech} internals.`,
-              evidence: `POST with malformed JSON\nStatus: ${res.status}\nResponse: ${text.substring(0, 300)}`,
-              remediation: "Return generic 400/500 errors. Log details server-side only.",
-              cwe: "CWE-209",
-            });
-            break;
-          }
-        }
-      }
-    } catch {
-      // skip
-    }
+  for (const r of malformedResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `infoleak-malformed-${findings.length}`,
+      module: "Information Leakage",
+      severity: "medium",
+      title: `Verbose error on malformed input to ${v.pathname}`,
+      description: `Sending malformed data triggers detailed error output revealing ${v.tech} internals.`,
+      evidence: `POST with malformed JSON\nStatus: ${v.status}\nResponse: ${v.text.substring(0, 300)}`,
+      remediation: "Return generic 400/500 errors. Log details server-side only.",
+      cwe: "CWE-209",
+    });
   }
 
   // Path traversal is handled by the dedicated path-traversal module
