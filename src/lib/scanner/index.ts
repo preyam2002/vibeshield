@@ -1,4 +1,4 @@
-import type { ScanModuleDefinition, ScanTarget } from "./types";
+import type { ScanModuleDefinition, ScanTarget, Finding } from "./types";
 import {
   createScan,
   getScan,
@@ -215,7 +215,12 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
           abortSignal.addEventListener("abort", () => reject(new Error("Scan cancelled")), { once: true });
         })] : []),
       ]);
-      addFindings(scanId, findings.slice(0, MAX_FINDINGS_PER_MODULE));
+      // Apply default confidence scores based on module type if not set by module
+      const enriched = findings.map((f) => ({
+        ...f,
+        confidence: f.confidence ?? getDefaultConfidence(mod.name, f),
+      }));
+      addFindings(scanId, enriched.slice(0, MAX_FINDINGS_PER_MODULE));
       updateModule(scanId, mod.name, {
         status: "completed",
         findingsCount: findings.length,
@@ -267,6 +272,32 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   if (!abortSignal?.aborted) {
     updateScanStatus(scanId, "completed");
   }
+};
+
+/** Default confidence scores by module and finding characteristics */
+const HIGH_CONFIDENCE_MODULES = new Set([
+  "Security Headers", "SSL/TLS", "Cookies", "Clickjacking", "CSP Analysis",
+  "Secret Detection", "Source Maps", "Dependencies", "JWT Security",
+  "Environment Leak", "Directory & File Exposure",
+]);
+const MEDIUM_CONFIDENCE_MODULES = new Set([
+  "CORS", "HTTP Methods", "Information Leakage", "Supabase", "Firebase",
+  "Stripe", "GraphQL", "WebSocket", "CSRF", "Authentication", "Open Redirect",
+  "Email Enumeration", "IDOR",
+]);
+// Everything else (injection, SSRF, business logic, etc.) gets lower default
+
+const getDefaultConfidence = (moduleName: string, finding: Finding): number => {
+  // Modules that check deterministic things (headers, config, static analysis) = high confidence
+  if (HIGH_CONFIDENCE_MODULES.has(moduleName)) return 95;
+  // Modules that test network behavior with clear signals = medium-high
+  if (MEDIUM_CONFIDENCE_MODULES.has(moduleName)) return 80;
+  // Heuristic/behavior-based modules (injection, SSRF, business logic) = moderate
+  // Higher severity findings from these modules get slightly lower confidence
+  // (more likely false positive if severity is critical from heuristic)
+  if (finding.severity === "critical") return 65;
+  if (finding.severity === "high") return 70;
+  return 75;
 };
 
 const humanizeError = (err: unknown, targetUrl: string): string => {
