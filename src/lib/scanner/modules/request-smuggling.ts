@@ -261,5 +261,177 @@ export const requestSmugglingModule: ScanModule = async (target) => {
     break;
   }
 
+  // Phase 6: HTTP/2 downgrade smuggling — test H2C upgrade attempt
+  const h2cResults = await Promise.allSettled(
+    testUrls.slice(0, 3).map(async (url) => {
+      try {
+        const res = await scanFetch(url, {
+          headers: {
+            Upgrade: "h2c",
+            Connection: "Upgrade, HTTP2-Settings",
+            "HTTP2-Settings": "AAMAAABkAARAAAAAAAIAAAAA", // base64-encoded HTTP/2 SETTINGS frame
+          },
+          timeoutMs: 5000,
+        });
+        // 101 Switching Protocols means server accepts H2C upgrade
+        if (res.status === 101) {
+          return { pathname: new URL(url).pathname, type: "upgrade" as const };
+        }
+        // If server downgrades to HTTP/1.1 and responds normally, the proxy might
+        // be confused about protocol framing — check via response headers
+        const via = res.headers.get("via") || "";
+        const upgradeHeader = res.headers.get("upgrade") || "";
+        if (upgradeHeader.toLowerCase().includes("h2c") || via.includes("1.1")) {
+          return { pathname: new URL(url).pathname, type: "downgrade" as const };
+        }
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
+  for (const r of h2cResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `smuggling-h2c-${count++}`,
+      module: "Request Smuggling",
+      severity: "high",
+      title: `H2C upgrade ${v.type === "upgrade" ? "accepted" : "downgrade detected"} on ${v.pathname}`,
+      description: `The server ${v.type === "upgrade" ? "accepted an HTTP/2 cleartext (H2C) upgrade" : "responded with HTTP/2 downgrade indicators"} on ${v.pathname}. In proxy environments, this can allow an attacker to establish an unencrypted HTTP/2 connection through a proxy that only inspects HTTP/1.1, bypassing all proxy-level security controls including authentication, WAF rules, and access restrictions.`,
+      evidence: `GET ${v.pathname}\nUpgrade: h2c\nConnection: Upgrade, HTTP2-Settings\n→ ${v.type === "upgrade" ? "101 Switching Protocols" : "Response includes H2C/1.1 via header"}`,
+      remediation: "Block H2C upgrade requests at the reverse proxy. Most applications don't need cleartext HTTP/2. Configure your proxy to strip or reject Upgrade: h2c headers.",
+      cwe: "CWE-444",
+      owasp: "A05:2021",
+      confidence: v.type === "upgrade" ? 85 : 55,
+      codeSnippet: `# nginx — block H2C upgrades\nmap $http_upgrade $reject_h2c {\n  h2c 1;\n  default 0;\n}\nif ($reject_h2c) { return 400; }\n\n// Or in middleware:\nexport function middleware(req: NextRequest) {\n  if (req.headers.get("upgrade")?.toLowerCase() === "h2c") {\n    return new NextResponse("H2C upgrade not allowed", { status: 400 });\n  }\n}`,
+    });
+    break;
+  }
+
+  // Phase 7: Transfer-Encoding obfuscation — test TE headers with various obfuscations
+  const teObfuscationResults = await Promise.allSettled(
+    testUrls.slice(0, 2).map(async (url) => {
+      const obfuscatedTEValues = [
+        "xchunked",                   // non-standard value some parsers treat as chunked
+        "chunked, identity",          // dual encoding
+        "identity, chunked",          // reversed order
+        "chunked\t",                  // tab suffix
+        "\x0bchunked",               // vertical tab prefix
+        "chunked; foo=bar",          // parameter injection
+      ];
+
+      const baseRes = await scanFetch(url, { method: "POST", headers: { "Content-Type": "text/plain" }, body: "test", timeoutMs: 5000 });
+      const baseStatus = baseRes.status;
+
+      for (const te of obfuscatedTEValues) {
+        try {
+          const res = await scanFetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "text/plain",
+              "Transfer-Encoding": te,
+              "Content-Length": "4",
+            },
+            body: "0\r\n\r\n",
+            timeoutMs: 8000,
+          });
+          // If server processes the obfuscated TE (200/OK) instead of rejecting it (400/501),
+          // it may parse TE differently from the proxy
+          if (res.ok && baseStatus !== res.status) {
+            return { pathname: new URL(url).pathname, variant: te.trim() || JSON.stringify(te), status: res.status };
+          }
+        } catch (e) {
+          // Timeout indicates server waiting for chunk data — processing the obfuscated TE
+          return { pathname: new URL(url).pathname, variant: te.trim() || JSON.stringify(te), status: "timeout" };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of teObfuscationResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `smuggling-te-obfuscation-${count++}`,
+      module: "Request Smuggling",
+      severity: "medium",
+      title: `Transfer-Encoding obfuscation accepted on ${v.pathname}`,
+      description: `The server processed an obfuscated Transfer-Encoding header value "${v.variant}" (response: ${v.status}). If a front-end proxy does not recognize this value as chunked encoding but the backend does (or vice versa), it creates a parsing differential that enables request smuggling.`,
+      evidence: `POST ${v.pathname}\nTransfer-Encoding: ${v.variant}\nContent-Length: 4\nBody: 0\\r\\n\\r\\n → ${v.status}`,
+      remediation: "Configure your server/proxy to strictly validate Transfer-Encoding values. Reject any value other than exactly \"chunked\" or \"identity\". Normalize TE headers at the proxy level.",
+      cwe: "CWE-444",
+      owasp: "A05:2021",
+      confidence: 55,
+      codeSnippet: `// Strictly validate Transfer-Encoding in middleware\nexport function middleware(req: NextRequest) {\n  const te = req.headers.get("transfer-encoding");\n  if (te && te.trim().toLowerCase() !== "chunked") {\n    return new NextResponse("Invalid Transfer-Encoding", { status: 400 });\n  }\n}`,
+    });
+    break;
+  }
+
+  // Phase 8: Hop-by-hop header abuse with Connection header causing proxy confusion
+  const hopByHopAbuseResults = await Promise.allSettled(
+    testUrls.slice(0, 3).map(async (url) => {
+      // Test if Connection header with multiple values causes proxy confusion
+      const abusiveConnectionValues = [
+        "keep-alive, X-Forwarded-For",
+        "keep-alive, X-Real-IP",
+        "keep-alive, X-Forwarded-Host",
+        "keep-alive, X-Forwarded-Proto",
+      ];
+
+      const baseRes = await scanFetch(url, { timeoutMs: 5000 });
+      const baseStatus = baseRes.status;
+      const baseText = await baseRes.text();
+
+      for (const connValue of abusiveConnectionValues) {
+        try {
+          const res = await scanFetch(url, {
+            headers: {
+              Connection: connValue,
+              "X-Forwarded-For": "127.0.0.1",
+              "X-Real-IP": "127.0.0.1",
+              "X-Forwarded-Host": "localhost",
+              "X-Forwarded-Proto": "https",
+            },
+            timeoutMs: 5000,
+          });
+          const text = await res.text();
+          // Significant status change or content difference suggests the proxy stripped
+          // the listed hop-by-hop header, changing backend behavior
+          if (res.status !== baseStatus || (Math.abs(text.length - baseText.length) > baseText.length * 0.3 && baseText.length > 50)) {
+            const strippedHeader = connValue.split(", ")[1];
+            return {
+              pathname: new URL(url).pathname,
+              connValue,
+              strippedHeader,
+              baseStatus,
+              newStatus: res.status,
+            };
+          }
+        } catch { /* skip */ }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of hopByHopAbuseResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `smuggling-hop-abuse-${count++}`,
+      module: "Request Smuggling",
+      severity: "high",
+      title: `Hop-by-hop abuse strips ${v.strippedHeader} via Connection header on ${v.pathname}`,
+      description: `Sending "Connection: ${v.connValue}" caused a differential response (${v.baseStatus} → ${v.newStatus}), suggesting the proxy treated "${v.strippedHeader}" as a hop-by-hop header and stripped it. This can bypass IP-based access controls, host validation, or protocol enforcement depending on which header is stripped.`,
+      evidence: `GET ${v.pathname}\nConnection: ${v.connValue}\nBaseline: ${v.baseStatus} → Modified: ${v.newStatus}`,
+      remediation: "Configure your reverse proxy to only honor standard hop-by-hop headers. Do not allow clients to declare arbitrary headers as hop-by-hop via the Connection header.",
+      cwe: "CWE-444",
+      owasp: "A05:2021",
+      confidence: 65,
+      codeSnippet: `# nginx — prevent Connection header abuse\nproxy_set_header Connection "";\n\n# HAProxy — strip custom Connection values\nhttp-request del-header Connection\nhttp-request set-header Connection keep-alive\n\n// Middleware — reject suspicious Connection headers\nexport function middleware(req: NextRequest) {\n  const conn = req.headers.get("connection") || "";\n  if (/x-forwarded|x-real-ip/i.test(conn)) {\n    return new NextResponse("Bad Request", { status: 400 });\n  }\n}`,
+    });
+    break;
+  }
+
   return findings;
 };
