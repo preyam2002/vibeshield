@@ -20,6 +20,14 @@ const EVIL_URLS = [
   "https://evil.com#.legitimate.com",
   "https://evil.com?.legitimate.com",
   "//evil.com/%2f..",
+  // Additional bypass variants
+  "javascript:alert(1)",                    // JS protocol
+  "data:text/html,<h1>phished</h1>",       // data: URI
+  "%2f%2fevil.com",                         // double-encoded //
+  "https://evil.com%09.legitimate.com",     // tab injection
+  "///evil.com",                            // triple slash
+  "https:evil.com",                         // missing slashes
+  "//%0d%0aevil.com",                       // CRLF in URL
 ];
 
 export const openRedirectModule: ScanModule = async (target) => {
@@ -38,19 +46,29 @@ export const openRedirectModule: ScanModule = async (target) => {
     if (!urlsByPath.has(p)) urlsByPath.set(p, u);
   }
 
+  const isEvilRedirect = (location: string, origin: string): boolean => {
+    try { return new URL(location, origin).hostname === "evil.com"; }
+    catch { return /^(https?:)?\/\/evil\.com(\/|$)/i.test(location); }
+  };
+  const isJsOrDataRedirect = (location: string): boolean =>
+    /^javascript:/i.test(location) || /^data:/i.test(location);
+
   const allParamTests = await Promise.allSettled(
     [...urlsByPath.entries()].flatMap(([pathname, baseUrl]) =>
       REDIRECT_PARAMS.slice(0, 8).map(async (param) => {
-        const url = new URL(baseUrl);
-        url.searchParams.set(param, firstEvil);
-        const res = await scanFetch(url.href, { redirect: "manual", timeoutMs: 4000 });
-        if (res.status < 300 || res.status >= 400) return null;
-        const location = res.headers.get("location") || "";
-        const isExternal = (() => {
-          try { return new URL(location, new URL(baseUrl).origin).hostname === "evil.com"; }
-          catch { return /^(https?:)?\/\/evil\.com(\/|$)/i.test(location); }
-        })();
-        return isExternal ? { param, pathname, location, testUrl: url.href } : null;
+        // Try each bypass variant until one works
+        for (const evilUrl of EVIL_URLS) {
+          const url = new URL(baseUrl);
+          url.searchParams.set(param, evilUrl);
+          const res = await scanFetch(url.href, { redirect: "manual", timeoutMs: 4000 });
+          if (res.status < 300 || res.status >= 400) continue;
+          const location = res.headers.get("location") || "";
+          if (isEvilRedirect(location, new URL(baseUrl).origin) || isJsOrDataRedirect(location)) {
+            const bypass = evilUrl === "https://evil.com" ? "direct" : evilUrl.startsWith("javascript:") ? "javascript: protocol" : evilUrl.startsWith("data:") ? "data: URI" : evilUrl.includes("@") ? "credential injection" : evilUrl.includes("%") ? "URL encoding" : evilUrl.includes("\\") ? "backslash" : "bypass variant";
+            return { param, pathname, location, testUrl: url.href, bypass, evilUrl };
+          }
+        }
+        return null;
       }),
     ),
   );
@@ -58,15 +76,18 @@ export const openRedirectModule: ScanModule = async (target) => {
   for (const r of allParamTests) {
     if (findings.length >= MAX_FINDINGS) break;
     if (r.status !== "fulfilled" || !r.value) continue;
-    const { param, pathname, location, testUrl } = r.value;
+    const { param, pathname, location, testUrl, bypass, evilUrl } = r.value;
     if (foundPaths.has(pathname)) continue;
     foundPaths.add(pathname);
+    const isJsProtocol = evilUrl.startsWith("javascript:");
     findings.push({
       id: `openredirect-${findings.length}`,
       module: "Open Redirect",
-      severity: "medium",
-      title: `Open redirect via "${param}" parameter on ${pathname}`,
-      description: "This endpoint redirects to arbitrary external URLs. Attackers can craft phishing links using your domain that redirect to malicious sites.",
+      severity: isJsProtocol ? "high" : "medium",
+      title: `Open redirect${bypass !== "direct" ? ` (${bypass})` : ""} via "${param}" parameter on ${pathname}`,
+      description: isJsProtocol
+        ? "This endpoint redirects to javascript: URIs. Attackers can execute arbitrary JavaScript in the context of your domain, enabling session theft."
+        : `This endpoint redirects to arbitrary external URLs${bypass !== "direct" ? ` using a ${bypass} technique that bypasses URL validation` : ""}. Attackers can craft phishing links using your domain.`,
       evidence: `GET ${testUrl}\nLocation: ${location}`,
       remediation: "Validate redirect URLs against a whitelist of allowed domains. Never redirect to user-controlled URLs.",
       cwe: "CWE-601",

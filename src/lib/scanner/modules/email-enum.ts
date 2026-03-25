@@ -114,8 +114,61 @@ export const emailEnumModule: ScanModule = async (target) => {
     }),
   );
 
+  // Test password reset endpoints specifically — these commonly leak user existence
+  const resetPaths = validPaths.filter((p) => /forgot|reset|recover/i.test(p));
+  if (resetPaths.length > 0) {
+    const resetResults = await Promise.allSettled(
+      resetPaths.map(async (path) => {
+        const url = target.baseUrl + path;
+        const [fakeRes, realRes] = await Promise.all([
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: "nonexistent-reset-test-9876@test.com" }), timeoutMs: 5000,
+          }),
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: testEmails[1] }), timeoutMs: 5000,
+          }),
+        ]);
+        const fakeText = await fakeRes.text();
+        const realText = await realRes.text();
+        // Check for different status codes or response lengths diverging significantly
+        if (fakeRes.status !== realRes.status) {
+          return { path, fakeStatus: fakeRes.status, realStatus: realRes.status, type: "status" as const };
+        }
+        // Check if response body lengths differ significantly (>30% difference)
+        if (fakeText.length > 20 && realText.length > 20) {
+          const ratio = Math.abs(fakeText.length - realText.length) / Math.max(fakeText.length, realText.length);
+          if (ratio > 0.3) {
+            return { path, fakeStatus: fakeRes.status, realStatus: realRes.status, type: "body-length" as const };
+          }
+        }
+        // Check for explicit enumeration phrases in reset responses
+        const resetEnumPhrases = [/no account/i, /not found/i, /doesn't exist/i, /not registered/i, /unknown/i, /invalid email/i];
+        if (resetEnumPhrases.some((p) => p.test(fakeText) && !p.test(realText))) {
+          return { path, fakeStatus: fakeRes.status, realStatus: realRes.status, type: "phrase" as const };
+        }
+        return null;
+      }),
+    );
+    for (const r of resetResults) {
+      if (findings.length >= 3) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `email-enum-reset-${findings.length}`, module: "Email Enumeration", severity: "medium",
+        title: `Password reset leaks user existence on ${v.path}`,
+        description: `The password reset endpoint returns different responses for registered vs unregistered emails (${v.type === "status" ? `status ${v.fakeStatus} vs ${v.realStatus}` : v.type === "phrase" ? "explicit error message" : "different response body size"}). Attackers can enumerate valid accounts.`,
+        evidence: `Fake email → status ${v.fakeStatus}\nReal email → status ${v.realStatus}\nDifference type: ${v.type}`,
+        remediation: 'Always return the same response: "If an account exists, a reset link has been sent." Never reveal whether the email is registered.',
+        cwe: "CWE-204", owasp: "A07:2021",
+        codeSnippet: `// Always return 200 with generic message\napp.post("/api/auth/forgot-password", async (req, res) => {\n  const user = await db.users.findByEmail(req.body.email);\n  if (user) await sendResetEmail(user); // silently skip if not found\n  res.json({ message: "If an account exists, we'll send a reset link." });\n});`,
+      });
+    }
+  }
+
   for (const r of enumResults) {
-    if (findings.length >= 2) break;
+    if (findings.length >= 3) break;
     if (r.status !== "fulfilled" || !r.value) continue;
     const v = r.value;
 
