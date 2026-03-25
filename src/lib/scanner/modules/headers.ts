@@ -82,6 +82,7 @@ const checkSriMissing = (target: Parameters<ScanModule>[0]): Finding | null => {
     remediation: "Add integrity=\"sha384-...\" crossorigin=\"anonymous\" attributes to external <script> tags, or use CSP require-sri-for directive.",
     cwe: "CWE-353",
     owasp: "A08:2021",
+    codeSnippet: `<!-- Add SRI hash to external scripts -->\n<script src="https://cdn.example.com/lib.js"\n  integrity="sha384-..." crossorigin="anonymous"></script>\n\n# Generate hash: curl -s URL | openssl dgst -sha384 -binary | openssl base64 -A`,
   };
 };
 
