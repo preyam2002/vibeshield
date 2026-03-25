@@ -213,49 +213,45 @@ const TOOL_CHECKS: ToolCheck[] = [
 export const exposedToolsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  for (const check of TOOL_CHECKS) {
-    try {
+  const results = await Promise.allSettled(
+    TOOL_CHECKS.map(async (check) => {
       const url = target.baseUrl + check.path;
-      const res = await scanFetch(url);
-      if (res.status !== 200) continue;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (res.status !== 200) return null;
 
       const text = await res.text();
+      if (isSoft404(text, target)) return null;
+      if (check.requireJson && looksLikeHtml(text)) return null;
 
-      // Skip SPA soft 404s
-      if (isSoft404(text, target)) continue;
-
-      // If this check requires JSON response, reject HTML
-      if (check.requireJson && looksLikeHtml(text)) continue;
-
-      // For HTML responses, require content patterns to confirm it's a real tool page
       if (looksLikeHtml(text)) {
         const matchCount = check.contentPatterns.filter((p) => p.test(text)).length;
-        // Require at least 2 pattern matches to avoid false positives from generic pages
-        if (matchCount < 2) continue;
+        if (matchCount < 2) return null;
       }
 
-      // For JSON responses, verify it's not empty/trivial
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("json")) {
-        if (text.length < 10) continue;
-        const hasToolContent = check.contentPatterns.some((p) => p.test(text));
-        if (!hasToolContent) continue;
+        if (text.length < 10) return null;
+        if (!check.contentPatterns.some((p) => p.test(text))) return null;
       }
 
-      findings.push({
-        id: `exposed-tools-${check.name.toLowerCase().replace(/[\s/()]+/g, "-")}-${findings.length}`,
-        module: "Exposed Dev Tools",
-        severity: check.severity,
-        title: `${check.name} exposed at ${check.path}`,
-        description: check.description,
-        evidence: `GET ${url}\nStatus: 200\nContent-Type: ${contentType}\nResponse preview: ${text.substring(0, 300)}`,
-        remediation: check.remediation,
-        cwe: "CWE-489",
-        owasp: "A05:2021",
-      });
-    } catch {
-      // skip unreachable paths
-    }
+      return { check, url, contentType, text };
+    }),
+  );
+
+  for (const r of results) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { check, url, contentType, text } = r.value;
+    findings.push({
+      id: `exposed-tools-${check.name.toLowerCase().replace(/[\s/()]+/g, "-")}-${findings.length}`,
+      module: "Exposed Dev Tools",
+      severity: check.severity,
+      title: `${check.name} exposed at ${check.path}`,
+      description: check.description,
+      evidence: `GET ${url}\nStatus: 200\nContent-Type: ${contentType}\nResponse preview: ${text.substring(0, 300)}`,
+      remediation: check.remediation,
+      cwe: "CWE-489",
+      owasp: "A05:2021",
+    });
   }
 
   return findings;

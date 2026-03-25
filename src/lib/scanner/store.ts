@@ -1,6 +1,8 @@
 import type { ScanResult, Finding, ModuleStatus } from "./types";
 
-const scans = new Map<string, ScanResult>();
+const globalForStore = globalThis as unknown as { __vibeshieldScans?: Map<string, ScanResult> };
+if (!globalForStore.__vibeshieldScans) globalForStore.__vibeshieldScans = new Map();
+const scans = globalForStore.__vibeshieldScans;
 const MAX_SCANS = 100;
 
 const evictOldScans = () => {
