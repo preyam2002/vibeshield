@@ -29,7 +29,7 @@ const isPrivateHost = (host: string): boolean => {
 };
 
 export async function POST(req: Request) {
-  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick" };
+  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick"; minScore?: number; failOnCritical?: boolean };
   const url = typeof body.url === "string" ? body.url.trim() : "";
   // Validate callback URL — only allow public HTTPS URLs
   let callbackUrl: string | undefined;
@@ -106,8 +106,18 @@ export async function POST(req: Request) {
   ipTimestamps.push(now);
   globalScans.set(clientIp, ipTimestamps);
 
-  const scanId = crypto.randomUUID();
-  startScan(scanId, parsed.href, callbackUrl, mode);
+  // CI/CD gating parameters
+  const minScore = typeof body.minScore === "number" && body.minScore >= 0 && body.minScore <= 100 ? Math.round(body.minScore) : undefined;
+  const failOnCritical = body.failOnCritical === true;
 
-  return NextResponse.json({ id: scanId, url: parsed.href });
+  const scanId = crypto.randomUUID();
+  const gateConfig = (minScore !== undefined || failOnCritical) ? { minScore, failOnCritical } : undefined;
+  startScan(scanId, parsed.href, callbackUrl, mode, gateConfig);
+
+  return NextResponse.json({
+    id: scanId,
+    url: parsed.href,
+    ...(minScore !== undefined ? { minScore } : {}),
+    ...(failOnCritical ? { failOnCritical } : {}),
+  });
 }

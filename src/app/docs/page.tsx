@@ -92,8 +92,29 @@ curl ${baseUrl}/api/scan/abc-123/csv -o findings.csv`}
 #   "target": "https://your-app.vercel.app",
 #   "grade": "B+",
 #   "score": 78,
-#   "summary": {"critical": 0, "high": 1, "medium": 3, ...}
+#   "summary": {"critical": 0, "high": 1, "medium": 3, ...},
+#   "gate": {"passed": true}  // if minScore/failOnCritical set
 # }`}
+          </pre>
+        </section>
+
+        {/* CI/CD Gating */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">CI/CD Gating</h2>
+          <p className="text-sm text-zinc-500 mb-4">Block deployments that fail security thresholds. Pass <code className="text-zinc-400 bg-zinc-800/50 px-1.5 py-0.5 rounded">minScore</code> and/or <code className="text-zinc-400 bg-zinc-800/50 px-1.5 py-0.5 rounded">failOnCritical</code> to the scan request:</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Fail if score < 70 or any critical findings
+curl -X POST ${baseUrl}/api/scan \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://your-app.vercel.app",
+    "callbackUrl": "https://your-server.com/webhook",
+    "minScore": 70,
+    "failOnCritical": true
+  }'
+
+# The webhook callback includes a "gate" field:
+# {"gate": {"passed": false, "reason": "Score 45 < threshold 70; 2 critical findings found"}}`}
           </pre>
         </section>
 

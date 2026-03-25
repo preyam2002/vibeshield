@@ -130,7 +130,7 @@ const QUICK_MODULES = SECURITY_MODULES.filter((m) => QUICK_MODULE_NAMES.has(m.na
 
 export type ScanMode = "full" | "security" | "quick";
 
-export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string, mode: ScanMode = "full") => {
+export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string, mode: ScanMode = "full", gateConfig?: { minScore?: number; failOnCritical?: boolean }) => {
   createScan(scanId, targetUrl, mode);
 
   const activeModules = mode === "quick" ? QUICK_MODULES : mode === "security" ? SECURITY_MODULES : ALL_MODULES;
@@ -151,14 +151,14 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
   setTimeout(() => {
     runScan(scanId, targetUrl, mode, abortController.signal).then(() => {
       cleanupAbort(scanId);
-      if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
+      if (callbackUrl) sendCallback(callbackUrl, scanId, gateConfig).catch(() => {});
     }).catch((err) => {
       cleanupAbort(scanId);
       if (!abortController.signal.aborted) {
         console.error(`Scan ${scanId} failed:`, err);
         updateScanStatus(scanId, "failed", humanizeError(err, targetUrl));
       }
-      if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
+      if (callbackUrl) sendCallback(callbackUrl, scanId, gateConfig).catch(() => {});
     });
   }, 0);
 };
@@ -284,9 +284,23 @@ const humanizeError = (err: unknown, targetUrl: string): string => {
   return `Failed to scan ${hostname}: ${msg.length > 200 ? msg.substring(0, 200) + "..." : msg}`;
 };
 
-const sendCallback = async (callbackUrl: string, scanId: string) => {
+const sendCallback = async (callbackUrl: string, scanId: string, gateConfig?: { minScore?: number; failOnCritical?: boolean }) => {
   const scan = getScan(scanId);
   if (!scan) return;
+
+  // CI/CD gating: determine pass/fail based on gate config
+  let gate: { passed: boolean; reason?: string } | undefined;
+  if (gateConfig && scan.status === "completed") {
+    const reasons: string[] = [];
+    if (gateConfig.minScore !== undefined && scan.score < gateConfig.minScore) {
+      reasons.push(`Score ${scan.score} < threshold ${gateConfig.minScore}`);
+    }
+    if (gateConfig.failOnCritical && scan.summary.critical > 0) {
+      reasons.push(`${scan.summary.critical} critical finding${scan.summary.critical > 1 ? "s" : ""} found`);
+    }
+    gate = { passed: reasons.length === 0, ...(reasons.length > 0 ? { reason: reasons.join("; ") } : {}) };
+  }
+
   try {
     await fetch(callbackUrl, {
       method: "POST",
@@ -301,6 +315,7 @@ const sendCallback = async (callbackUrl: string, scanId: string) => {
         summary: scan.summary,
         resultUrl: `/scan/${scan.id}`,
         ...(scan.error ? { error: scan.error } : {}),
+        ...(gate ? { gate } : {}),
       }),
     });
   } catch (err) {
