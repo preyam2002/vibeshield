@@ -483,6 +483,12 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 >
                   {copied ? "Copied!" : "Share"}
                 </button>
+                <a
+                  href={`/scan/${id}/compare`}
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Compare
+                </a>
                 <div className="relative group/export">
                   <button className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1">
                     Export
