@@ -56,6 +56,7 @@ const ATTACK_MODULES = [
   { name: "CSP Analysis", desc: "Unsafe directives, CDN/JSONP bypasses, Trusted Types, nonce checks", icon: "🛡" },
   { name: "Cloud Storage", desc: "Bucket listing, write access, CORS, ACL exposure, presigned URL leaks", icon: "☁" },
   { name: "Privacy & Tracking", desc: "Session recording, ad pixels, fingerprinting, consent gaps, PII in URLs", icon: "👁" },
+  { name: "Request Smuggling", desc: "CL.TE desync, hop-by-hop header abuse, method override bypass, WS upgrade", icon: "🔀" },
 ];
 
 interface RecentScan {
