@@ -8,7 +8,8 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
       return NextResponse.json({ error: "Scan not found" }, { status: 404 });
     }
 
-    const hostname = new URL(scan.target).hostname;
+    let hostname = "unknown";
+    try { hostname = new URL(scan.target).hostname; } catch { /* skip */ }
     const s = scan.summary;
 
     const severityEmoji = (sev: string) => {

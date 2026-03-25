@@ -87,7 +87,8 @@ export const GET = async (
     ],
   };
 
-  const hostname = new URL(scan.target).hostname;
+  let hostname = "unknown";
+  try { hostname = new URL(scan.target).hostname; } catch { /* skip */ }
   return new NextResponse(JSON.stringify(sarif, null, 2), {
     headers: {
       "Content-Type": "application/sarif+json",
