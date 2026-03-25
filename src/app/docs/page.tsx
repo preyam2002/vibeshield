@@ -289,6 +289,7 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/pdf", desc: "Printable HTML/PDF report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
               { method: "GET", path: "/api/scan/:id/ci", desc: "CI-friendly results. Query: ?min-score=70&max-critical=0&format=annotations. Returns 422 on fail." },
+              { method: "GET", path: "/api/scan/:id/diff?baseline=:prevId", desc: "Compare two scans. Returns new/fixed findings and score delta. 422 on regression." },
               { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
               { method: "GET", path: "/api/scans", desc: "List recent scans. Filter: ?target=domain&status=completed" },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
