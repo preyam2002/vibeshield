@@ -403,40 +403,21 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 >
                   {copied ? "Copied!" : "Share"}
                 </button>
-                <button
-                  onClick={copyAsMarkdown}
-                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  {mdCopied ? "Copied!" : "Copy MD"}
-                </button>
-                <a
-                  href={`/api/scan/${id}/report`}
-                  download
-                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  Report
-                </a>
-                <a
-                  href={`/api/scan/${id}/export`}
-                  download
-                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  JSON
-                </a>
-                <a
-                  href={`/api/scan/${id}/sarif`}
-                  download
-                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  SARIF
-                </a>
-                <a
-                  href={`/api/scan/${id}/csv`}
-                  download
-                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  CSV
-                </a>
+                <div className="relative group/export">
+                  <button className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1">
+                    Export
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+                  <div className="absolute right-0 top-full mt-1 bg-zinc-900 border border-zinc-800 rounded-lg py-1 min-w-[140px] opacity-0 invisible group-hover/export:opacity-100 group-hover/export:visible transition-all z-50 shadow-xl">
+                    <button onClick={copyAsMarkdown} className="w-full text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">
+                      {mdCopied ? "Copied!" : "Copy Markdown"}
+                    </button>
+                    <a href={`/api/scan/${id}/report`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">HTML Report</a>
+                    <a href={`/api/scan/${id}/export`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">JSON</a>
+                    <a href={`/api/scan/${id}/sarif`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">SARIF</a>
+                    <a href={`/api/scan/${id}/csv`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">CSV</a>
+                  </div>
+                </div>
                 <button
                   onClick={handleRescan}
                   disabled={rescanning}
@@ -885,40 +866,85 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </div>
             )}
 
-            {/* Top priorities */}
-            {!isRunning && scan.findings.length > 0 && (
-              <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
-                <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
-                  Top Priorities
-                </h3>
-                <div className="space-y-2.5">
-                  {scan.findings
-                    .filter((f) => f.severity !== "info")
-                    .slice(0, 3)
-                    .map((f, i) => {
-                      const sConf = SEVERITY_CONFIG[f.severity];
+            {/* Grade roadmap */}
+            {!isRunning && scan.status === "completed" && scan.findings.length > 0 && scan.score < 95 && (() => {
+              const penalty = (count: number, weight: number, decay: number) =>
+                Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
+              const weights = { critical: { w: 25, d: 0.7 }, high: { w: 10, d: 0.75 }, medium: { w: 4, d: 0.8 }, low: { w: 1, d: 0.85 } } as const;
+              type Sev = keyof typeof weights;
+              const steps: { fix: string; severity: Sev; points: number; findingId: string }[] = [];
+              const remaining = { critical: scan.summary.critical, high: scan.summary.high, medium: scan.summary.medium, low: scan.summary.low };
+
+              for (const sev of ["critical", "high", "medium", "low"] as Sev[]) {
+                const sevFindings = scan.findings.filter((f) => f.severity === sev);
+                for (const f of sevFindings) {
+                  const { w, d } = weights[sev];
+                  const before = penalty(remaining[sev], w, d);
+                  remaining[sev]--;
+                  const after = penalty(Math.max(0, remaining[sev]), w, d);
+                  const pts = Math.round(before - after);
+                  if (pts > 0) steps.push({ fix: f.title, severity: sev, points: pts, findingId: f.id });
+                }
+              }
+
+              steps.sort((a, b) => b.points - a.points);
+
+              let runningScore = scan.score;
+              const gradeAt = (s: number) => s >= 95 ? "A" : s >= 85 ? "A-" : s >= 75 ? "B+" : s >= 65 ? "B" : s >= 55 ? "C+" : s >= 45 ? "C" : s >= 35 ? "D+" : s >= 25 ? "D" : "F";
+              const milestones: { step: number; grade: string; score: number }[] = [];
+              for (let i = 0; i < steps.length; i++) {
+                const newScore = Math.min(100, runningScore + steps[i].points);
+                if (gradeAt(newScore) !== gradeAt(runningScore)) {
+                  milestones.push({ step: i + 1, grade: gradeAt(newScore), score: newScore });
+                }
+                runningScore = newScore;
+              }
+
+              return (
+                <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+                    Improve Your Grade
+                  </h3>
+                  <div className="space-y-2">
+                    {steps.slice(0, 5).map((s, i) => {
+                      const sConf = SEVERITY_CONFIG[s.severity];
                       return (
                         <button
-                          key={f.id}
+                          key={s.findingId}
                           className="text-xs text-left w-full hover:bg-zinc-800/30 rounded-md p-1 -m-1 transition-colors"
                           onClick={() => {
-                            setOpenFindings((prev) => new Set([...prev, f.id]));
-                            document.getElementById(`finding-${f.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                            setOpenFindings((prev) => new Set([...prev, s.findingId]));
+                            document.getElementById(`finding-${s.findingId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
                           }}
                         >
                           <div className="flex items-start gap-2">
                             <span className={`font-bold ${sConf.color} shrink-0`}>{i + 1}.</span>
-                            <div>
-                              <div className="text-zinc-300 font-medium leading-snug">{f.title}</div>
-                              <div className="text-zinc-600 mt-0.5">{f.remediation.split(".")[0]}.</div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-zinc-300 font-medium leading-snug truncate">{s.fix}</div>
                             </div>
+                            <span className="text-green-400/70 text-[10px] shrink-0">+{s.points}</span>
                           </div>
                         </button>
                       );
                     })}
+                  </div>
+                  {milestones.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-zinc-800/30 space-y-1">
+                      {milestones.slice(0, 3).map((m) => {
+                        const gc = GRADE_CONFIG[m.grade] || GRADE_CONFIG["-"];
+                        return (
+                          <div key={m.grade} className="flex items-center gap-2 text-[10px]">
+                            <span className={`font-bold ${gc.color}`}>{m.grade}</span>
+                            <span className="text-zinc-600">after fixing top {m.step} {m.step === 1 ? "issue" : "issues"}</span>
+                            <span className="text-zinc-700 ml-auto">{m.score}/100</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Module breakdown */}
             {!isRunning && (
