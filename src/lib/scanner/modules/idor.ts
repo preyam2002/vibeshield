@@ -214,7 +214,137 @@ export const idorModule: ScanModule = async (target) => {
     });
   }
 
-  // Phase 4: Role/privilege escalation via body parameter injection
+  // Phase 4: UUID predictability — check if UUIDs in API responses are v1 (time-based, predictable)
+  const uuidEndpoints = target.apiEndpoints.slice(0, 10);
+  const uuidResults = await Promise.allSettled(
+    uuidEndpoints.map(async (endpoint) => {
+      try {
+        const res = await scanFetch(endpoint, { timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.includes("json")) return null;
+        const text = await res.text();
+        // Extract all UUIDs from the response
+        const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-([0-9a-f])[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+        const uuids: { full: string; version: string }[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = uuidRegex.exec(text)) !== null) {
+          uuids.push({ full: m[0], version: m[1] });
+        }
+        const v1Uuids = uuids.filter((u) => u.version === "1");
+        if (v1Uuids.length > 0) {
+          return { endpoint, v1Count: v1Uuids.length, totalCount: uuids.length, sample: v1Uuids[0].full, pathname: new URL(endpoint).pathname };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  let uuidCount = 0;
+  for (const r of uuidResults) {
+    if (findings.length >= MAX_IDOR_FINDINGS + 3) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `idor-uuid-v1-${uuidCount++}`, module: "IDOR",
+      severity: "medium",
+      title: `Predictable UUIDv1 detected on ${v.pathname}`,
+      description: `Found ${v.v1Count} UUIDv1 identifier(s) out of ${v.totalCount} total UUIDs in the response. UUIDv1 encodes the MAC address and timestamp, making IDs predictable and enumerable. An attacker can guess other resource IDs by extracting the time component.`,
+      evidence: `Endpoint: ${v.endpoint}\nSample UUIDv1: ${v.sample}\nUUIDv1 count: ${v.v1Count}/${v.totalCount}`,
+      remediation: "Use UUIDv4 (random) or UUIDv7 instead of UUIDv1. UUIDv1 leaks timestamp and MAC address, making identifiers guessable.",
+      cwe: "CWE-330", owasp: "A01:2021",
+      codeSnippet: `// Use UUIDv4 (random) instead of UUIDv1\nimport { randomUUID } from "crypto";\nconst id = randomUUID(); // UUIDv4 — cryptographically random\n\n// Or use a library:\n// import { v4 as uuidv4 } from "uuid";\n// const id = uuidv4();`,
+    });
+  }
+
+  // Phase 5: Horizontal privilege escalation — test if changing user-related IDs returns different users' data
+  const USER_ID_PARAMS = ["user_id", "userId", "uid", "account_id", "accountId", "profile_id", "profileId", "owner_id", "ownerId", "member_id", "memberId"];
+  const hpeEndpoints: { endpoint: string; paramName: string; originalId: string }[] = [];
+  for (const endpoint of target.apiEndpoints.slice(0, 15)) {
+    try {
+      const url = new URL(endpoint);
+      for (const param of USER_ID_PARAMS) {
+        const val = url.searchParams.get(param);
+        if (val) {
+          hpeEndpoints.push({ endpoint, paramName: param, originalId: val });
+          break;
+        }
+      }
+    } catch { /* skip */ }
+  }
+  // Also check path-based user endpoints like /api/users/123/profile
+  const userPathPattern = /\/api\/(?:users?|accounts?|profiles?|members?)\/(\d+)/i;
+  for (const endpoint of target.apiEndpoints.slice(0, 15)) {
+    const match = endpoint.match(userPathPattern);
+    if (match && !hpeEndpoints.some((e) => e.endpoint === endpoint)) {
+      hpeEndpoints.push({ endpoint, paramName: "path_id", originalId: match[1] });
+    }
+  }
+
+  const hpeResults = await Promise.allSettled(
+    hpeEndpoints.slice(0, 6).map(async (ep) => {
+      const originalRes = await scanFetch(ep.endpoint, { timeoutMs: 5000 });
+      if (!originalRes.ok) return null;
+      const originalText = await originalRes.text();
+      const ct = originalRes.headers.get("content-type") || "";
+      if (!ct.includes("json")) return null;
+
+      // Generate test IDs different from original
+      const origNum = parseInt(ep.originalId);
+      const testIds = !isNaN(origNum)
+        ? [String(origNum + 1), String(origNum + 2), String(origNum + 100)]
+        : ["1", "2", "999"];
+
+      const testResults = await Promise.allSettled(
+        testIds.map(async (testId) => {
+          let testUrl: string;
+          if (ep.paramName === "path_id") {
+            testUrl = ep.endpoint.replace(userPathPattern, (match, _id) => match.replace(_id, testId));
+          } else {
+            const url = new URL(ep.endpoint);
+            url.searchParams.set(ep.paramName, testId);
+            testUrl = url.href;
+          }
+          const res = await scanFetch(testUrl, { timeoutMs: 5000 });
+          if (!res.ok) return null;
+          const text = await res.text();
+          // Different response body means different user's data
+          if (text !== originalText && text.length > 10) {
+            const hasPrivate = PRIVATE_DATA_PATTERNS.test(text);
+            return { testId, testUrl, hasPrivate };
+          }
+          return null;
+        }),
+      );
+
+      const different = testResults.filter((r) => r.status === "fulfilled" && r.value).map((r) => (r as PromiseFulfilledResult<{ testId: string; testUrl: string; hasPrivate: boolean }>).value);
+      if (different.length >= 2) {
+        return { endpoint: ep.endpoint, paramName: ep.paramName, count: different.length, hasPrivate: different.some((d) => d.hasPrivate), evidence: different.map((d) => `GET ${d.testUrl} → different data`), pathname: new URL(ep.endpoint).pathname };
+      }
+      return null;
+    }),
+  );
+
+  let hpeCount = 0;
+  for (const r of hpeResults) {
+    if (findings.length >= MAX_IDOR_FINDINGS + 5) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `idor-horizontal-${hpeCount++}`, module: "IDOR",
+      severity: v.hasPrivate ? "critical" : "high",
+      title: `Horizontal privilege escalation via ${v.paramName} on ${v.pathname}`,
+      description: `Changing the ${v.paramName} value returns different users' data (${v.count} different IDs returned unique responses).${v.hasPrivate ? " Responses contain private data fields (email, phone, etc.)." : ""} This allows any authenticated user to access other users' resources.`,
+      evidence: v.evidence.join("\n"),
+      remediation: "Always verify the authenticated user owns the requested resource. Never rely solely on client-supplied user IDs for authorization.",
+      cwe: "CWE-639", owasp: "A01:2021",
+      codeSnippet: `// Always derive the user from the session, not from the request\nexport async function GET(req: Request) {\n  const session = await getSession(req);\n  // WRONG: const userId = req.searchParams.get("user_id");\n  // RIGHT: use session.userId directly\n  const data = await db.findMany({ where: { userId: session.userId } });\n  return Response.json(data);\n}`,
+    });
+  }
+
+  // Phase 6: Role/privilege escalation via body parameter injection
   const roleEndpoints = target.apiEndpoints.filter((ep) =>
     /\/(users?|profile|account|settings|me)\b/i.test(ep) && !/\/(login|register|signup|reset)/i.test(ep),
   ).slice(0, 3);
