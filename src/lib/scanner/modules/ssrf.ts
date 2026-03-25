@@ -144,7 +144,163 @@ export const ssrfModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 2: Redirect-based SSRF — server may follow redirects to internal targets
+  // Phase 2: DNS rebinding detection — test URLs with short TTL domain patterns
+  if (findings.length < MAX_FINDINGS && testedEndpoints.length > 0) {
+    const rebindDomains = [
+      { payload: "http://7f000001.nip.io/", name: "nip.io rebind to 127.0.0.1" },
+      { payload: "http://127.0.0.1.nip.io/", name: "nip.io rebind to 127.0.0.1" },
+      { payload: "http://a]@127.0.0.1/", name: "bracket-based URL confusion" },
+      { payload: "http://spoofed.burpcollaborator.net/", name: "external rebind domain" },
+    ];
+
+    const rebindResults = await Promise.allSettled(
+      testedEndpoints.slice(0, 5).flatMap((endpoint) =>
+        SSRF_PARAMS.slice(0, 4).flatMap((param) =>
+          rebindDomains.map(async ({ payload, name }) => {
+            const testUrl = new URL(endpoint);
+            testUrl.searchParams.set(param, payload);
+            try {
+              const res = await scanFetch(testUrl.href, { timeoutMs: 8000 });
+              const text = await res.text();
+              if (res.ok && text.length > 10 && !looksLikeHtml(text)) {
+                if (/ECONNREFUSED|127\.0\.0\.1|localhost|::1|internal|admin|dashboard/i.test(text)) {
+                  return { param, endpoint, payload, name, text: text.substring(0, 200), pathname: new URL(endpoint).pathname };
+                }
+              }
+            } catch { /* skip */ }
+            return null;
+          }),
+        ),
+      ),
+    );
+
+    for (const r of rebindResults) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `ssrf-dns-rebind-${ssrfCount++}`,
+        module: "SSRF",
+        severity: "high",
+        title: `DNS rebinding SSRF via ${v.name} on ${v.pathname}`,
+        description: "The server fetches user-supplied URLs that use DNS rebinding domains (e.g., nip.io). These domains initially resolve to a public IP but can be rebound to internal IPs with short TTL, bypassing IP allowlist checks that only validate at DNS resolution time.",
+        evidence: `Param: ${v.param}\nPayload: ${v.payload}\nResponse preview: ${v.text}`,
+        remediation: "Validate the resolved IP address after DNS resolution, not just the hostname. Re-validate on every connection attempt. Block private IP ranges at the network level. Consider pinning DNS results for the duration of the request.",
+        cwe: "CWE-918",
+        owasp: "A10:2021",
+        confidence: 80,
+        codeSnippet: `// Validate resolved IP, not just hostname\nimport dns from "dns/promises";\nasync function safeFetch(url: string) {\n  const { hostname } = new URL(url);\n  const { address } = await dns.lookup(hostname);\n  const PRIVATE = /^(127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2|3[01])\\.|0\\.0\\.0\\.0|::1|fc00:|fe80:)/;\n  if (PRIVATE.test(address)) throw new Error("Blocked: resolves to private IP");\n  return fetch(url);\n}`,
+      });
+    }
+  }
+
+  // Phase 3: IPv6 bypass — test various IPv6 representations of localhost
+  if (findings.length < MAX_FINDINGS && testedEndpoints.length > 0) {
+    const ipv6Payloads = [
+      { payload: "http://[::1]/", name: "IPv6 loopback [::1]" },
+      { payload: "http://[::1]:3000/", name: "IPv6 loopback [::1]:3000" },
+      { payload: "http://[0:0:0:0:0:0:0:1]/", name: "IPv6 full loopback" },
+      { payload: "http://[::ffff:127.0.0.1]/", name: "IPv6-mapped IPv4 127.0.0.1" },
+      { payload: "http://[::ffff:7f00:1]/", name: "IPv6-mapped IPv4 hex" },
+      { payload: "http://[::ffff:169.254.169.254]/", name: "IPv6-mapped AWS metadata" },
+      { payload: "http://[0000::1]/", name: "IPv6 padded loopback" },
+      { payload: "http://[::1%25eth0]/", name: "IPv6 zone ID bypass" },
+    ];
+
+    const ipv6Results = await Promise.allSettled(
+      testedEndpoints.slice(0, 5).flatMap((endpoint) =>
+        SSRF_PARAMS.slice(0, 4).flatMap((param) =>
+          ipv6Payloads.map(async ({ payload, name }) => {
+            const testUrl = new URL(endpoint);
+            testUrl.searchParams.set(param, payload);
+            try {
+              const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+              const text = await res.text();
+              if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, "localhost")) {
+                return { param, endpoint, payload, name, text: text.substring(0, 200), pathname: new URL(endpoint).pathname, status: res.status };
+              }
+            } catch { /* skip */ }
+            return null;
+          }),
+        ),
+      ),
+    );
+
+    for (const r of ipv6Results) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      const isErrorLeak = /ECONNREFUSED|getaddrinfo|ETIMEDOUT|EHOSTUNREACH/i.test(v.text);
+      findings.push({
+        id: `ssrf-ipv6-${ssrfCount++}`,
+        module: "SSRF",
+        severity: isErrorLeak ? "high" : "critical",
+        title: `SSRF via IPv6 bypass (${v.name}) on ${v.pathname}`,
+        description: `The server fetches user-supplied URLs containing IPv6 addresses that resolve to internal services. The URL validation only blocks IPv4 private ranges but does not account for IPv6 equivalents like ::1, ::ffff:127.0.0.1, or zone ID tricks.`,
+        evidence: `Param: ${v.param}\nPayload: ${v.payload}\nStatus: ${v.status}\nResponse preview: ${v.text}`,
+        remediation: "Block both IPv4 and IPv6 private/loopback addresses. Validate the resolved IP address (not the URL string) against a blocklist that includes ::1, ::ffff:127.0.0.1, fe80::/10, fc00::/7, and other private IPv6 ranges.",
+        cwe: "CWE-918",
+        owasp: "A10:2021",
+        confidence: 85,
+        codeSnippet: `// Block IPv6 loopback and private ranges\nconst BLOCKED_IPV6 = /^(::1|::ffff:127\\.|::ffff:10\\.|::ffff:192\\.168\\.|::ffff:172\\.(1[6-9]|2|3[01])\\.|fe80:|fc00:|fd00:)/i;\nconst BLOCKED_IPV4 = /^(127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2|3[01])\\.|0\\.0\\.0\\.0|169\\.254\\.)/;\nfunction isBlockedIP(ip: string): boolean {\n  return BLOCKED_IPV4.test(ip) || BLOCKED_IPV6.test(ip);\n}`,
+      });
+    }
+  }
+
+  // Phase 4: URL parser differential — exploit differences between URL parsers
+  if (findings.length < MAX_FINDINGS && testedEndpoints.length > 0) {
+    const parserPayloads = [
+      { payload: "http://127.0.0.1#@evil.com", name: "fragment-based host confusion" },
+      { payload: "http://evil.com@127.0.0.1/", name: "credential-section host swap" },
+      { payload: "http://127.0.0.1:80@evil.com/", name: "port-credential confusion" },
+      { payload: "http://evil.com%40127.0.0.1/", name: "encoded @ sign bypass" },
+      { payload: "http://127.0.0.1%2f@evil.com/", name: "encoded slash in authority" },
+      { payload: "http://127.0.0.1:80%23@evil.com/", name: "encoded fragment in authority" },
+      { payload: "http://127.1.1.1\\@127.0.0.1/", name: "backslash authority confusion" },
+      { payload: "http://127.0.0.1%00@evil.com/", name: "null byte truncation" },
+    ];
+
+    const parserResults = await Promise.allSettled(
+      testedEndpoints.slice(0, 5).flatMap((endpoint) =>
+        SSRF_PARAMS.slice(0, 4).flatMap((param) =>
+          parserPayloads.map(async ({ payload, name }) => {
+            const testUrl = new URL(endpoint);
+            testUrl.searchParams.set(param, payload);
+            try {
+              const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+              const text = await res.text();
+              if (res.ok && text.length > 10 && !looksLikeHtml(text) && isSSRFIndicator(text, "localhost")) {
+                return { param, endpoint, payload, name, text: text.substring(0, 200), pathname: new URL(endpoint).pathname, status: res.status };
+              }
+            } catch { /* skip */ }
+            return null;
+          }),
+        ),
+      ),
+    );
+
+    for (const r of parserResults) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      const isErrorLeak = /ECONNREFUSED|getaddrinfo|ETIMEDOUT|EHOSTUNREACH/i.test(v.text);
+      findings.push({
+        id: `ssrf-parser-diff-${ssrfCount++}`,
+        module: "SSRF",
+        severity: isErrorLeak ? "high" : "critical",
+        title: `SSRF via URL parser differential (${v.name}) on ${v.pathname}`,
+        description: `The server's URL validation and its HTTP client parse the URL differently. The validation checks against one hostname (e.g., evil.com) while the HTTP client connects to another (127.0.0.1). This class of vulnerability exploits differences between URL parsers in the security check vs. the actual request.`,
+        evidence: `Param: ${v.param}\nPayload: ${v.payload}\nStatus: ${v.status}\nResponse preview: ${v.text}`,
+        remediation: "Use a single URL parser for both validation and fetching. Resolve the hostname to an IP address and validate the IP against a blocklist before making the request. Do not rely on hostname string matching alone.",
+        cwe: "CWE-918",
+        owasp: "A10:2021",
+        confidence: 90,
+        codeSnippet: `// Use consistent URL parsing + IP validation\nimport dns from "dns/promises";\nasync function safeFetch(input: string) {\n  // Parse once with the same parser the HTTP client uses\n  const url = new URL(input);\n  // Reject URLs with credentials section (user:pass@host)\n  if (url.username || url.password) throw new Error("Credentials in URL blocked");\n  // Resolve and validate the actual IP\n  const { address } = await dns.lookup(url.hostname);\n  const PRIVATE = /^(127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2|3[01])\\.|0\\.0\\.0\\.0|::1|::ffff:127\\.)/;\n  if (PRIVATE.test(address)) throw new Error("Private IP blocked");\n  return fetch(url.href, { redirect: "error" });\n}`,
+      });
+    }
+  }
+
+  // Phase 5: Redirect-based SSRF — server may follow redirects to internal targets
   if (findings.length < MAX_FINDINGS && testedEndpoints.length > 0) {
     // Check if any endpoint follows redirects by testing with a URL that redirects
     const redirectResults = await Promise.allSettled(

@@ -252,5 +252,126 @@ export const responseSecurityModule: ScanModule = async (target) => {
     if (count >= 7) break;
   }
 
+  // Phase 6: Content-Disposition bypass — inline rendering of dangerous MIME types
+  const dangerousMimeTypes = /text\/html|image\/svg\+xml|application\/xml|text\/xml|application\/xhtml\+xml/i;
+  const allEndpoints = [...target.apiEndpoints.slice(0, 8), ...target.pages.slice(0, 4)];
+
+  const dispBypassResults = await Promise.allSettled(
+    allEndpoints.map(async (endpoint) => {
+      const res = await scanFetch(endpoint, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const ct = res.headers.get("content-type") || "";
+      const disp = res.headers.get("content-disposition") || "";
+      const pathname = new URL(endpoint).pathname;
+
+      // Dangerous MIME type served with Content-Disposition: inline (or no disposition at all when
+      // the endpoint looks like a file-serving route)
+      if (dangerousMimeTypes.test(ct) && disp.toLowerCase().includes("inline")) {
+        return { pathname, ct, disp };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of dispBypassResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `response-disp-bypass-${count++}`,
+      module: "Response Security",
+      severity: "high",
+      title: `Content-Disposition inline for dangerous MIME type on ${v.pathname}`,
+      description: `The endpoint returns ${v.ct} with Content-Disposition: inline. Dangerous content types (HTML, SVG, XML) served inline execute scripts in the origin's context. An attacker who can control uploaded file content achieves stored XSS.`,
+      evidence: `GET ${v.pathname}\nContent-Type: ${v.ct}\nContent-Disposition: ${v.disp}`,
+      remediation: "Set Content-Disposition: attachment for all user-controlled file downloads with active content types. Never use inline for HTML, SVG, or XML served from your domain.",
+      cwe: "CWE-79",
+      owasp: "A03:2021",
+      codeSnippet: `// Force attachment for dangerous MIME types\nconst DANGEROUS = /html|svg|xml|xhtml/i;\nconst disp = DANGEROUS.test(contentType)\n  ? \`attachment; filename="\${filename}"\`\n  : \`inline; filename="\${filename}"\`;\nres.setHeader("Content-Disposition", disp);`,
+    });
+    if (count >= 9) break;
+  }
+
+  // Phase 7: Sensitive data caching — responses with Set-Cookie or auth-requiring endpoints missing no-store
+  const sensitiveDataResults = await Promise.allSettled(
+    testUrls.slice(0, 6).map(async (url) => {
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      const cc = res.headers.get("cache-control") || "";
+      const setCookie = res.headers.get("set-cookie") || "";
+      const pathname = new URL(url).pathname;
+
+      // Response sets cookies but doesn't prevent caching — intermediate caches may store the Set-Cookie header
+      if (setCookie && !cc.includes("no-store")) {
+        return { pathname, reason: "Set-Cookie present", cc: cc || "(not set)", header: "Set-Cookie" };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of sensitiveDataResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `response-sensitive-cache-${count++}`,
+      module: "Response Security",
+      severity: "medium",
+      title: `Response with ${v.header} missing Cache-Control: no-store on ${v.pathname}`,
+      description: `The endpoint ${v.pathname} returns a ${v.header} header but Cache-Control is "${v.cc}". Without no-store, CDNs and shared caches may store the response including the Set-Cookie header, leaking session tokens to other users.`,
+      evidence: `GET ${v.pathname}\n${v.header}: (present)\nCache-Control: ${v.cc}`,
+      remediation: "Always set Cache-Control: no-store on responses that include Set-Cookie or contain sensitive authentication data. This prevents intermediate caches from storing credentials.",
+      cwe: "CWE-524",
+      owasp: "A05:2021",
+      codeSnippet: `// Middleware to add no-store when setting cookies\nif (res.headers.has("Set-Cookie")) {\n  res.headers.set("Cache-Control", "no-store, private");\n}`,
+    });
+    if (count >= 11) break;
+  }
+
+  // Phase 8: CORS + cookie combo — permissive CORS on endpoints that set cookies
+  const corsComboResults = await Promise.allSettled(
+    [...target.apiEndpoints.slice(0, 8), target.url].map(async (endpoint) => {
+      const res = await scanFetch(endpoint, {
+        headers: { Origin: "https://evil.example.com" },
+        timeoutMs: 5000,
+      });
+      const acao = res.headers.get("access-control-allow-origin") || "";
+      const acac = res.headers.get("access-control-allow-credentials") || "";
+      const setCookie = res.headers.get("set-cookie") || "";
+      const pathname = new URL(endpoint).pathname;
+
+      // Permissive CORS with credentials + cookie setting = cross-site cookie theft
+      const permissiveCors = acao === "*" || acao === "https://evil.example.com" || acao === "null";
+      const credentialsAllowed = acac.toLowerCase() === "true";
+      const hasCookies = !!setCookie;
+
+      if (permissiveCors && hasCookies) {
+        return {
+          pathname, acao, acac, setCookie: setCookie.split(";")[0],
+          reflected: acao === "https://evil.example.com",
+          credentials: credentialsAllowed,
+        };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of corsComboResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const severity = v.reflected && v.credentials ? "critical" as const : "high" as const;
+    findings.push({
+      id: `response-cors-cookie-${count++}`,
+      module: "Response Security",
+      severity,
+      title: `CORS + Set-Cookie combo on ${v.pathname}`,
+      description: `The endpoint sets cookies while returning permissive CORS headers (Access-Control-Allow-Origin: ${v.acao}${v.credentials ? ", Access-Control-Allow-Credentials: true" : ""}). ${v.reflected ? "The origin is reflected from the request, meaning any site can make credentialed requests and read the response, including Set-Cookie values." : "A wildcard or null origin combined with cookie-setting allows cross-site interaction."} This enables cross-site cookie theft and session hijacking.`,
+      evidence: `GET ${v.pathname} with Origin: https://evil.example.com\nAccess-Control-Allow-Origin: ${v.acao}\nAccess-Control-Allow-Credentials: ${v.acac || "(not set)"}\nSet-Cookie: ${v.setCookie}`,
+      remediation: "Never reflect arbitrary origins when setting cookies. Use a strict allowlist of trusted origins. Remove Access-Control-Allow-Credentials: true unless absolutely required, and never combine it with a wildcard or reflected origin.",
+      cwe: "CWE-346",
+      owasp: "A01:2021",
+      confidence: v.reflected && v.credentials ? 95 : 80,
+      codeSnippet: `// Strict CORS origin allowlist\nconst ALLOWED_ORIGINS = new Set(["https://myapp.com", "https://admin.myapp.com"]);\nconst origin = req.headers.get("Origin") || "";\nif (ALLOWED_ORIGINS.has(origin)) {\n  res.headers.set("Access-Control-Allow-Origin", origin);\n  res.headers.set("Vary", "Origin");\n}`,
+    });
+    if (count >= 13) break;
+  }
+
   return findings;
 };

@@ -255,5 +255,210 @@ res.redirect(encodeURIComponent(userPath));`,
     });
   }
 
+  // Phase 5: Unicode CRLF variants — bypass WAFs using Unicode line separators
+  const unicodePayloads = [
+    { payload: "%E5%98%8A%E5%98%8DX-Injected:%20true", name: "Unicode LS/PS bypass (U+560A/U+560D)" },
+    { payload: "%0D%20%0AX-Injected:%20true", name: "Space insertion bypass (CR SP LF)" },
+    { payload: "%0D%09%0AX-Injected:%20true", name: "Tab insertion bypass (CR TAB LF)" },
+  ];
+
+  const unicodeEndpoints = [target.url, ...target.pages.slice(0, 3), ...target.apiEndpoints.slice(0, 3)];
+  const unicodeResults = await Promise.allSettled(
+    unicodeEndpoints.flatMap((endpoint) => {
+      try {
+        const url = new URL(endpoint);
+        const pathname = url.pathname;
+        const params = [...url.searchParams.keys()];
+        const testParams = params.length > 0 ? params.slice(0, 2) : CRLF_PARAMS.slice(0, 2);
+
+        return testParams.flatMap((param) =>
+          unicodePayloads.map(async ({ payload, name }) => {
+            try {
+              const testUrl = new URL(endpoint);
+              testUrl.searchParams.set(param, payload);
+              const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+              const injected = res.headers.get("x-injected");
+              if (injected) {
+                return { pathname, param, payload, name };
+              }
+
+              // Also test in path segment
+              const pathUrl = `${url.origin}${pathname}/${payload}`;
+              const pathRes = await scanFetch(pathUrl, { timeoutMs: 5000 });
+              if (pathRes.headers.get("x-injected")) {
+                return { pathname, param: "(path)", payload, name };
+              }
+            } catch { /* skip */ }
+            return null;
+          }),
+        );
+      } catch { return []; }
+    }),
+  );
+
+  const unicodeSeen = new Set<string>();
+  for (const r of unicodeResults) {
+    if (findings.length >= 10) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const key = `${v.pathname}:${v.name}`;
+    if (unicodeSeen.has(key)) continue;
+    unicodeSeen.add(key);
+    findings.push({
+      id: `crlf-unicode-${findings.length}`,
+      module: "CRLF Injection",
+      severity: "high",
+      title: `Unicode CRLF bypass on ${v.pathname} (${v.name})`,
+      description: `CRLF injection succeeds using Unicode line separator variants (${v.name}). This bypasses WAFs and input filters that only check for standard %0d%0a sequences. The server decodes Unicode characters into line breaks before processing headers.`,
+      evidence: `${v.param === "(path)" ? `GET ${v.pathname}/${v.payload}` : `GET ${v.pathname}?${v.param}=${v.payload}`}\nBypass: ${v.name}\nInjected: X-Injected header present`,
+      remediation: "Sanitize input after full Unicode normalization and URL decoding. Check for all Unicode line separator characters (U+2028, U+2029, U+560A, U+560D) in addition to CR/LF. Apply multiple rounds of decoding before validation.",
+      cwe: "CWE-93",
+      owasp: "A03:2021",
+      confidence: 95,
+      codeSnippet: `// Sanitize all line-break variants including Unicode\nfunction sanitizeCrlf(value: string): string {\n  return value.replace(\n    /[\\r\\n\\u2028\\u2029\\u560a\\u560d]/g, ""\n  );\n}`,
+    });
+  }
+
+  // Phase 6: Double URL-encoded CRLF — bypass single-decode sanitization
+  const doubleEncodedPayloads = [
+    { payload: "%250d%250aX-Injected:%20true", name: "double-encoded %0d%0a" },
+    { payload: "%250d%250aSet-Cookie:%20crlfdouble=injected", name: "double-encoded Set-Cookie" },
+  ];
+
+  const doubleEncEndpoints = [target.url, ...target.pages.slice(0, 3), ...target.apiEndpoints.slice(0, 3)];
+  const doubleEncResults = await Promise.allSettled(
+    doubleEncEndpoints.flatMap((endpoint) => {
+      try {
+        const url = new URL(endpoint);
+        const pathname = url.pathname;
+        const params = [...url.searchParams.keys()];
+        const testParams = params.length > 0 ? params.slice(0, 2) : CRLF_PARAMS.slice(0, 2);
+
+        return [
+          // Test in query parameters
+          ...testParams.flatMap((param) =>
+            doubleEncodedPayloads.map(async ({ payload, name }) => {
+              try {
+                const testUrl = new URL(endpoint);
+                testUrl.searchParams.set(param, payload);
+                const res = await scanFetch(testUrl.href, { timeoutMs: 5000 });
+                const injected = res.headers.get("x-injected");
+                const cookieInjected = (res.headers.get("set-cookie") || "").includes("crlfdouble=injected");
+                if (injected || cookieInjected) {
+                  return { pathname, param, name, injected: injected ? "header" : "cookie", location: "param" as const };
+                }
+              } catch { /* skip */ }
+              return null;
+            }),
+          ),
+          // Test in path
+          ...doubleEncodedPayloads.map(async ({ payload, name }) => {
+            try {
+              const pathUrl = `${url.origin}${pathname}/${payload}`;
+              const res = await scanFetch(pathUrl, { timeoutMs: 5000 });
+              const injected = res.headers.get("x-injected");
+              const cookieInjected = (res.headers.get("set-cookie") || "").includes("crlfdouble=injected");
+              if (injected || cookieInjected) {
+                return { pathname, param: "(path)", name, injected: injected ? "header" : "cookie", location: "path" as const };
+              }
+            } catch { /* skip */ }
+            return null;
+          }),
+        ];
+      } catch { return []; }
+    }),
+  );
+
+  const doubleEncSeen = new Set<string>();
+  for (const r of doubleEncResults) {
+    if (findings.length >= 12) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const key = `${v.pathname}:${v.name}`;
+    if (doubleEncSeen.has(key)) continue;
+    doubleEncSeen.add(key);
+    findings.push({
+      id: `crlf-double-enc-${findings.length}`,
+      module: "CRLF Injection",
+      severity: "high",
+      title: `Double-encoded CRLF injection on ${v.pathname} (${v.name})`,
+      description: `CRLF injection succeeds using double URL-encoded sequences (%250d%250a). This indicates the server decodes URL encoding twice — once during routing and again when processing the value. Single-decode sanitization is bypassed because %250d is decoded to %0d after the first pass, then to \\r on the second.`,
+      evidence: `${v.location === "path" ? `GET ${v.pathname}/${v.name}` : `GET ${v.pathname}?${v.param}=${v.name}`}\nInjected: ${v.injected}`,
+      remediation: "Sanitize input after all decoding is complete, not between decode steps. Avoid double-decoding URL parameters. Validate at the last point before use in headers.",
+      cwe: "CWE-93",
+      owasp: "A03:2021",
+      confidence: 95,
+      codeSnippet: `// Decode fully then sanitize — don't sanitize between decode steps\nfunction safeDecode(value: string): string {\n  let decoded = value;\n  let prev = "";\n  while (decoded !== prev) {\n    prev = decoded;\n    decoded = decodeURIComponent(decoded);\n  }\n  return decoded.replace(/[\\r\\n]/g, "");\n}`,
+    });
+  }
+
+  // Phase 7: HTTP response splitting via Referer/User-Agent headers
+  const headerInjectionPayloads = [
+    "%0d%0aX-Injected: true",
+    "%0d%0aSet-Cookie: crlfheader=injected",
+  ];
+
+  const headerInjectionEndpoints = [target.url, ...target.pages.slice(0, 3), ...target.apiEndpoints.slice(0, 3)];
+  const headerInjectionResults = await Promise.allSettled(
+    headerInjectionEndpoints.flatMap((endpoint) => {
+      const pathname = new URL(endpoint).pathname;
+      return [
+        // Test Referer header
+        ...headerInjectionPayloads.map(async (payload) => {
+          try {
+            const res = await scanFetch(endpoint, {
+              headers: { Referer: `https://example.com/${payload}` },
+              timeoutMs: 5000,
+            });
+            const injected = res.headers.get("x-injected");
+            const cookieInjected = (res.headers.get("set-cookie") || "").includes("crlfheader=injected");
+            if (injected || cookieInjected) {
+              return { pathname, header: "Referer", injected: injected ? "header" : "cookie" };
+            }
+          } catch { /* skip */ }
+          return null;
+        }),
+        // Test User-Agent header
+        ...headerInjectionPayloads.map(async (payload) => {
+          try {
+            const res = await scanFetch(endpoint, {
+              headers: { "User-Agent": `Mozilla/5.0 ${payload}` },
+              timeoutMs: 5000,
+            });
+            const injected = res.headers.get("x-injected");
+            const cookieInjected = (res.headers.get("set-cookie") || "").includes("crlfheader=injected");
+            if (injected || cookieInjected) {
+              return { pathname, header: "User-Agent", injected: injected ? "header" : "cookie" };
+            }
+          } catch { /* skip */ }
+          return null;
+        }),
+      ];
+    }),
+  );
+
+  const headerInjSeen = new Set<string>();
+  for (const r of headerInjectionResults) {
+    if (findings.length >= 14) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const key = `${v.pathname}:${v.header}`;
+    if (headerInjSeen.has(key)) continue;
+    headerInjSeen.add(key);
+    findings.push({
+      id: `crlf-header-inj-${findings.length}`,
+      module: "CRLF Injection",
+      severity: "high",
+      title: `CRLF injection via ${v.header} header on ${v.pathname}`,
+      description: `The server reflects the ${v.header} request header into response headers without sanitizing CRLF characters. Attackers can inject arbitrary headers by crafting a malicious ${v.header} value. Since ${v.header} is automatically sent by browsers, this can be exploited via a redirect from an attacker-controlled page.`,
+      evidence: `GET ${v.pathname}\n${v.header}: ...%0d%0aX-Injected: true\nInjected: ${v.injected}`,
+      remediation: `Never reflect the ${v.header} header into response headers. If logging or analytics require these values, sanitize all CRLF characters before use. Apply output encoding at the HTTP header layer.`,
+      cwe: "CWE-113",
+      owasp: "A03:2021",
+      confidence: 95,
+      codeSnippet: `// Sanitize request headers before reflecting\nconst referer = req.headers.get("referer") || "";\nconst safeReferer = referer.replace(/[\\r\\n]/g, "");\n// Never: res.setHeader("X-Original-Referer", req.headers.referer)`,
+    });
+  }
+
   return findings;
 };

@@ -229,7 +229,176 @@ export const hostHeaderModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 6: Double Host header injection
+  // Phase 6: Absolute URL bypass — test proxy behavior with full URL in request line
+  try {
+    const parsedUrl = new URL(target.url);
+    const absoluteRes = await scanFetch(target.url, {
+      headers: { Host: "evil.com" },
+      redirect: "manual",
+      timeoutMs: 5000,
+    });
+    const absoluteLocation = absoluteRes.headers.get("location") || "";
+    const absoluteText = await absoluteRes.text();
+    // Some reverse proxies route based on the absolute URL but pass the Host header to the backend
+    if (absoluteLocation.includes("evil.com") || (absoluteText.includes("evil.com") && !absoluteText.includes(hostname))) {
+      findings.push({
+        id: `host-header-absolute-${findings.length}`,
+        module: "Host Header Injection",
+        severity: "high",
+        title: "Absolute URL bypass with injected Host header",
+        description: "The server processes the Host header even when the request uses an absolute URL. Reverse proxies may route on the request-line URL but forward the attacker-controlled Host header to the backend, enabling cache poisoning or redirect hijacking.",
+        evidence: `Request to ${target.url} with Host: evil.com\n${absoluteLocation ? `Location: ${absoluteLocation}` : "evil.com reflected in response body"}`,
+        remediation: "Configure the reverse proxy to override the Host header with the value from the request-line URL. Validate the Host header against an allowlist at the application level.",
+        cwe: "CWE-644",
+        owasp: "A05:2021",
+        codeSnippet: `// nginx — override Host with proxy target\nproxy_set_header Host $host;\n\n// Application — validate Host allowlist\nconst ALLOWED_HOSTS = new Set(["yourdomain.com"]);\nif (!ALLOWED_HOSTS.has(req.headers.host)) return res.status(400).end();`,
+      });
+    }
+  } catch { /* skip */ }
+
+  // Phase 7: Cache key poisoning via Host — send varied Host headers and check for cache leaks
+  const cacheTests: { header: string; value: string; extra: Record<string, string> }[] = [
+    { header: "Host", value: `${hostname}`, extra: { "X-Forwarded-Host": "evil-cache-test.com" } },
+    { header: "Host", value: `${hostname}`, extra: { "X-Original-URL": "/evil-cache-test" } },
+    { header: "Host", value: `${hostname}`, extra: { "X-Rewrite-URL": "/evil-cache-test" } },
+  ];
+  const cacheTestResults = await Promise.allSettled(
+    cacheTests.map(async ({ header, value, extra }) => {
+      // First request with the poisoning header
+      const poisonRes = await scanFetch(target.url, {
+        headers: { [header]: value, ...extra },
+        redirect: "manual",
+        timeoutMs: 5000,
+      });
+      const poisonText = await poisonRes.text();
+      const poisonCacheHeader = poisonRes.headers.get("x-cache") || poisonRes.headers.get("cf-cache-status") || poisonRes.headers.get("age") || "";
+
+      // Second normal request to see if cache was poisoned
+      const normalRes = await scanFetch(target.url, { timeoutMs: 5000 });
+      const normalText = await normalRes.text();
+
+      // Check if poisoned content leaked into normal response
+      const extraKey = Object.keys(extra)[0];
+      const extraVal = extra[extraKey as keyof typeof extra];
+      if (poisonText.includes("evil-cache-test") && normalText.includes("evil-cache-test")) {
+        return { extraHeader: extraKey, extraValue: extraVal, cacheHeader: poisonCacheHeader };
+      }
+      // Check if the response reflected the injected header value in the body
+      if (poisonText.includes("evil-cache-test.com") || poisonRes.headers.get("location")?.includes("evil-cache-test")) {
+        return { extraHeader: extraKey, extraValue: extraVal, cacheHeader: poisonCacheHeader, reflectedOnly: true };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of cacheTestResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const isPoisoned = !v.reflectedOnly;
+    findings.push({
+      id: `host-header-cache-poison-${findings.length}`,
+      module: "Host Header Injection",
+      severity: isPoisoned ? "high" : "medium",
+      title: isPoisoned
+        ? `Cache poisoning via ${v.extraHeader}`
+        : `${v.extraHeader} reflected in response (potential cache poisoning)`,
+      description: isPoisoned
+        ? `The ${v.extraHeader} header value was reflected in the response and persisted into cached pages served to other users. An attacker can inject malicious content or redirects into the cache, affecting all visitors.`
+        : `The ${v.extraHeader} header value is reflected in the response. If a caching layer is present, this could be exploited for web cache poisoning.`,
+      evidence: `${v.extraHeader}: ${v.extraValue}${v.cacheHeader ? `\nCache header: ${v.cacheHeader}` : ""}\n${isPoisoned ? "Poisoned content served to subsequent normal requests" : "Value reflected in poisoned response"}`,
+      remediation: "Do not use X-Forwarded-Host, X-Original-URL, or X-Rewrite-URL values in response generation. Configure the cache to include these headers in the cache key, or strip them at the edge.",
+      cwe: "CWE-349",
+      owasp: "A05:2021",
+      confidence: isPoisoned ? 90 : 65,
+      codeSnippet: `// Strip cache-poisoning headers at the reverse proxy\n// nginx:\nproxy_set_header X-Forwarded-Host "";\nproxy_set_header X-Original-URL "";\nproxy_set_header X-Rewrite-URL "";\n\n// Or include them in cache key:\n// Vary: X-Forwarded-Host`,
+    });
+    break;
+  }
+
+  // Phase 8: X-Forwarded-Host / X-Original-Host / X-Rewrite-URL redirect manipulation
+  const xForwardedResults = await Promise.allSettled(
+    [
+      { header: "X-Forwarded-Host", value: "evil.com" },
+      { header: "X-Original-Host", value: "evil.com" },
+      { header: "X-Rewrite-URL", value: "/evil-path" },
+      { header: "X-Original-URL", value: "/evil-path" },
+      { header: "X-Custom-IP-Authorization", value: "127.0.0.1" },
+    ].map(async ({ header, value }) => {
+      const res = await scanFetch(target.url, {
+        headers: { [header]: value },
+        redirect: "manual",
+        timeoutMs: 5000,
+      });
+      const location = res.headers.get("location") || "";
+      const text = await res.text();
+
+      // Check for redirect manipulation
+      if (location.includes("evil.com") || location.includes("evil-path")) {
+        return { header, value, location, type: "redirect" as const };
+      }
+      // Check for URL rewriting — response contains content from a different path
+      if (header.includes("URL") && res.ok) {
+        const normalRes = await scanFetch(target.url, { timeoutMs: 5000 });
+        const normalText = await normalRes.text();
+        if (text !== normalText && Math.abs(text.length - normalText.length) > 100) {
+          return { header, value, location: "", type: "rewrite" as const };
+        }
+      }
+      // Check for body reflection
+      if (text.includes("evil.com") && !text.includes(hostname + "evil.com")) {
+        return { header, value, location: "", type: "reflection" as const };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of xForwardedResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (v.type === "rewrite") {
+      findings.push({
+        id: `host-header-url-rewrite-${findings.length}`,
+        module: "Host Header Injection",
+        severity: "high",
+        title: `Server-side URL rewrite via ${v.header}`,
+        description: `The server honors the ${v.header} header to determine which resource to serve. An attacker can access arbitrary server paths by injecting this header, potentially bypassing access controls or reaching admin endpoints.`,
+        evidence: `${v.header}: ${v.value}\nResponse differs significantly from normal request (different content served)`,
+        remediation: `Strip the ${v.header} header at the reverse proxy. Never trust client-supplied URL override headers for routing decisions.`,
+        cwe: "CWE-441",
+        owasp: "A05:2021",
+        codeSnippet: `// Strip URL override headers in nginx\nproxy_set_header X-Original-URL "";\nproxy_set_header X-Rewrite-URL "";\n\n// Or reject them in middleware\nif (req.headers["x-original-url"] || req.headers["x-rewrite-url"]) {\n  return res.status(400).send("Forbidden header");\n}`,
+      });
+    } else if (v.type === "redirect") {
+      findings.push({
+        id: `host-header-xfwd-redirect-${findings.length}`,
+        module: "Host Header Injection",
+        severity: "high",
+        title: `${v.header} injection causes redirect manipulation`,
+        description: `The server uses the ${v.header} header to generate redirect URLs. An attacker can redirect users to a malicious domain by injecting this header, enabling phishing or credential theft.`,
+        evidence: `${v.header}: ${v.value}\nLocation: ${v.location}`,
+        remediation: `Do not trust ${v.header} for URL generation. Use a hardcoded application URL or validate the header against an allowlist of trusted proxies.`,
+        cwe: "CWE-644",
+        owasp: "A05:2021",
+        codeSnippet: `// Use hardcoded base URL, not forwarded headers\nconst BASE_URL = process.env.APP_URL || "https://yourdomain.com";\n// BAD: const base = req.headers["x-forwarded-host"];\n// GOOD:\nconst redirectUrl = \`\${BASE_URL}/dashboard\`;`,
+      });
+    } else {
+      findings.push({
+        id: `host-header-xfwd-reflect-${findings.length}`,
+        module: "Host Header Injection",
+        severity: "medium",
+        title: `${v.header} value reflected in response body`,
+        description: `The ${v.header} header value is reflected in the response body. This can be chained with cache poisoning to serve malicious content to other users, or used for phishing by injecting attacker-controlled URLs into the page.`,
+        evidence: `${v.header}: ${v.value}\nevil.com appears in response body`,
+        remediation: `Ignore ${v.header} from untrusted sources. Configure your reverse proxy to overwrite this header.`,
+        cwe: "CWE-644",
+        owasp: "A05:2021",
+        codeSnippet: `// Only trust X-Forwarded-Host from known proxies\n// nginx:\nproxy_set_header X-Forwarded-Host $host;\n\n// Application: validate against allowlist\nconst forwardedHost = req.headers["x-forwarded-host"];\nif (forwardedHost && !TRUSTED_HOSTS.has(forwardedHost)) {\n  delete req.headers["x-forwarded-host"];\n}`,
+      });
+    }
+    break;
+  }
+
+  // Phase 9: Double Host header injection
   // Some proxies pass the first Host header to the backend but route on the second
   try {
     const doubleHostRes = await scanFetch(target.url, {
