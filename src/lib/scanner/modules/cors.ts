@@ -260,5 +260,58 @@ export const corsModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 6: Null origin acceptance
+  // Some servers accept Origin: null (sent by sandboxed iframes, data: URIs, file:// pages)
+  const nullOriginResults = await Promise.allSettled(
+    endpoints.slice(0, 3).map(async (endpoint) => {
+      const res = await scanFetch(endpoint, { headers: { Origin: "null" } });
+      const acao = res.headers.get("access-control-allow-origin");
+      const acac = res.headers.get("access-control-allow-credentials");
+      return { endpoint, acao, acac };
+    }),
+  );
+  for (const r of nullOriginResults) {
+    if (r.status !== "fulfilled") continue;
+    const { endpoint, acao, acac } = r.value;
+    if (acao === "null" && acac?.toLowerCase() === "true") {
+      findings.push({
+        id: `cors-null-origin-${findings.length}`,
+        module: "CORS",
+        severity: "high",
+        title: `CORS accepts null origin with credentials on ${new URL(endpoint).pathname}`,
+        description: "The endpoint accepts Origin: null and responds with Access-Control-Allow-Credentials: true. Attackers can use sandboxed iframes (which send Origin: null) to make authenticated cross-origin requests and steal data.",
+        evidence: `Origin: null\nACAO: null\nACAC: true`,
+        remediation: "Never reflect 'null' as an allowed origin. Maintain an explicit allowlist of trusted origins.",
+        cwe: "CWE-942",
+        owasp: "A01:2021",
+        confidence: 95,
+        codeSnippet: `// Reject null origin\nconst ALLOWED = new Set(["https://yourdomain.com"]);\nconst origin = req.headers.get("origin");\nif (origin && ALLOWED.has(origin)) {\n  res.headers.set("Access-Control-Allow-Origin", origin);\n}`,
+      });
+      break;
+    }
+  }
+
+  // Phase 7: Subdomain wildcard CORS
+  // Check if subdomains of the target are reflected (*.target.com)
+  const subdomainOrigin = `https://evil.${targetHost}`;
+  try {
+    const res = await scanFetch(endpoints[0] || target.url, { headers: { Origin: subdomainOrigin } });
+    const acao = res.headers.get("access-control-allow-origin");
+    if (acao === subdomainOrigin) {
+      findings.push({
+        id: `cors-subdomain-reflect-${findings.length}`,
+        module: "CORS",
+        severity: "medium",
+        title: `CORS reflects arbitrary subdomain origins (*.${targetHost})`,
+        description: `The server accepts any subdomain as a valid origin (evil.${targetHost}). If an attacker can control or compromise any subdomain (via XSS, subdomain takeover, or dangling DNS), they can bypass CORS restrictions and steal data.`,
+        evidence: `Origin: ${subdomainOrigin}\nACAO: ${acao}`,
+        remediation: "Don't blindly trust all subdomains. Maintain an explicit allowlist of trusted origins. If you must allow subdomains, ensure all subdomains are secure and under your control.",
+        cwe: "CWE-942",
+        owasp: "A05:2021",
+        confidence: 85,
+      });
+    }
+  } catch { /* skip */ }
+
   return findings;
 };
