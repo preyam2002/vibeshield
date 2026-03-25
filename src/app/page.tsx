@@ -121,9 +121,30 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
+  const normalizeUrl = (input: string): string => {
+    let u = input.trim();
+    if (!u) return u;
+    // Auto-prepend https:// if no protocol
+    if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+    return u;
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!url.trim()) return;
+    const normalized = normalizeUrl(url);
+    if (!normalized) return;
+
+    // Client-side validation
+    try {
+      const parsed = new URL(normalized);
+      if (!parsed.hostname.includes(".") && parsed.hostname !== "localhost") {
+        setError("Enter a valid URL like https://your-app.vercel.app");
+        return;
+      }
+    } catch {
+      setError("Enter a valid URL like https://your-app.vercel.app");
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -132,12 +153,20 @@ export default function Home() {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), mode }),
+        body: JSON.stringify({ url: normalized, mode }),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        setError(data.error || "Failed to start scan");
+        const msg = data.error || "Failed to start scan";
+        // Friendlier error messages
+        if (res.status === 429) {
+          setError("Too many scans recently — wait a minute and try again.");
+        } else if (msg.includes("private") || msg.includes("local")) {
+          setError("Can't scan local/private addresses. Enter a public URL.");
+        } else {
+          setError(msg);
+        }
         setLoading(false);
         return;
       }
