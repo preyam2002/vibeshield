@@ -155,6 +155,7 @@ export const corsModule: ScanModule = async (target) => {
         evidence: `Access-Control-Allow-Methods: ${methods}`,
         remediation: "Only allow the HTTP methods that are actually needed.",
         cwe: "CWE-942",
+        codeSnippet: `// Only allow needed methods\nres.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");`,
       });
     }
     if (allowHeaders === "*") {
@@ -167,6 +168,7 @@ export const corsModule: ScanModule = async (target) => {
         evidence: `Access-Control-Allow-Headers: *`,
         remediation: "Restrict to specific required headers.",
         cwe: "CWE-942",
+        codeSnippet: `// Only allow specific headers\nres.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");`,
       });
     }
   }
