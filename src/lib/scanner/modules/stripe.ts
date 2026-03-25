@@ -107,6 +107,85 @@ export const stripeModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for quantity/plan tampering on payment endpoints
+  const quantityResults = await Promise.allSettled(
+    priceEndpoints.slice(0, 3).map(async (endpoint) => {
+      // Try setting quantity to 0 or negative
+      const tamperPayloads = [
+        { quantity: 0, desc: "zero quantity" },
+        { quantity: -1, desc: "negative quantity" },
+        { amount: 1, currency: "usd", desc: "custom amount" },
+      ];
+      for (const payload of tamperPayloads) {
+        const { desc, ...body } = payload;
+        const res = await scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          timeoutMs: 5000,
+        });
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (looksLikeHtml(text) || text.length < 10) continue;
+        if (/checkout|session|url|redirect|payment/i.test(text) && !/error|invalid|minimum/i.test(text.substring(0, 200))) {
+          return { endpoint, pathname: new URL(endpoint).pathname, desc, text: text.substring(0, 200) };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of quantityResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `stripe-quantity-tamper-${findings.length}`, module: "Stripe", severity: "high",
+      title: `Payment quantity/amount tampering on ${v.pathname}`,
+      description: `The checkout endpoint accepted ${v.desc} and returned a checkout session. Attackers can manipulate quantities or amounts to pay less or nothing.`,
+      evidence: `POST ${v.endpoint} with ${v.desc}\nResponse: ${v.text}`,
+      remediation: "Validate quantity > 0 and amounts server-side before creating checkout sessions. Never accept amounts from client requests.",
+      cwe: "CWE-472", owasp: "A04:2021",
+      codeSnippet: `// Validate quantity and use server-side pricing\nconst qty = Math.max(1, Math.min(100, Math.floor(Number(body.quantity))));\nif (!Number.isFinite(qty)) throw new Error("Invalid quantity");\n\nconst session = await stripe.checkout.sessions.create({\n  line_items: [{ price: product.stripePriceId, quantity: qty }],\n});`,
+    });
+    break;
+  }
+
+  // Check for Stripe customer portal bypass
+  const portalPaths = ["/api/billing", "/api/portal", "/api/customer-portal", "/api/stripe/portal", "/api/billing/portal"];
+  const portalResults = await Promise.allSettled(
+    portalPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+      const res = await scanFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        timeoutMs: 5000,
+      });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+      if (text.length < 10) return null;
+      if (/billing\.stripe\.com|customer.*portal|url.*http/i.test(text)) {
+        return { path, text: text.substring(0, 300) };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of portalResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({
+      id: `stripe-portal-no-auth-${findings.length}`, module: "Stripe", severity: "high",
+      title: `Stripe Customer Portal accessible without auth: ${r.value.path}`,
+      description: "The billing portal endpoint returns a Stripe portal URL without verifying the user's identity. An attacker can access the portal to view billing info, cancel subscriptions, or change payment methods.",
+      evidence: `POST ${target.baseUrl + r.value.path} (no auth)\nResponse: ${r.value.text}`,
+      remediation: "Authenticate the user before creating a portal session. Verify the Stripe customer ID belongs to the authenticated user.",
+      cwe: "CWE-306", owasp: "A07:2021",
+      codeSnippet: `// Authenticate before creating portal session\nexport async function POST(req: Request) {\n  const session = await auth();\n  if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  const user = await db.user.findUnique({ where: { id: session.userId } });\n  if (!user?.stripeCustomerId) return Response.json({ error: "No billing" }, { status: 400 });\n  const portal = await stripe.billingPortal.sessions.create({\n    customer: user.stripeCustomerId, // from YOUR database, not the request\n    return_url: req.headers.get("origin") + "/settings",\n  });\n  return Response.json({ url: portal.url });\n}`,
+    });
+    break;
+  }
+
   // Check for success URL bypass
   const successUrls = allJs.match(/success_url.*?["'](https?:\/\/[^"']+)["']/gi);
   if (successUrls) {

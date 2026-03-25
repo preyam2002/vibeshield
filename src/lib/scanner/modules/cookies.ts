@@ -105,6 +105,60 @@ export const cookiesModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for cookie prefix misuse (__Host- and __Secure-)
+  for (const cookie of target.cookies) {
+    if (cookie.name.startsWith("__Host-")) {
+      // __Host- cookies MUST have Secure, Path=/, and no Domain attribute
+      if (!cookie.secure || cookie.path !== "/" || cookie.domain) {
+        findings.push({
+          id: `cookies-host-prefix-invalid-${cookie.name}`,
+          module: "Cookies",
+          severity: "medium",
+          title: `__Host- cookie "${cookie.name}" violates prefix requirements`,
+          description: "__Host- prefixed cookies must have the Secure flag, Path=/, and no Domain attribute. Browsers will reject cookies that don't meet these requirements, but misconfigured servers may still attempt to set them.",
+          evidence: `Cookie: ${cookie.name}\nSecure: ${cookie.secure}\nPath: ${cookie.path}\nDomain: ${cookie.domain || "(not set)"}`,
+          remediation: "Ensure __Host- cookies have Secure flag, Path=/, and no Domain attribute. Or use __Secure- prefix if you need a domain attribute.",
+          cwe: "CWE-1275",
+          codeSnippet: `// Correct __Host- cookie usage\nres.cookies.set("__Host-session", token, {\n  secure: true,\n  path: "/",\n  // NO domain attribute\n  httpOnly: true,\n  sameSite: "lax",\n});`,
+        });
+      }
+    }
+    if (cookie.name.startsWith("__Secure-") && !cookie.secure) {
+      findings.push({
+        id: `cookies-secure-prefix-no-flag-${cookie.name}`,
+        module: "Cookies",
+        severity: "medium",
+        title: `__Secure- cookie "${cookie.name}" missing Secure flag`,
+        description: "__Secure- prefixed cookies must have the Secure flag. Without it, browsers will reject the cookie.",
+        evidence: `Cookie: ${cookie.name}\nSecure: false`,
+        remediation: "Add the Secure flag to this __Secure- prefixed cookie.",
+        cwe: "CWE-614",
+      });
+    }
+  }
+
+  // Detect potential session fixation: session cookies without rotation indicators
+  const sessionCookies = target.cookies.filter((c) =>
+    SENSITIVE_COOKIE_NAMES.some((p) => p.test(c.name)) && !NON_SENSITIVE_PATTERNS.test(c.name),
+  );
+  // Check if session cookies lack __Host- prefix (vulnerable to cookie tossing from subdomains)
+  const unprefixedSessionCookies = sessionCookies.filter(
+    (c) => !c.name.startsWith("__Host-") && !c.name.startsWith("__Secure-"),
+  );
+  if (unprefixedSessionCookies.length > 0) {
+    findings.push({
+      id: "cookies-no-prefix",
+      module: "Cookies",
+      severity: "low",
+      title: `${unprefixedSessionCookies.length} session cookie${unprefixedSessionCookies.length > 1 ? "s" : ""} without __Host- or __Secure- prefix`,
+      description: "Session cookies without the __Host- prefix are vulnerable to cookie tossing attacks. A compromised subdomain can set a cookie with the same name on the parent domain, overwriting the legitimate session cookie.",
+      evidence: `Cookies: ${unprefixedSessionCookies.map((c) => c.name).join(", ")}`,
+      remediation: "Use __Host- prefix for session cookies. This prevents subdomain cookie tossing and ensures Secure, Path=/, and no Domain.",
+      cwe: "CWE-384", owasp: "A07:2021",
+      codeSnippet: `// Use __Host- prefix for maximum cookie security\nres.cookies.set("__Host-session", token, {\n  secure: true,\n  path: "/",\n  httpOnly: true,\n  sameSite: "lax",\n});`,
+    });
+  }
+
   // Check for auth tokens stored in localStorage (XSS-vulnerable)
   const allJs = Array.from(target.jsContents.values()).join("\n");
   const localStoragePatterns = [
