@@ -164,6 +164,42 @@ const VULNERABLE_LIBS: {
     cve: "CVE-2022-46175",
     description: "json5 < 2.2.2 is vulnerable to prototype pollution via __proto__ keys in parsed JSON5 input.",
   },
+  {
+    name: "socket.io-client",
+    detect: /socket\.io[./]|io\.connect/,
+    versionExtract: /socket\.io[.-]?client[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "4.6.2",
+    severity: "medium",
+    cve: "CVE-2024-38355",
+    description: "socket.io < 4.6.2 is vulnerable to resource exhaustion via crafted packets, enabling denial-of-service.",
+  },
+  {
+    name: "postcss",
+    detect: /postcss[./]/,
+    versionExtract: /postcss[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "8.4.31",
+    severity: "medium",
+    cve: "CVE-2023-44270",
+    description: "PostCSS < 8.4.31 is vulnerable to line return parsing that can be used to inject malicious CSS.",
+  },
+  {
+    name: "express",
+    detect: /express[./]|"express"/,
+    versionExtract: /express[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "4.19.2",
+    severity: "medium",
+    cve: "CVE-2024-29041",
+    description: "Express < 4.19.2 is vulnerable to open redirect via crafted URL in res.redirect().",
+  },
+  {
+    name: "webpack-dev-server",
+    detect: /webpack-dev-server|__webpack_dev_server_client__/,
+    versionExtract: /webpack-dev-server[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "4.0.0",
+    severity: "high",
+    cve: "CVE-2018-14732",
+    description: "webpack-dev-server < 4.0.0 has no origin check on WebSocket, enabling DNS rebinding attacks.",
+  },
 ];
 
 // Detect library versions from common bundle patterns
@@ -244,6 +280,24 @@ export const dependenciesModule: ScanModule = async (target) => {
         codeSnippet: `# Update vulnerable dependency\nnpm update ${lib.name.toLowerCase()}\n# Or pin to latest safe version:\nnpm install ${lib.name.toLowerCase()}@latest`,
       });
     }
+  }
+
+  // Report discovered library versions for visibility (cross-ref with vuln db)
+  const uniqueDiscovered = discoveredVersions.filter((d) => !seen.has(d.name) && !seen.has(d.name.replace(/[.-]/g, "")));
+  const deduped = new Map<string, string>();
+  for (const d of uniqueDiscovered) {
+    if (!deduped.has(d.name)) deduped.set(d.name, d.version);
+  }
+  if (deduped.size > 0 && findings.length === 0) {
+    findings.push({
+      id: "dep-inventory",
+      module: "Dependencies",
+      severity: "info",
+      title: `${deduped.size} client-side ${deduped.size === 1 ? "library" : "libraries"} detected`,
+      description: `Detected library versions in JavaScript bundles. While no known vulnerabilities were found, keeping dependencies updated is important for security.`,
+      evidence: [...deduped.entries()].slice(0, 15).map(([n, v]) => `${n} v${v}`).join("\n"),
+      remediation: "Regularly audit dependencies with npm audit and keep them updated.",
+    });
   }
 
   return findings;
