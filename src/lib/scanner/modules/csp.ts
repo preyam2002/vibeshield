@@ -281,6 +281,31 @@ export const cspModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for JSONP endpoints on CSP-allowed domains (known bypass technique)
+  const jsonpDomains: { domain: string; endpoints: string[] }[] = [
+    { domain: "ajax.googleapis.com", endpoints: ["/ajax/libs/angularjs/1.6.0/angular.min.js"] },
+    { domain: "accounts.google.com", endpoints: ["/o/oauth2/revoke?callback=alert"] },
+    { domain: "www.google.com", endpoints: ["/complete/search?client=chrome&q=test&callback=alert"] },
+    { domain: "api.twitter.com", endpoints: ["/1/urls/count.json?url=http://example.com&callback=alert"] },
+    { domain: "graph.facebook.com", endpoints: ["/v2.0/me?callback=alert"] },
+  ];
+  for (const { domain, endpoints: jsonpEndpoints } of jsonpDomains) {
+    if (scriptSrc.includes(domain)) {
+      findings.push({
+        id: `csp-jsonp-bypass-${findings.length}`,
+        module: "CSP Analysis",
+        severity: "high",
+        title: `CSP bypass via JSONP on ${domain}`,
+        description: `The script-src allows ${domain} which has known JSONP endpoints. Attackers can use these callback parameters to execute arbitrary JavaScript while staying within the CSP allowlist.`,
+        evidence: `script-src includes: ${domain}\nKnown JSONP endpoints: ${jsonpEndpoints.join(", ")}`,
+        remediation: `Remove ${domain} from script-src or switch to strict-dynamic with nonces. If you need this domain, use specific path restrictions in script-src.`,
+        cwe: "CWE-693", owasp: "A05:2021",
+        codeSnippet: `// JSONP bypass example:\n// <script src="https://${domain}${jsonpEndpoints[0]}"></script>\n// This executes attacker-controlled JS within your CSP!\n\n// Fix: Use strict-dynamic instead of domain allowlists\nscript-src 'strict-dynamic' 'nonce-{random}';`,
+      });
+      break;
+    }
+  }
+
   // Check for overly permissive script-src with many domains
   const scriptDomains = scriptSrc.split(/\s+/).filter((s) => s.includes(".") && !s.startsWith("'"));
   if (scriptDomains.length > 10) {
