@@ -82,6 +82,7 @@ export const corsModule: ScanModule = async (target) => {
               remediation: "Validate the Origin header against an exact whitelist of allowed domains.",
               cwe: "CWE-942",
               owasp: "A05:2021",
+              codeSnippet: `// middleware.ts\nconst ALLOWED_ORIGINS = ["https://yourdomain.com"];\nconst origin = req.headers.get("origin") || "";\nif (ALLOWED_ORIGINS.includes(origin)) {\n  res.headers.set("Access-Control-Allow-Origin", origin);\n  res.headers.set("Vary", "Origin");\n}`,
             });
             break;
           }

@@ -57,6 +57,7 @@ export const sourceMapsModule: ScanModule = async (target) => {
       remediation: "Disable source maps in production. For Next.js: set productionBrowserSourceMaps: false in next.config.js. For Vite: set build.sourcemap: false.",
       cwe: "CWE-540",
       owasp: "A05:2021",
+      codeSnippet: `// next.config.ts\nexport default {\n  productionBrowserSourceMaps: false,\n};\n\n// vite.config.ts\nexport default defineConfig({\n  build: { sourcemap: false },\n});`,
     });
   }
 
