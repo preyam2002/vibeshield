@@ -370,6 +370,38 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Cohere API key exposed. Attackers can make inference calls billed to your account.",
     remediation: "Rotate in Cohere dashboard. Proxy through your backend.",
   },
+  // Supabase (newer patterns)
+  {
+    name: "Supabase URL with Credentials",
+    pattern: /https:\/\/[a-z0-9]+\.supabase\.co\/rest\/v1\/[^\s"'`]*(?:apikey|token)=[a-zA-Z0-9._-]{30,}/g,
+    severity: "high",
+    description: "Supabase REST API call with embedded credentials found in client code.",
+    remediation: "Use the Supabase client library with proper key management instead of raw URLs.",
+  },
+  // Cursor / Windsurf / Bolt (AI coding tool keys sometimes leak)
+  {
+    name: "Cursor/Windsurf API Key",
+    pattern: /(?:CURSOR_API_KEY|WINDSURF_API_KEY|cursor_api_key)[\s"':=]+["']([a-zA-Z0-9_-]{30,})["']/g,
+    severity: "high",
+    description: "AI coding tool API key exposed. Attackers can use your account's AI quota.",
+    remediation: "Remove from client code. These keys should never be shipped to browsers.",
+  },
+  // Vercel Blob
+  {
+    name: "Vercel Blob Token",
+    pattern: /vercel_blob_rw_[a-zA-Z0-9]{30,}/g,
+    severity: "high",
+    description: "Vercel Blob read-write token exposed. Attackers can upload, read, and delete files in your blob store.",
+    remediation: "Rotate in Vercel project settings. Use server-side upload handling.",
+  },
+  // R2/S3 presigned URL patterns (not secret per se, but dangerous if long-lived)
+  {
+    name: "Long-lived Presigned S3/R2 URL",
+    pattern: /https:\/\/[a-z0-9.-]+\.(?:s3|r2)\.(?:amazonaws|cloudflarestorage)\.com\/[^\s"'`]*?(?:X-Amz-Expires|Expires)=(?:8640[0-9]|[1-9]\d{5,})/g,
+    severity: "medium",
+    description: "A presigned cloud storage URL with a long expiration (>24h) was found in client code. These URLs grant direct access to private objects.",
+    remediation: "Use short-lived presigned URLs (1-4 hours max). Generate them on demand via API routes.",
+  },
 ];
 
 // Placeholder/test values that look like secrets but aren't
