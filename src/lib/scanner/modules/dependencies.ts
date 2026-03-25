@@ -290,6 +290,42 @@ const VULNERABLE_LIBS: {
     cve: "CVE-2024-28863",
     description: "tar < 6.2.1 is vulnerable to denial of service via crafted tar headers that cause excessive memory consumption.",
   },
+  {
+    name: "xml2js",
+    detect: /xml2js/,
+    versionExtract: /xml2js[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "0.5.0",
+    severity: "high",
+    cve: "CVE-2023-0842",
+    description: "xml2js < 0.5.0 is vulnerable to prototype pollution when parsing crafted XML with __proto__ attributes.",
+  },
+  {
+    name: "fast-xml-parser",
+    detect: /fast-xml-parser|XMLParser/,
+    versionExtract: /fast-xml-parser[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "4.4.1",
+    severity: "high",
+    cve: "CVE-2024-41818",
+    description: "fast-xml-parser < 4.4.1 is vulnerable to prototype pollution via __proto__ or constructor attributes in XML.",
+  },
+  {
+    name: "undici",
+    detect: /undici/,
+    versionExtract: /undici[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "5.28.4",
+    severity: "medium",
+    cve: "CVE-2024-24758",
+    description: "undici < 5.28.4 leaks proxy-authorization headers across redirects to different origins.",
+  },
+  {
+    name: "jose",
+    detect: /["\s]jose[./]|jose\.jwtVerify|jose\.SignJWT/,
+    versionExtract: /jose[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "4.15.5",
+    severity: "medium",
+    cve: "CVE-2024-28176",
+    description: "jose < 4.15.5 is vulnerable to denial of service when decrypting JWE with crafted headers.",
+  },
 ];
 
 // Detect library versions from common bundle patterns
