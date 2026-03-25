@@ -464,5 +464,46 @@ export const injectionModule: ScanModule = async (target) => {
     }
   }
 
+  // Client-side prototype pollution: detect vulnerable patterns in JS bundles
+  if (allJs.length > 0) {
+    const ppPatterns = [
+      // Object.assign with user-controlled input
+      { pattern: /Object\.assign\s*\(\s*(?:\w+\.prototype|{})\s*,\s*(?:params|query|options|config|data|props|req|input)/, name: "Object.assign to prototype/object" },
+      // Deep merge / extend with no prototype check
+      { pattern: /(?:deepMerge|deepExtend|merge|extend|assign|defaults)\s*\([^)]*(?:query|params|options|body|input|data)/, name: "deep merge with user input" },
+      // Direct __proto__ or constructor.prototype access
+      { pattern: /\[["']__proto__["']\]|\["constructor"\]\s*\[\s*["']prototype["']\]/, name: "__proto__/constructor.prototype access" },
+      // for..in without hasOwnProperty
+      { pattern: /for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:params|query|body|input|data|options)\s*\)\s*\{(?:(?!hasOwnProperty).){0,200}\}/, name: "for..in without hasOwnProperty" },
+      // Lodash/underscore vulnerable merge
+      { pattern: /(?:_\.merge|_\.defaultsDeep|_\.set)\s*\(/, name: "lodash vulnerable merge" },
+      // jQuery extend
+      { pattern: /\$\.extend\s*\(\s*true\s*,/, name: "jQuery deep extend" },
+    ];
+
+    const foundPP = ppPatterns.filter((p) => p.pattern.test(allJs));
+    if (foundPP.length > 0) {
+      // Check if the app uses URL query params that could feed into these sinks
+      const hasQueryParsing = /URLSearchParams|querystring|qs\.parse|url\.parse|new URL\(/.test(allJs);
+      const hasJsonParse = /JSON\.parse\s*\(\s*(?:body|input|data|req|text)/.test(allJs);
+
+      if (hasQueryParsing || hasJsonParse) {
+        findings.push({
+          id: "injection-proto-pollution-client-0",
+          module: "Prototype Pollution",
+          severity: "medium",
+          title: `Client-side prototype pollution risk: ${foundPP.map((p) => p.name).join(", ")}`,
+          description: `JavaScript bundles contain ${foundPP.length} pattern(s) vulnerable to prototype pollution (${foundPP.map((p) => p.name).join(", ")}). Combined with ${hasQueryParsing ? "URL query parsing" : "JSON parsing"} of user input, an attacker could inject __proto__ properties to modify Object.prototype, leading to XSS, auth bypass, or denial of service.`,
+          evidence: `Vulnerable patterns: ${foundPP.map((p) => p.name).join(", ")}\nInput sources: ${[hasQueryParsing && "URL query params", hasJsonParse && "JSON body parsing"].filter(Boolean).join(", ")}`,
+          remediation: "Use Object.create(null) for untrusted data. Validate that keys don't include __proto__, constructor, or prototype. Use structured cloning (structuredClone) instead of recursive merge.",
+          cwe: "CWE-1321",
+          owasp: "A03:2021",
+          confidence: 60,
+          codeSnippet: `// Safe merge — reject prototype pollution keys\nfunction safeMerge(target: Record<string, unknown>, source: Record<string, unknown>) {\n  for (const key of Object.keys(source)) {\n    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;\n    if (typeof source[key] === "object" && source[key] !== null) {\n      target[key] = safeMerge((target[key] || {}) as Record<string, unknown>, source[key] as Record<string, unknown>);\n    } else {\n      target[key] = source[key];\n    }\n  }\n  return target;\n}`,
+        });
+      }
+    }
+  }
+
   return findings;
 };
