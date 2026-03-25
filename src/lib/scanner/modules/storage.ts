@@ -73,6 +73,111 @@ export const storageModule: ScanModule = async (target) => {
 
   if (bucketUrls.size === 0) return findings;
 
+  const bucketSlice = [...bucketUrls].slice(0, 5);
+
+  // Test bucket CORS — wildcard origin on storage endpoints enables credential theft
+  const corsResults = await Promise.allSettled(
+    bucketSlice.map(async (url) => {
+      const baseUrl = url.replace(/\/[^/]*\.[^/]*$/, "/");
+      const res = await scanFetch(baseUrl, {
+        headers: { Origin: "https://evil.example.com" },
+        timeoutMs: 8000,
+      });
+      const acao = res.headers.get("access-control-allow-origin") || "";
+      const acac = res.headers.get("access-control-allow-credentials") || "";
+      if (acao === "*" || acao === "https://evil.example.com") {
+        return { url: baseUrl, origin: acao, credentials: acac.toLowerCase() === "true" };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of corsResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const isReflected = v.origin === "https://evil.example.com";
+    findings.push({
+      id: `storage-cors-${findings.length}`,
+      module: "Cloud Storage",
+      severity: v.credentials ? "critical" : "high",
+      title: `Storage bucket CORS allows ${isReflected ? "reflected" : "wildcard"} origin`,
+      description: `The bucket at ${v.url} returns Access-Control-Allow-Origin: ${v.origin}${v.credentials ? " with credentials allowed" : ""}. ${isReflected ? "Any website can read bucket contents on behalf of authenticated users." : "Any origin can make cross-origin requests to this bucket."}`,
+      evidence: `GET ${v.url}\nOrigin: https://evil.example.com\nAccess-Control-Allow-Origin: ${v.origin}${v.credentials ? "\nAccess-Control-Allow-Credentials: true" : ""}`,
+      remediation: "Restrict CORS origins to your app's domain. Never use wildcard origin with credentials.",
+      cwe: "CWE-942",
+      owasp: "A05:2021",
+    });
+  }
+
+  // Test public write access — attempt PUT on bucket (non-destructive: uses .vibeshield-test key)
+  const writeResults = await Promise.allSettled(
+    bucketSlice.map(async (url) => {
+      const baseUrl = url.replace(/\/[^/]*\.[^/]*$/, "/");
+      const testKey = ".vibeshield-write-test";
+      const testUrl = `${baseUrl}${testKey}`;
+      const res = await scanFetch(testUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "text/plain" },
+        body: "vibeshield-test",
+        timeoutMs: 8000,
+      });
+      if (res.ok || res.status === 200 || res.status === 204) {
+        // Clean up: try to delete the test object
+        await scanFetch(testUrl, { method: "DELETE", timeoutMs: 5000 }).catch(() => {});
+        return { url: baseUrl, status: res.status };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of writeResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `storage-public-write-${findings.length}`,
+      module: "Cloud Storage",
+      severity: "critical",
+      title: "Cloud storage bucket allows anonymous write access",
+      description: `The bucket at ${v.url} accepts PUT requests without authentication. Attackers can upload arbitrary files, potentially serving malware, phishing pages, or overwriting legitimate assets.`,
+      evidence: `PUT ${v.url}.vibeshield-write-test → ${v.status}`,
+      remediation: "Disable public write access immediately. Use server-side presigned URLs for uploads with strict content-type and size limits.",
+      cwe: "CWE-284",
+      owasp: "A01:2021",
+      codeSnippet: `// Use presigned URLs for controlled uploads\nimport { getSignedUrl } from "@aws-sdk/s3-request-presigner";\nconst url = await getSignedUrl(s3, new PutObjectCommand({\n  Bucket: process.env.S3_BUCKET,\n  Key: \`uploads/\${crypto.randomUUID()}\`,\n  ContentType: "image/jpeg",\n  // Enforce max size via conditions\n}), { expiresIn: 300 });`,
+    });
+  }
+
+  // Test S3 ACL exposure — ?acl endpoint reveals bucket permissions
+  const aclResults = await Promise.allSettled(
+    bucketSlice.filter((u) => /amazonaws\.com/i.test(u)).map(async (url) => {
+      const baseUrl = url.replace(/\/[^/]*\.[^/]*$/, "/");
+      const res = await scanFetch(`${baseUrl}?acl`, { timeoutMs: 8000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (text.includes("<AccessControlPolicy") || text.includes("<Grant>")) {
+        const hasAllUsers = text.includes("AllUsers") || text.includes("AuthenticatedUsers");
+        return { url: baseUrl, hasAllUsers };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of aclResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `storage-acl-exposed-${findings.length}`,
+      module: "Cloud Storage",
+      severity: v.hasAllUsers ? "high" : "medium",
+      title: `S3 bucket ACL publicly readable${v.hasAllUsers ? " — grants to AllUsers/AuthenticatedUsers" : ""}`,
+      description: `The bucket at ${v.url} exposes its ACL via ?acl. ${v.hasAllUsers ? "The ACL grants access to AllUsers or AuthenticatedUsers, meaning anyone can access this bucket." : "While the ACL itself may not grant public access, exposing it reveals the bucket's permission structure."}`,
+      evidence: `GET ${v.url}?acl → 200 (AccessControlPolicy)`,
+      remediation: "Block public ACL reads. In S3, enable 'Block Public Access' settings at the bucket or account level.",
+      cwe: "CWE-732",
+      owasp: "A01:2021",
+    });
+  }
+
   // Test each bucket for public listing (directory listing enabled)
   const listResults = await Promise.allSettled(
     [...bucketUrls].slice(0, 5).map(async (url) => {

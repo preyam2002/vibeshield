@@ -60,18 +60,102 @@ export const costAttackModule: ScanModule = async (target) => {
     });
   }
 
-  // Detect Supabase
+  // Detect Supabase — edge functions + database egress
   if (target.technologies.includes("Supabase")) {
-    // Supabase Pro: $25/mo + $0.09/GB egress beyond 50GB
-    // A sustained read attack can exhaust egress quickly
-    estimates.push({
-      service: "Supabase",
-      endpoint: "Database egress",
-      costPerRequest: 0.0001, // ~100 bytes per response
-      costPerHour: 100 * 3600 * 0.000000009, // rough egress
-      costPerDay: 0,
-      requestRate: 100,
-    });
+    const edgeFnEndpoints = target.apiEndpoints.filter((ep) =>
+      /supabase\.co\/functions\/v1\//i.test(ep),
+    );
+    if (edgeFnEndpoints.length > 0) {
+      // Supabase Edge Functions: $2/million invocations + egress
+      const costPerReq = 0.000002 + 0.00009; // invocation + ~1KB egress
+      const rps = 500;
+      estimates.push({
+        service: `Supabase Edge Functions (${edgeFnEndpoints.length} functions)`,
+        endpoint: edgeFnEndpoints[0],
+        costPerRequest: costPerReq,
+        costPerHour: costPerReq * rps * 3600,
+        costPerDay: costPerReq * rps * 86400,
+        requestRate: rps,
+      });
+    } else {
+      const rps = 100;
+      const costPerReq = 0.0001;
+      estimates.push({
+        service: "Supabase",
+        endpoint: "Database egress",
+        costPerRequest: costPerReq,
+        costPerHour: costPerReq * rps * 3600,
+        costPerDay: costPerReq * rps * 86400,
+        requestRate: rps,
+      });
+    }
+  }
+
+  // Detect Cloudflare Workers / Pages Functions
+  if (/cloudflare|workers\.dev/i.test(allJs) || target.headers["cf-ray"]) {
+    const workerEndpoints = target.apiEndpoints.filter((ep) =>
+      /workers\.dev|\/api\//i.test(ep),
+    );
+    if (workerEndpoints.length > 0) {
+      // Workers Paid: $0.30/million requests after 10M free
+      const costPerReq = 0.0000003;
+      const rps = 2000;
+      estimates.push({
+        service: `Cloudflare Workers (${workerEndpoints.length} endpoints)`,
+        endpoint: workerEndpoints[0],
+        costPerRequest: costPerReq,
+        costPerHour: costPerReq * rps * 3600,
+        costPerDay: costPerReq * rps * 86400,
+        requestRate: rps,
+      });
+    }
+  }
+
+  // Detect image/media processing endpoints (Cloudinary, Imgix, etc.)
+  const mediaPatterns = [
+    { name: "Cloudinary", pattern: /res\.cloudinary\.com/i },
+    { name: "Imgix", pattern: /\.imgix\.net/i },
+    { name: "Uploadcare", pattern: /ucarecdn\.com/i },
+  ];
+  for (const { name, pattern } of mediaPatterns) {
+    if (pattern.test(allJs)) {
+      // Image transformations cost $0.01-0.05 per transformation
+      const transformEndpoints = target.apiEndpoints.filter((ep) =>
+        /upload|image|media|transform|resize|optimize/i.test(ep),
+      );
+      const costPerReq = 0.02; // avg transform cost
+      const rps = 50;
+      estimates.push({
+        service: `${name} (image transforms)`,
+        endpoint: transformEndpoints[0] || target.url,
+        costPerRequest: costPerReq,
+        costPerHour: costPerReq * rps * 3600,
+        costPerDay: costPerReq * rps * 86400,
+        requestRate: rps,
+      });
+      break; // only report first media provider
+    }
+  }
+
+  // Detect email/SMS sending endpoints (Resend, SendGrid, Twilio)
+  const commsEndpoints = target.apiEndpoints.filter((ep) =>
+    /\/(send-email|send-sms|notify|invite|message|verification|otp)\b/i.test(ep),
+  );
+  if (commsEndpoints.length > 0) {
+    const hasEmail = /resend|sendgrid|mailgun|postmark|ses/i.test(allJs);
+    const hasSms = /twilio|vonage|messagebird|plivo/i.test(allJs);
+    if (hasEmail || hasSms) {
+      const costPerReq = hasSms ? 0.0079 : 0.001; // SMS vs email cost
+      const rps = hasSms ? 10 : 100;
+      estimates.push({
+        service: `${hasSms ? "SMS" : "Email"} sending (${commsEndpoints.length} endpoints)`,
+        endpoint: commsEndpoints[0],
+        costPerRequest: costPerReq,
+        costPerHour: costPerReq * rps * 3600,
+        costPerDay: costPerReq * rps * 86400,
+        requestRate: rps,
+      });
+    }
   }
 
   // Report findings for expensive attack vectors

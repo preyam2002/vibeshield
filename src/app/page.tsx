@@ -30,9 +30,9 @@ const ATTACK_MODULES = [
   { name: "HTTP Methods", desc: "TRACE, method override, unauthenticated PUT/PATCH/DELETE", icon: "📡" },
   { name: "Info Leakage", desc: "Stack traces, env var leak, internal URLs, verbose errors", icon: "💬" },
   { name: "Load Test", desc: "Ramp to 100 concurrent users, find breaking point", icon: "📈" },
-  { name: "Race Conditions", desc: "20 simultaneous requests on state-changing endpoints", icon: "🏁" },
+  { name: "Race Conditions", desc: "Double-spend, idempotency bypass, signup race, TOCTOU", icon: "🏁" },
   { name: "Rate Limiting", desc: "50 rapid-fire requests on auth & AI endpoints", icon: "⏱" },
-  { name: "Cost Attack", desc: "Estimate $/hour of API abuse on serverless", icon: "💸" },
+  { name: "Cost Attack", desc: "AI API, serverless, email/SMS, image transform cost estimation", icon: "💸" },
   { name: "Error Leak Under Stress", desc: "Verbose errors when server overloaded", icon: "🔥" },
   { name: "Connection Exhaustion", desc: "100 sustained connections, measure degradation", icon: "🔌" },
   { name: "Exposed Dev Tools", desc: "Prisma/Drizzle Studio, Grafana, Redis, MinIO, MailHog, Swagger, Storybook", icon: "🔧" },
@@ -53,7 +53,7 @@ const ATTACK_MODULES = [
   { name: "OAuth/OIDC", desc: "Redirect URI bypass variants, PKCE, nonce, implicit flow", icon: "🔐" },
   { name: "API Versioning", desc: "Hidden versions, path bypass, endpoint shadowing", icon: "🔀" },
   { name: "CSP Analysis", desc: "Unsafe directives, CDN/JSONP bypasses, Trusted Types, nonce checks", icon: "🛡" },
-  { name: "Cloud Storage", desc: "S3/GCS/Azure/R2 bucket listing, presigned URL leaks", icon: "☁" },
+  { name: "Cloud Storage", desc: "Bucket listing, write access, CORS, ACL exposure, presigned URL leaks", icon: "☁" },
 ];
 
 interface RecentScan {
