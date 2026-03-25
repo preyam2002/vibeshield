@@ -108,6 +108,7 @@ export const firebaseModule: ScanModule = async (target) => {
       evidence: "POST to _vibeshield_test collection succeeded",
       remediation: "Add Firestore rules to restrict write access to authenticated users.",
       cwe: "CWE-862",
+      codeSnippet: `// firestore.rules\nrules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{collection}/{docId} {\n      allow read: if request.auth != null;\n      allow write: if request.auth != null;\n    }\n  }\n}`,
     });
   }
   if (storageResult) {
