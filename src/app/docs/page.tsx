@@ -261,11 +261,12 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/csv", desc: "Download CSV report" },
               { method: "GET", path: "/api/scan/:id/pdf", desc: "Printable HTML/PDF report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
+              { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
               { method: "GET", path: "/api/scans", desc: "List recent scans" },
             ].map((ep) => (
               <div key={ep.path + ep.method} className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-green-500/10 text-green-400" : "bg-blue-500/10 text-blue-400"}`}>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${ep.method === "POST" ? "bg-green-500/10 text-green-400" : ep.method === "DELETE" ? "bg-red-500/10 text-red-400" : "bg-blue-500/10 text-blue-400"}`}>
                     {ep.method}
                   </span>
                   <code className="text-sm text-zinc-300 font-mono">{ep.path}</code>

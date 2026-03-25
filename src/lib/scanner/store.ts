@@ -1,8 +1,13 @@
 import type { ScanResult, Finding, ModuleStatus } from "./types";
 
-const globalForStore = globalThis as unknown as { __vibeshieldScans?: Map<string, ScanResult> };
+const globalForStore = globalThis as unknown as {
+  __vibeshieldScans?: Map<string, ScanResult>;
+  __vibeshieldAbort?: Map<string, AbortController>;
+};
 if (!globalForStore.__vibeshieldScans) globalForStore.__vibeshieldScans = new Map();
+if (!globalForStore.__vibeshieldAbort) globalForStore.__vibeshieldAbort = new Map();
 const scans = globalForStore.__vibeshieldScans;
+const abortControllers = globalForStore.__vibeshieldAbort;
 const MAX_SCANS = 100;
 
 const evictOldScans = () => {
@@ -92,18 +97,20 @@ export const updateScanStatus = (id: string, status: ScanResult["status"], error
   }
 };
 
+const findingKey = (f: { module: string; title: string }) => `${f.module}::${f.title}`;
+
 const buildComparison = (scan: ScanResult) => {
   const prev = findPreviousScan(scan.target, scan.id);
   if (!prev) return;
 
-  const prevTitles = new Set(prev.findings.map((f) => f.title));
-  const currTitles = new Set(scan.findings.map((f) => f.title));
+  const prevKeys = new Set(prev.findings.map(findingKey));
+  const currKeys = new Set(scan.findings.map(findingKey));
 
   const newFindings = scan.findings
-    .filter((f) => !prevTitles.has(f.title))
+    .filter((f) => !prevKeys.has(findingKey(f)))
     .map((f) => ({ title: f.title, severity: f.severity, module: f.module }));
   const fixedFindings = prev.findings
-    .filter((f) => !currTitles.has(f.title))
+    .filter((f) => !currKeys.has(findingKey(f)))
     .map((f) => ({ title: f.title, severity: f.severity, module: f.module }));
 
   scan.comparison = {
@@ -125,7 +132,15 @@ const buildComparison = (scan: ScanResult) => {
 export const addFindings = (id: string, findings: Finding[]) => {
   const scan = scans.get(id);
   if (scan) {
-    scan.findings.push(...findings);
+    // Cross-module dedup: skip findings with identical module+title already present
+    const existingKeys = new Set(scan.findings.map((f) => `${f.module}::${f.title}`));
+    const unique = findings.filter((f) => {
+      const key = `${f.module}::${f.title}`;
+      if (existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    });
+    scan.findings.push(...unique);
     recalcSummary(scan);
   }
 };
@@ -157,6 +172,34 @@ export const setTechInfo = (id: string, technologies: string[], isSpa: boolean) 
 export const setSurface = (id: string, surface: NonNullable<ScanResult["surface"]>) => {
   const scan = scans.get(id);
   if (scan) scan.surface = surface;
+};
+
+export const registerAbort = (id: string, controller: AbortController) => {
+  abortControllers.set(id, controller);
+};
+
+export const cancelScan = (id: string): boolean => {
+  const scan = scans.get(id);
+  if (!scan || scan.status !== "scanning") return false;
+  const controller = abortControllers.get(id);
+  if (controller) {
+    controller.abort();
+    abortControllers.delete(id);
+  }
+  scan.status = "failed";
+  scan.completedAt = new Date().toISOString();
+  scan.error = "Scan cancelled by user.";
+  // Mark pending modules as skipped
+  for (const mod of scan.modules) {
+    if (mod.status === "pending" || mod.status === "running") {
+      mod.status = "skipped";
+    }
+  }
+  return true;
+};
+
+export const cleanupAbort = (id: string) => {
+  abortControllers.delete(id);
 };
 
 export const getStats = () => {

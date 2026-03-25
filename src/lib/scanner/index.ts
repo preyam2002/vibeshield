@@ -8,6 +8,8 @@ import {
   updateModule,
   setTechInfo,
   setSurface,
+  registerAbort,
+  cleanupAbort,
 } from "./store";
 import { clearScanCache } from "./fetch";
 import { runRecon } from "./modules/recon";
@@ -143,18 +145,25 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
   setModules(scanId, moduleStatuses);
   updateScanStatus(scanId, "scanning");
 
+  const abortController = new AbortController();
+  registerAbort(scanId, abortController);
+
   setTimeout(() => {
-    runScan(scanId, targetUrl, mode).then(() => {
+    runScan(scanId, targetUrl, mode, abortController.signal).then(() => {
+      cleanupAbort(scanId);
       if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
     }).catch((err) => {
-      console.error(`Scan ${scanId} failed:`, err);
-      updateScanStatus(scanId, "failed", humanizeError(err, targetUrl));
+      cleanupAbort(scanId);
+      if (!abortController.signal.aborted) {
+        console.error(`Scan ${scanId} failed:`, err);
+        updateScanStatus(scanId, "failed", humanizeError(err, targetUrl));
+      }
       if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
     });
   }, 0);
 };
 
-const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full") => {
+const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full", abortSignal?: AbortSignal) => {
   clearScanCache();
   // Phase 1: Recon
   updateModule(scanId, "Recon", { status: "running" });
@@ -181,6 +190,10 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   const MODULE_TIMEOUT = 120_000; // 2 minutes per module max
 
   const runModule = async (mod: ScanModuleDefinition) => {
+    if (abortSignal?.aborted) {
+      updateModule(scanId, mod.name, { status: "skipped" });
+      return;
+    }
     updateModule(scanId, mod.name, { status: "running" });
     const start = Date.now();
     try {
@@ -190,6 +203,9 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Module timed out after ${MODULE_TIMEOUT / 1000}s`)), MODULE_TIMEOUT),
         ),
+        ...(abortSignal ? [new Promise<never>((_, reject) => {
+          abortSignal.addEventListener("abort", () => reject(new Error("Scan cancelled")), { once: true });
+        })] : []),
       ]);
       addFindings(scanId, findings.slice(0, MAX_PER_MODULE));
       updateModule(scanId, mod.name, {
@@ -198,31 +214,37 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
         durationMs: Date.now() - start,
       });
     } catch (err) {
-      console.error(`Module ${mod.name} failed:`, err);
+      const cancelled = abortSignal?.aborted;
       updateModule(scanId, mod.name, {
-        status: "failed",
-        error: String(err),
+        status: cancelled ? "skipped" : "failed",
+        error: cancelled ? undefined : String(err),
         durationMs: Date.now() - start,
       });
+      if (!cancelled) console.error(`Module ${mod.name} failed:`, err);
     }
   };
 
   // Quick mode: run all modules in one batch (they're fast)
   // Security/full: batch security modules, then stress sequentially
+  if (abortSignal?.aborted) { return; }
+
   if (mode === "quick") {
     await Promise.all(QUICK_MODULES.map(runModule));
   } else {
     const BATCH_SIZE = 21;
     for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
+      if (abortSignal?.aborted) break;
       const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
       await Promise.all(batch.map(runModule));
     }
-    if (mode === "full") {
+    if (mode === "full" && !abortSignal?.aborted) {
       await Promise.all(STRESS_MODULES.map(runModule));
     }
   }
 
-  updateScanStatus(scanId, "completed");
+  if (!abortSignal?.aborted) {
+    updateScanStatus(scanId, "completed");
+  }
 };
 
 const humanizeError = (err: unknown, targetUrl: string): string => {

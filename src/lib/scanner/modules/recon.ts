@@ -12,11 +12,15 @@ const COMMON_API_PATHS = [
   "/api/export", "/api/import", "/api/settings", "/api/notifications",
   "/api/messages", "/api/chat", "/api/ai", "/api/generate",
   "/api/trpc", "/api/v1", "/api/v2",
-  "/rest/v1", "/auth/v1", "/storage/v1", // Supabase
+  "/api/cron", "/api/seed", "/api/debug", "/api/test",
+  "/api/invite", "/api/billing", "/api/subscription",
+  "/api/token", "/api/refresh", "/api/verify",
+  "/rest/v1", "/auth/v1", "/storage/v1", "/functions/v1", // Supabase
   "/graphql", "/_next/data",
   "/.well-known/openid-configuration", "/.well-known/security.txt",
   "/.well-known/jwks.json", "/.well-known/assetlinks.json",
   "/v1", "/v2", "/v3", "/gql", "/rpc",
+  "/_api", "/internal", "/admin/api",
 ];
 
 const OPENAPI_PATHS = [
@@ -257,6 +261,17 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     /["'`](\/v[1-3]\/[a-zA-Z0-9/_-]{2,})["'`]/g,
     /["'`](\/rpc\/[a-zA-Z0-9/_-]{2,})["'`]/g,
     /["'`](\/gql)["'`]/g,
+    // Supabase Edge Functions
+    /["'`](\/functions\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
+    // JSON endpoints
+    /["'`](\/[a-zA-Z0-9/_-]{2,}\.json)["'`]/g,
+    // Internal API patterns: /internal/*, /_api/*
+    /["'`](\/_api\/[a-zA-Z0-9/_.-]{2,})["'`]/g,
+    /["'`](\/internal\/[a-zA-Z0-9/_.-]{2,})["'`]/g,
+    // Next.js Server Actions via URL
+    /["'`](\/[a-zA-Z0-9/_-]+\/action)["'`]/g,
+    // Common webhook/callback patterns
+    /["'`](\/webhook[s]?\/[a-zA-Z0-9/_-]+)["'`]/g,
   ];
   for (const pat of apiPatterns) {
     for (const m of allJs.matchAll(pat)) {

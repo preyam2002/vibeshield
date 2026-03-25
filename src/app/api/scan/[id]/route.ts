@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getScan, findPreviousScan, getPercentile } from "@/lib/scanner/store";
+import { getScan, findPreviousScan, getPercentile, cancelScan } from "@/lib/scanner/store";
 
 export async function GET(
   _req: Request,
@@ -40,4 +40,20 @@ export async function GET(
 
   const percentile = scan.status === "completed" ? getPercentile(scan.score) : undefined;
   return NextResponse.json({ ...scan, comparison, ...(percentile !== undefined && percentile >= 0 ? { percentile } : {}) });
+}
+
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const scan = getScan(id);
+  if (!scan) {
+    return NextResponse.json({ error: "Scan not found" }, { status: 404 });
+  }
+  if (scan.status !== "scanning") {
+    return NextResponse.json({ error: "Scan is not running" }, { status: 409 });
+  }
+  cancelScan(id);
+  return NextResponse.json({ id, status: "cancelled", message: "Scan cancelled successfully." });
 }

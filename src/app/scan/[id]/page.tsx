@@ -223,6 +223,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [error, setError] = useState("");
   const [rescanning, setRescanning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [openFindings, setOpenFindings] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<string>("all");
   const [moduleFilter, setModuleFilter] = useState<string | null>(null);
@@ -345,6 +346,15 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     navigator.clipboard.writeText(lines.join("\n"));
     setMdCopied(true);
     setTimeout(() => setMdCopied(false), 2000);
+  };
+
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      await fetch(`/api/scan/${id}`, { method: "DELETE" });
+      fetchScan();
+    } catch { /* skip */ }
+    setCancelling(false);
   };
 
   const handleRescan = async () => {
@@ -707,6 +717,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 {scan.summary.total > 0 && (
                   <span className="text-orange-500/70">{scan.summary.total} found</span>
                 )}
+                <button
+                  onClick={handleCancel}
+                  disabled={cancelling}
+                  className="text-zinc-600 hover:text-red-400 transition-colors disabled:opacity-50"
+                  title="Cancel scan"
+                >
+                  {cancelling ? "..." : "Cancel"}
+                </button>
               </div>
             </div>
             <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
