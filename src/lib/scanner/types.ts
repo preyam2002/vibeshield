@@ -41,6 +41,8 @@ export interface ScanTarget {
   jsContents: Map<string, string>;
   linkUrls: string[];
   redirectUrls: string[];
+  /** Discovered parameter names for API endpoints (from JS bundle analysis) */
+  apiParams: Map<string, string[]>;
   /** Body returned for a URL that definitely doesn't exist — used to detect soft 404s (SPAs returning 200 for all routes) */
   soft404Body: string;
   /** Whether this site appears to be a SPA that returns 200 for all routes */

@@ -70,6 +70,7 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     jsContents: new Map(),
     linkUrls: [],
     redirectUrls: [],
+    apiParams: new Map(),
     soft404Body: "",
     isSpa: false,
   };
@@ -156,12 +157,14 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     target.forms.push(form);
   });
 
-  // Fetch JS bundles (parallel, limit to 20)
-  const jsToFetch = target.scripts.slice(0, 20);
+  // Fetch JS bundles (parallel, limit to 40 for better coverage)
+  const jsToFetch = target.scripts.slice(0, 40);
   const jsResults = await Promise.allSettled(
     jsToFetch.map(async (scriptUrl) => {
-      const res = await scanFetch(scriptUrl, { redirect: "follow" });
+      const res = await scanFetch(scriptUrl, { redirect: "follow", timeoutMs: 8000 });
       const text = await res.text();
+      // Skip very large bundles (>2MB) to avoid memory issues
+      if (text.length > 2_000_000) return { url: scriptUrl, content: text.substring(0, 500_000) };
       return { url: scriptUrl, content: text };
     }),
   );
@@ -169,6 +172,38 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
   for (const r of jsResults) {
     if (r.status === "fulfilled") {
       target.jsContents.set(r.value.url, r.value.content);
+    }
+  }
+
+  // Discover additional JS chunks from webpack/Vite chunk references
+  const allJsEarly = Array.from(target.jsContents.values()).join("\n");
+  const chunkUrls = new Set<string>();
+  // Webpack chunk patterns: __webpack_require__.p + "static/chunks/" + chunkId + ".js"
+  for (const m of allJsEarly.matchAll(/["'](_next\/static\/chunks\/[a-zA-Z0-9._-]+\.js)["']/g)) {
+    const resolved = resolveUrl(m[1], baseUrl);
+    if (resolved && !target.jsContents.has(resolved)) chunkUrls.add(resolved);
+  }
+  // Vite dynamic imports
+  for (const m of allJsEarly.matchAll(/["'](\/assets\/[a-zA-Z0-9._-]+\.js)["']/g)) {
+    const resolved = resolveUrl(m[1], baseUrl);
+    if (resolved && !target.jsContents.has(resolved)) chunkUrls.add(resolved);
+  }
+  // Fetch discovered chunks (up to 20 more)
+  if (chunkUrls.size > 0) {
+    const chunkResults = await Promise.allSettled(
+      [...chunkUrls].slice(0, 20).map(async (chunkUrl) => {
+        const res = await scanFetch(chunkUrl, { redirect: "follow", timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const text = await res.text();
+        if (text.length > 2_000_000) return { url: chunkUrl, content: text.substring(0, 500_000) };
+        return { url: chunkUrl, content: text };
+      }),
+    );
+    for (const r of chunkResults) {
+      if (r.status === "fulfilled" && r.value) {
+        target.jsContents.set(r.value.url, r.value.content);
+        target.scripts.push(r.value.url);
+      }
     }
   }
 
@@ -194,7 +229,7 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
   const apiFromJs = new Set<string>();
   const apiPatterns = [
     /fetch\s*\(\s*["'`](\/api\/[^"'`\s]+)["'`]/g,
-    /["'`](\/api\/[a-zA-Z0-9/_-]{2,})["'`]/g,
+    /["'`](\/api\/[a-zA-Z0-9/_.-]{2,})["'`]/g,
     /["'`](\/rest\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
     /["'`](\/auth\/v\d\/[a-zA-Z0-9/_-]+)["'`]/g,
     /["'`](\/graphql)["'`]/g,
@@ -207,6 +242,69 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
       const path = m[1];
       if (path && path.length < 100 && !path.includes("${")) {
         apiFromJs.add(baseUrl + path);
+      }
+    }
+  }
+
+  // Extract tRPC procedure names (common in vibe-coded apps)
+  const trpcPatterns = [
+    /trpc\.\s*([a-zA-Z]+)\.\s*(?:query|mutate|useQuery|useMutation)/g,
+    /["'`]([a-zA-Z]+\.[a-zA-Z]+)["'`]\s*(?:,|\))/g, // tRPC v11: "user.getProfile"
+    /api\.([a-zA-Z]+)\.([a-zA-Z]+)\s*\(/g, // trpc client: api.user.getAll()
+  ];
+  const trpcBase = apiFromJs.has(baseUrl + "/api/trpc") ? "/api/trpc/" : null;
+  if (trpcBase || target.technologies.includes("tRPC")) {
+    const prefix = trpcBase || "/api/trpc/";
+    for (const pat of trpcPatterns) {
+      for (const m of allJs.matchAll(pat)) {
+        const proc = m[2] ? `${m[1]}.${m[2]}` : m[1];
+        if (proc && proc.length < 50 && /^[a-zA-Z.]+$/.test(proc)) {
+          apiFromJs.add(baseUrl + prefix + proc);
+        }
+      }
+    }
+  }
+
+  // Extract Next.js route manifest for page discovery
+  const routeManifestMatch = allJs.match(/self\.__next_f\.push\(\[[\d,]*"([^"]*(?:pages|app)[^"]*)".*?\]\)/);
+  if (!routeManifestMatch) {
+    // Try __BUILD_MANIFEST pattern
+    const buildManifest = allJs.match(/__BUILD_MANIFEST\s*=\s*\{([^}]{100,})\}/);
+    if (buildManifest) {
+      for (const m of buildManifest[1].matchAll(/["'](\/?[a-zA-Z0-9/_[\]-]+)["']\s*:/g)) {
+        const route = m[1].startsWith("/") ? m[1] : "/" + m[1];
+        if (route.length < 80 && !route.includes("[") && !seen.has(baseUrl + route)) {
+          seen.add(baseUrl + route);
+          target.pages.push(baseUrl + route);
+        }
+      }
+    }
+  }
+
+  // Extract POST body parameter names from fetch/axios calls in JS
+  const bodyParamPatterns = [
+    // fetch('/api/foo', { body: JSON.stringify({ name, email, password }) })
+    /fetch\s*\(\s*["'`](\/api\/[^"'`]+)["'`]\s*,\s*\{[^}]*body\s*:\s*JSON\.stringify\s*\(\s*\{([^}]{2,200})\}/g,
+    // axios.post('/api/foo', { name, email })
+    /axios\.(?:post|put|patch)\s*\(\s*["'`](\/api\/[^"'`]+)["'`]\s*,\s*\{([^}]{2,200})\}/g,
+  ];
+  for (const pat of bodyParamPatterns) {
+    for (const m of allJs.matchAll(pat)) {
+      const endpoint = m[1];
+      const paramsStr = m[2];
+      if (!endpoint || !paramsStr) continue;
+      // Extract parameter names from object shorthand or key:value
+      const params: string[] = [];
+      for (const pm of paramsStr.matchAll(/(\w+)\s*(?::|,|\})/g)) {
+        const name = pm[1];
+        if (name && name.length < 30 && !/^(?:true|false|null|undefined|const|let|var|function|return)$/.test(name)) {
+          params.push(name);
+        }
+      }
+      if (params.length > 0) {
+        const fullUrl = baseUrl + endpoint;
+        const existing = target.apiParams.get(fullUrl) || [];
+        target.apiParams.set(fullUrl, [...new Set([...existing, ...params])]);
       }
     }
   }
@@ -230,7 +328,7 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     ),
     // Crawl discovered pages for more endpoints/forms
     Promise.allSettled(
-      target.pages.slice(0, 10).map(async (pageUrl) => {
+      target.pages.slice(0, 20).map(async (pageUrl) => {
         const res = await scanFetch(pageUrl, { redirect: "follow", timeoutMs: 5000 });
         return { url: pageUrl, html: await res.text() };
       }),
@@ -306,6 +404,18 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
         const resolved = resolveUrl(src, baseUrl);
         if (resolved && !target.scripts.includes(resolved)) target.scripts.push(resolved);
       }
+    });
+    // Extract forms from crawled pages too
+    p$("form").each((_, el) => {
+      const form: FormField = {
+        action: p$(el).attr("action") || r.value.url,
+        method: (p$(el).attr("method") || "GET").toUpperCase(),
+        inputs: [],
+      };
+      p$(el).find("input, textarea, select").each((_, inp) => {
+        form.inputs.push({ name: p$(inp).attr("name") || "", type: p$(inp).attr("type") || "text" });
+      });
+      if (form.inputs.length > 0) target.forms.push(form);
     });
   }
 

@@ -112,6 +112,13 @@ export const injectionModule: ScanModule = async (target) => {
     }
   }
 
+  // Use discovered POST body parameters from JS bundle analysis
+  for (const [endpoint, params] of target.apiParams) {
+    for (const param of params.slice(0, 5)) {
+      testTargets.push({ url: endpoint, method: "GET", paramName: param });
+    }
+  }
+
   // Deduplicate test targets by pathname+param
   const seenTargets = new Set<string>();
   const dedupedTargets = testTargets.filter((t) => {
