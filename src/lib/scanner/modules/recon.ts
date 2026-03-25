@@ -76,6 +76,16 @@ const TECH_SIGNATURES: Record<string, RegExp[]> = {
   DeepSeek: [/deepseek/i, /api\.deepseek\.com/i],
   Groq: [/groq/i, /api\.groq\.com/i],
   Replicate: [/replicate/i, /api\.replicate\.com/i],
+  Inngest: [/inngest/i, /\.inngest\.com/i],
+  UploadThing: [/uploadthing/i, /\.uploadthing\.com/i],
+  "R2/S3": [/\.r2\.cloudflarestorage\.com/i, /\.s3\.amazonaws\.com/i],
+  Cloudflare: [/cloudflare/i, /\.cloudflare\.com/i, /cf-ray/i],
+  Sanity: [/sanity/i, /\.sanity\.io/i, /sanityClient/i],
+  Payload: [/payloadcms/i, /payload.*admin/i],
+  Coolify: [/coolify/i],
+  Railway: [/railway/i, /\.railway\.app/i],
+  Render: [/\.onrender\.com/i],
+  Fly: [/fly\.io/i, /\.fly\.dev/i],
 };
 
 export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
