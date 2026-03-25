@@ -188,6 +188,112 @@ export const apiSecurityModule: ScanModule = async (target) => {
     if (v.massAssign) findings.push(v.massAssign);
   }
 
+  // Phase 5: GraphQL-style batching abuse on REST endpoints
+  // Some APIs accept arrays, allowing N operations in one request (bypasses rate limiting)
+  for (const endpoint of target.apiEndpoints.slice(0, 5)) {
+    try {
+      const res = await scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify([{ id: 1 }, { id: 2 }, { id: 3 }]),
+      });
+      if (!res.ok) continue;
+      const text = await res.text();
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { continue; }
+      if (Array.isArray(parsed) && parsed.length >= 2) {
+        findings.push({
+          id: `api-batch-abuse-${new URL(endpoint).pathname}`,
+          module: "API Security",
+          severity: "medium",
+          title: `Batch processing on ${new URL(endpoint).pathname} — rate limit bypass risk`,
+          description: "This endpoint accepts and processes arrays of requests in a single call. An attacker can bypass per-request rate limiting by batching thousands of operations into one HTTP request, enabling brute force, enumeration, or resource exhaustion.",
+          evidence: `POST ${endpoint}\nPayload: [{id:1},{id:2},{id:3}]\nResponse: array with ${(parsed as unknown[]).length} items`,
+          remediation: "Limit array size in batch endpoints (e.g., max 10 items). Count batch items against rate limits. Validate and authorize each item individually.",
+          cwe: "CWE-770",
+          owasp: "A04:2021",
+          confidence: 70,
+        });
+        break;
+      }
+    } catch { /* skip */ }
+  }
+
+  // Phase 6: Verbose error detection on API endpoints
+  const errorTriggers = [
+    { body: "not-json", ct: "application/json", desc: "malformed JSON" },
+    { body: JSON.stringify({ id: "'; DROP TABLE--" }), ct: "application/json", desc: "SQL-like string" },
+    { body: JSON.stringify({ __proto__: null }), ct: "application/json", desc: "__proto__ null" },
+  ];
+  for (const endpoint of target.apiEndpoints.slice(0, 5)) {
+    for (const trigger of errorTriggers) {
+      try {
+        const res = await scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": trigger.ct },
+          body: trigger.body,
+        });
+        const text = await res.text();
+        if (res.status >= 400 && res.status < 600) {
+          const leaks = [
+            { re: /at\s+\S+\s+\([\w/\\.-]+:\d+:\d+\)/, type: "stack trace" },
+            { re: /node_modules\//, type: "node_modules path" },
+            { re: /ECONNREFUSED|ENOTFOUND|ETIMEOUT/, type: "internal network error" },
+            { re: /password|secret|key|token/i, type: "credential keyword in error" },
+          ];
+          const detected = leaks.filter((l) => l.re.test(text));
+          if (detected.length > 0) {
+            findings.push({
+              id: `api-verbose-error-${new URL(endpoint).pathname}`,
+              module: "API Security",
+              severity: "medium",
+              title: `Verbose error on ${new URL(endpoint).pathname} leaks ${detected.map((d) => d.type).join(", ")}`,
+              description: `Sending ${trigger.desc} to this endpoint produces a ${res.status} response that leaks internal details: ${detected.map((d) => d.type).join(", ")}. This information helps attackers understand the tech stack and find further vulnerabilities.`,
+              evidence: `POST ${endpoint} (${trigger.desc})\nStatus: ${res.status}\nResponse excerpt: ${text.substring(0, 300)}`,
+              remediation: "Return generic error messages to clients. Log detailed errors server-side only. In Next.js, customize error responses in route handlers.",
+              cwe: "CWE-209",
+              owasp: "A05:2021",
+              confidence: 85,
+              codeSnippet: `// Catch errors and return safe messages\nexport async function POST(req: Request) {\n  try {\n    const body = await req.json();\n    // ... handle request\n  } catch (err) {\n    console.error("API error:", err); // log server-side\n    return Response.json(\n      { error: "Invalid request" }, // generic client message\n      { status: 400 }\n    );\n  }\n}`,
+            });
+            break; // one finding per endpoint is enough
+          }
+        }
+      } catch { /* skip */ }
+    }
+  }
+
+  // Phase 7: CORS preflight bypass check on API endpoints
+  for (const endpoint of target.apiEndpoints.slice(0, 5)) {
+    try {
+      const res = await scanFetch(endpoint, {
+        method: "OPTIONS",
+        headers: {
+          "Origin": "https://evil.com",
+          "Access-Control-Request-Method": "DELETE",
+          "Access-Control-Request-Headers": "Authorization",
+        },
+      });
+      const acao = res.headers.get("access-control-allow-origin");
+      const acam = res.headers.get("access-control-allow-methods");
+      if (acao === "*" && acam && /DELETE|PUT|PATCH/i.test(acam)) {
+        findings.push({
+          id: `api-cors-wildcard-destructive-${new URL(endpoint).pathname}`,
+          module: "API Security",
+          severity: "high",
+          title: `${new URL(endpoint).pathname} allows destructive methods from any origin`,
+          description: "This API endpoint responds to CORS preflight with Access-Control-Allow-Origin: * and allows destructive HTTP methods (DELETE/PUT/PATCH). Any website can make authenticated requests to this endpoint.",
+          evidence: `OPTIONS ${endpoint}\nOrigin: https://evil.com\nACAO: ${acao}\nACAM: ${acam}`,
+          remediation: "Restrict CORS to your own domain. Never use * with credentials. Limit allowed methods to what's actually needed.",
+          cwe: "CWE-942",
+          owasp: "A05:2021",
+          confidence: 90,
+        });
+        break;
+      }
+    } catch { /* skip */ }
+  }
+
   return findings;
 };
 
