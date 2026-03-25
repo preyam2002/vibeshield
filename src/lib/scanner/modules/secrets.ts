@@ -474,6 +474,41 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Loops.so API key exposed. Attackers can send emails on your behalf and access subscriber data.",
     remediation: "Rotate in Loops dashboard. Move to server-side.",
   },
+  {
+    name: "Helicone API Key",
+    pattern: /sk-helicone-[a-zA-Z0-9]{32,}/g,
+    severity: "high",
+    description: "A Helicone API key (LLM observability) is exposed. Grants access to all logged LLM requests.",
+    remediation: "Rotate in Helicone dashboard. Move to server-side.",
+  },
+  {
+    name: "Langfuse Secret Key",
+    pattern: /sk-lf-[a-zA-Z0-9]{32,}/g,
+    severity: "high",
+    description: "A Langfuse secret key (LLM tracing) is exposed. Grants write access to tracing data.",
+    remediation: "Rotate in Langfuse settings. Move to server-side.",
+  },
+  {
+    name: "Novu API Key",
+    pattern: /novu_[a-zA-Z0-9]{24,}/g,
+    severity: "high",
+    description: "A Novu API key (notifications) is exposed. Attackers can send notifications on your behalf.",
+    remediation: "Rotate in Novu dashboard. Move to server-side.",
+  },
+  {
+    name: "Arcjet API Key",
+    pattern: /ajkey_[a-zA-Z0-9]{32,}/g,
+    severity: "high",
+    description: "An Arcjet API key (rate limiting/bot protection) is exposed. Could be used to bypass or disable your app's protection.",
+    remediation: "Rotate in Arcjet dashboard. Move to server-side.",
+  },
+  {
+    name: "WorkOS API Key",
+    pattern: /sk_live_[a-zA-Z0-9]{30,}/g,
+    severity: "critical",
+    description: "A WorkOS live secret key (SSO/auth) is exposed. Grants access to user directory and SSO configuration.",
+    remediation: "Rotate in WorkOS dashboard immediately. Move to server-side.",
+  },
   // R2/S3 presigned URL patterns (not secret per se, but dangerous if long-lived)
   {
     name: "Long-lived Presigned S3/R2 URL",
