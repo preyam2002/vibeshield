@@ -260,6 +260,88 @@ export const headersModule: ScanModule = async (target) => {
     });
   }
 
+  // Cache-Control on sensitive pages — check /account, /profile, /dashboard, /api paths
+  const sensitivePaths = ["/account", "/profile", "/dashboard", "/api", "/settings", "/admin"];
+  const sensitivePages = target.pages.filter((p) => {
+    try {
+      const pathname = new URL(p).pathname.toLowerCase();
+      return sensitivePaths.some((sp) => pathname.startsWith(sp) || pathname.includes(sp));
+    } catch { return false; }
+  });
+  if (sensitivePages.length > 0) {
+    const cacheResults = await Promise.allSettled(
+      sensitivePages.slice(0, 5).map(async (pageUrl) => {
+        const res = await scanFetch(pageUrl, { timeoutMs: 5000 });
+        const cacheControl = res.headers.get("cache-control") || "";
+        return { url: new URL(pageUrl).pathname, cacheControl };
+      }),
+    );
+    const pagesWithoutNoStore = cacheResults
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<{ url: string; cacheControl: string }>).value)
+      .filter((r) => !r.cacheControl.includes("no-store"));
+    if (pagesWithoutNoStore.length > 0) {
+      findings.push({
+        id: "headers-sensitive-page-cache",
+        module: "Security Headers",
+        severity: "medium",
+        title: `${pagesWithoutNoStore.length} sensitive page${pagesWithoutNoStore.length > 1 ? "s" : ""} missing Cache-Control: no-store`,
+        description: "Pages that likely contain user data (account, profile, dashboard, API routes) do not set Cache-Control: no-store. Without this, browsers and proxies may cache sensitive responses, potentially exposing user data to other users on shared devices or through cached proxy responses.",
+        evidence: pagesWithoutNoStore.slice(0, 5).map((p) => `${p.url}: ${p.cacheControl || "(no Cache-Control header)"}`).join("\n"),
+        remediation: "Add Cache-Control: no-store, no-cache, private to all responses containing user-specific data.",
+        cwe: "CWE-525",
+        owasp: "A05:2021",
+        codeSnippet: `// middleware.ts — set Cache-Control for sensitive routes\nimport { NextResponse } from "next/server";\nexport function middleware(req: Request) {\n  const res = NextResponse.next();\n  const path = new URL(req.url).pathname;\n  if (/^\\/(account|profile|dashboard|api|settings|admin)/.test(path)) {\n    res.headers.set("Cache-Control", "no-store, no-cache, private");\n  }\n  return res;\n}`,
+      });
+    }
+  }
+
+  // Cross-Origin headers — check for COOP, COEP, CORP together
+  const coop = target.headers["cross-origin-opener-policy"];
+  const coep = target.headers["cross-origin-embedder-policy"];
+  const corp = target.headers["cross-origin-resource-policy"];
+  if (!coop && !coep && !corp) {
+    findings.push({
+      id: "headers-no-cross-origin-isolation",
+      module: "Security Headers",
+      severity: "low",
+      title: "No cross-origin isolation headers configured",
+      description: "None of the cross-origin isolation headers (COOP, COEP, CORP) are set. These headers protect against Spectre-class side-channel attacks by controlling how your site interacts with cross-origin resources and windows. Without them, cross-origin attackers may be able to read sensitive data from your page's process.",
+      remediation: "Add Cross-Origin-Opener-Policy: same-origin, Cross-Origin-Embedder-Policy: require-corp (or credentialless), and Cross-Origin-Resource-Policy: same-origin.",
+      cwe: "CWE-693",
+      owasp: "A05:2021",
+      codeSnippet: `// next.config.ts — full cross-origin isolation\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Cross-Origin-Opener-Policy", value: "same-origin" },\n      { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },\n      { key: "Cross-Origin-Resource-Policy", value: "same-origin" },\n    ]}];\n  },\n};`,
+    });
+  }
+
+  // NEL (Network Error Logging) — check for NEL header configuration
+  const nel = target.headers["nel"];
+  const reportTo = target.headers["report-to"];
+  if (!nel) {
+    findings.push({
+      id: "headers-no-nel",
+      module: "Security Headers",
+      severity: "info",
+      title: "No Network Error Logging (NEL) configured",
+      description: "The NEL header is not set. Network Error Logging allows your site to receive reports when users experience DNS, TCP, or TLS errors connecting to your server. This helps detect network-level attacks (DNS hijacking, BGP hijacking) and connectivity issues before users report them.",
+      remediation: "Add NEL and Report-To headers to enable network error reporting. NEL requires a Report-To group to be configured first.",
+      cwe: "CWE-778",
+      codeSnippet: `// next.config.ts — enable NEL\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Report-To",\n        value: JSON.stringify({\n          group: "network-errors",\n          max_age: 86400,\n          endpoints: [{ url: "https://your-domain.com/reports/nel" }]\n        }) },\n      { key: "NEL",\n        value: JSON.stringify({ report_to: "network-errors", max_age: 86400 }) },\n    ]}];\n  },\n};`,
+    });
+  } else if (!reportTo) {
+    findings.push({
+      id: "headers-nel-no-report-to",
+      module: "Security Headers",
+      severity: "low",
+      title: "NEL header present but Report-To is missing",
+      description: "The NEL header is configured but there is no Report-To header. NEL requires a Report-To group to define where error reports should be sent. Without it, NEL is non-functional.",
+      evidence: `NEL: ${nel}`,
+      remediation: "Add a Report-To header that defines the reporting endpoint referenced in your NEL configuration.",
+      cwe: "CWE-778",
+      codeSnippet: `// Add Report-To header alongside NEL\n{ key: "Report-To", value: JSON.stringify({\n  group: "network-errors",\n  max_age: 86400,\n  endpoints: [{ url: "https://your-domain.com/reports/nel" }]\n}) }`,
+    });
+  }
+
   // Check for deprecated X-XSS-Protection (can introduce vulnerabilities in some browsers)
   const xssProtection = target.headers["x-xss-protection"];
   if (xssProtection && xssProtection !== "0") {
