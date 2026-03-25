@@ -40,6 +40,37 @@ export const storageModule: ScanModule = async (target) => {
     bucketUrls.add(r2Match[0]);
   }
 
+  // Detect DigitalOcean Spaces
+  const doPattern = /https?:\/\/([a-z0-9][a-z0-9-]{1,61})\.([a-z0-9-]+)\.digitaloceanspaces\.com/gi;
+  let doMatch;
+  while ((doMatch = doPattern.exec(allJs)) !== null) {
+    bucketUrls.add(doMatch[0]);
+  }
+
+  // Detect Backblaze B2
+  const b2Pattern = /https?:\/\/f\d{3}\.backblazeb2\.com\/file\/([a-zA-Z0-9-]+)/gi;
+  let b2Match;
+  while ((b2Match = b2Pattern.exec(allJs)) !== null) {
+    bucketUrls.add(b2Match[0]);
+  }
+
+  // Detect Wasabi
+  const wasabiPattern = /https?:\/\/s3\.([a-z0-9-]+)\.wasabisys\.com\/([a-z0-9][a-z0-9.-]+)/gi;
+  let wasabiMatch;
+  while ((wasabiMatch = wasabiPattern.exec(allJs)) !== null) {
+    bucketUrls.add(wasabiMatch[0]);
+  }
+
+  // Detect MinIO
+  const minioPattern = /https?:\/\/[a-z0-9.-]+(?::\d+)?\/([a-z0-9][a-z0-9.-]+)(?=\/)/gi;
+  // Only add MinIO if URL contains minio indicator
+  const minioUrls = allJs.match(/https?:\/\/[a-z0-9.-]+(?::\d+)?\/[a-z0-9][a-z0-9.-]+/gi);
+  if (minioUrls) {
+    for (const url of minioUrls) {
+      if (/minio/i.test(url)) bucketUrls.add(url);
+    }
+  }
+
   if (bucketUrls.size === 0) return findings;
 
   // Test each bucket for public listing (directory listing enabled)

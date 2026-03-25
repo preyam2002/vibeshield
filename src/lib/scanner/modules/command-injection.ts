@@ -22,6 +22,12 @@ const OUTPUT_PAYLOADS = [
   { payload: ";echo vibeshield_cmdi_test", pattern: /vibeshield_cmdi_test/ },
   { payload: "|echo vibeshield_cmdi_test", pattern: /vibeshield_cmdi_test/ },
   { payload: "$(echo vibeshield_cmdi_test)", pattern: /vibeshield_cmdi_test/ },
+  // Filter evasion variants
+  { payload: ";echo${IFS}vibeshield_cmdi_test", pattern: /vibeshield_cmdi_test/ }, // IFS separator
+  { payload: ";e'c'h'o' vibeshield_cmdi_test", pattern: /vibeshield_cmdi_test/ }, // Quote splitting
+  { payload: ";ech\"\"o vibeshield_cmdi_test", pattern: /vibeshield_cmdi_test/ }, // Empty quote insertion
+  { payload: ";/bin/echo vibeshield_cmdi_test", pattern: /vibeshield_cmdi_test/ }, // Full path
+  { payload: ";{echo,vibeshield_cmdi_test}", pattern: /vibeshield_cmdi_test/ }, // Brace expansion
 ];
 
 export const commandInjectionModule: ScanModule = async (target) => {

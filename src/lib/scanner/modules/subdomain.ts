@@ -159,6 +159,70 @@ export const subdomainModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for wildcard DNS (responds to any subdomain)
+  try {
+    const randomSub = `vibeshield-${Math.random().toString(36).slice(2, 10)}.${baseDomain}`;
+    const wcRes = await scanFetch(`https://${randomSub}`, { timeoutMs: 5000, noCache: true });
+    if (wcRes.ok) {
+      findings.push({
+        id: "subdomain-wildcard-dns",
+        module: "Subdomain Takeover",
+        severity: "low",
+        title: `Wildcard DNS detected on ${baseDomain}`,
+        description: `A random subdomain (${randomSub}) resolves and returns HTTP ${wcRes.status}. Wildcard DNS records can mask subdomain takeover vulnerabilities since all subdomains appear "active".`,
+        evidence: `Random subdomain: ${randomSub}\nStatus: ${wcRes.status}`,
+        remediation: "Remove wildcard DNS records unless intentionally needed. They make it impossible to detect dangling records and increase the attack surface.",
+        cwe: "CWE-404",
+        confidence: 90,
+      });
+    }
+  } catch {
+    // Random subdomain doesn't resolve — no wildcard DNS (good)
+  }
+
+  // Probe common sensitive subdomains not found in CT logs
+  const commonSubs = [
+    "admin", "dev", "staging", "test", "api-old", "internal",
+    "beta", "demo", "sandbox", "debug", "old", "backup",
+    "mail", "vpn", "jenkins", "ci", "grafana", "prometheus",
+  ].map((s) => `${s}.${baseDomain}`);
+
+  const unprobed = commonSubs.filter((s) => !subdomains.includes(s));
+  const commonResults = await Promise.allSettled(
+    unprobed.slice(0, 10).map(async (sub) => {
+      try {
+        const res = await scanFetch(`https://${sub}`, { timeoutMs: 5000, noCache: true });
+        if (!res.ok) return null;
+        const text = await res.text();
+        // Only flag if it's a real response, not a wildcard/parking page
+        if (text.length < 100 || SOFT_404_PATTERNS.some((p) => p.test(text))) return null;
+        // Check if it looks like an admin/internal tool
+        const isInternal = /dashboard|admin|login|sign.in|jenkins|grafana|prometheus|debug|internal/i.test(text);
+        if (isInternal) return { sub, status: res.status };
+        return null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  for (const r of commonResults) {
+    if (findings.length >= MAX_FINDINGS + 2) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `subdomain-internal-${findings.length}`,
+      module: "Subdomain Takeover",
+      severity: "medium",
+      title: `Internal-looking subdomain accessible: ${v.sub}`,
+      description: `The subdomain ${v.sub} appears to host an internal tool or admin interface that is publicly accessible. This was not discovered via certificate transparency, suggesting it may not be intended for public access.`,
+      evidence: `Subdomain: ${v.sub}\nStatus: ${v.status}\nNot found in CT logs — discovered via common name enumeration`,
+      remediation: `Restrict access to ${v.sub} using IP allowlists, VPN, or authentication. Internal tools should not be publicly accessible.`,
+      cwe: "CWE-668", owasp: "A01:2021",
+      confidence: 70,
+    });
+  }
+
   // Report discovered subdomains as info
   if (subdomains.length > 5 && findings.length === 0) {
     findings.push({

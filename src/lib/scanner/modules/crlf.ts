@@ -7,9 +7,12 @@ const CRLF_PAYLOADS = [
   "\r\nX-Injected: true",
   "%0d%0a%0d%0a<script>alert(1)</script>",
   "%E5%98%8D%E5%98%8AX-Injected: true", // Unicode CRLF variant
+  "%0d%0aContent-Length: 0%0d%0a%0d%0aHTTP/1.1 200 OK%0d%0a", // Response splitting
+  "%0a%20X-Injected: true", // LF + space continuation
+  "%0d%0aLocation: https://evil.com", // Redirect injection
 ];
 
-const CRLF_PARAMS = ["url", "redirect", "return", "next", "dest", "path", "page", "view", "callback", "q", "search"];
+const CRLF_PARAMS = ["url", "redirect", "return", "next", "dest", "path", "page", "view", "callback", "q", "search", "ref", "lang", "locale", "utm_source"];
 
 interface CrlfTest {
   endpoint: string;
@@ -112,6 +115,56 @@ res.redirect(encodeURIComponent(userPath));`,
         owasp: "A03:2021",
       });
     }
+  }
+
+  // Phase 2: Test POST body parameters for CRLF
+  const postEndpoints = target.apiEndpoints.slice(0, 5);
+  const postResults = await Promise.allSettled(
+    postEndpoints.map(async (endpoint) => {
+      const pathname = new URL(endpoint).pathname;
+      if (seenPaths.has(`${pathname}:body`)) return null;
+
+      for (const payload of CRLF_PAYLOADS.slice(0, 4)) {
+        try {
+          // Test JSON body with CRLF in values
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: `test${payload}`, url: payload }),
+            timeoutMs: 5000,
+          });
+
+          const injectedHeader = res.headers.get("x-injected");
+          const injectedCookie = (res.headers.get("set-cookie") || "").includes("crlf=injected");
+          const locationHeader = res.headers.get("location") || "";
+          const locationInjected = locationHeader.includes("evil.com");
+
+          if (injectedHeader || injectedCookie || locationInjected) {
+            return { pathname, payload, injectedHeader, injectedCookie, locationInjected };
+          }
+        } catch { /* skip */ }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of postResults) {
+    if (findings.length >= 5) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    seenPaths.add(`${v.pathname}:body`);
+    findings.push({
+      id: `crlf-post-${findings.length}`,
+      module: "CRLF Injection",
+      severity: "high",
+      title: `CRLF injection via POST body on ${v.pathname}`,
+      description: "HTTP response headers can be injected via CRLF characters in POST body values. The server reflects user input into response headers without sanitizing newline characters.",
+      evidence: `POST ${v.pathname} with CRLF in body\n${v.injectedHeader ? "Injected X-Injected header" : v.locationInjected ? "Injected Location redirect" : "Injected Set-Cookie header"}`,
+      remediation: "Sanitize all user input before reflecting it in response headers. Strip \\r and \\n characters from any value used in HTTP headers.",
+      cwe: "CWE-93", owasp: "A03:2021",
+      confidence: 95,
+      codeSnippet: `// Middleware to sanitize response headers\nexport function middleware(req: NextRequest) {\n  const res = NextResponse.next();\n  // Ensure no user input in headers contains CRLF\n  const sanitize = (v: string) => v.replace(/[\\r\\n]/g, "");\n  // Apply to any header set from user input\n  return res;\n}`,
+    });
   }
 
   return findings;

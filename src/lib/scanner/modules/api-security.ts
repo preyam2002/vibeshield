@@ -14,6 +14,18 @@ const MASS_ASSIGNMENT_FIELDS = [
   { role: "superadmin" },
   { verified: true },
   { emailVerified: true },
+  { email_verified: true },
+  { premium: true },
+  { is_premium: true },
+  { tier: "enterprise" },
+  { plan: "pro" },
+  { permissions: ["admin", "write", "delete"] },
+  { status: "active" },
+  { active: true },
+  { banned: false },
+  { credits: 999999 },
+  { balance: 999999 },
+  { discount: 100 },
 ];
 
 const LARGE_RESPONSE_THRESHOLD = 50_000; // 50KB — likely over-fetching
