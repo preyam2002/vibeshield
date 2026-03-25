@@ -709,7 +709,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         {!isRunning && scan.status === "completed" && scan.mode === "quick" && scan.summary.total > 0 && (
           <div className="mb-4 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center justify-between gap-3">
             <div className="text-xs text-orange-300/80">
-              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {48 - 13} more security modules including injection, SSRF, and stress testing.
+              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {50 - 13} more security modules including injection, SSRF, and stress testing.
             </div>
             <button
               onClick={async () => {

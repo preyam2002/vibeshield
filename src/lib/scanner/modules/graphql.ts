@@ -160,6 +160,53 @@ export const graphqlModule: ScanModule = async (target) => {
       } catch { /* skip */ }
     }
 
+    // Test if arbitrary queries are accepted (no persisted query enforcement)
+    // APQ-enabled servers should reject unknown query hashes
+    try {
+      const apqRes = await scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          extensions: { persistedQuery: { version: 1, sha256Hash: "0".repeat(64) } },
+        }),
+        timeoutMs: 5000,
+      });
+      if (apqRes.ok) {
+        const data = await apqRes.json() as { errors?: { message?: string }[] };
+        const hasPersistedQueryError = data?.errors?.some((e) =>
+          /persisted|not found|not registered|unknown hash/i.test(e?.message || ""),
+        );
+        // If the server returns a persisted query error, APQ is active — good
+        // If it doesn't error at all with a fake hash, something is off but not actionable
+        // The real check: can we send arbitrary queries WITHOUT a hash?
+        if (hasPersistedQueryError) {
+          // APQ is active, now test if arbitrary queries still work without extensions
+          const arbitraryRes = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: "{__typename}" }),
+            timeoutMs: 5000,
+          });
+          if (arbitraryRes.ok) {
+            const arbData = await arbitraryRes.json() as { data?: unknown; errors?: unknown[] };
+            if (arbData?.data && !arbData?.errors) {
+              endpointFindings.push({
+                id: `graphql-apq-bypass-${endpoint}`,
+                module: "GraphQL",
+                severity: "low",
+                title: "GraphQL accepts arbitrary queries alongside persisted queries",
+                description: "While Automatic Persisted Queries (APQ) is enabled, the server also accepts arbitrary query strings. This means APQ provides caching benefits but not security hardening. Attackers can still send any query.",
+                evidence: `APQ enabled (fake hash returned persisted query error)\nBut arbitrary query {__typename} also accepted at ${endpoint}`,
+                remediation: "If using APQ for security, configure the server to reject non-persisted queries. In Apollo Server, use the persistedQueries plugin with onlyPersistedQueries option.",
+                cwe: "CWE-284",
+                codeSnippet: `// Apollo Server — enforce persisted queries only\nimport { ApolloServerPluginPersistedQueries } from '@apollo/server/plugin/persistedQueries';\nconst server = new ApolloServer({\n  plugins: [\n    ApolloServerPluginPersistedQueries({\n      onlyPersistedQueries: true,\n    }),\n  ],\n});`,
+              });
+            }
+          }
+        }
+      }
+    } catch { /* skip */ }
+
     // Test if mutations are discoverable and accessible without auth
     try {
       const mutationProbe = await scanFetch(endpoint, {

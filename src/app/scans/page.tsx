@@ -44,6 +44,7 @@ export default function ScansPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sevFilter, setSevFilter] = useState<string>("all");
   const [localOnly, setLocalOnly] = useState(false);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     const load = async () => {
@@ -97,6 +98,11 @@ export default function ScansPage() {
     }
     return (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt);
   });
+
+  const paged = sorted.slice(0, page * 20);
+  const hasMore = paged.length < sorted.length;
+
+  useEffect(() => { setPage(1); }, [search, statusFilter, sevFilter]);
 
   const runningCount = scans.filter((s) => s.status === "scanning" || s.status === "queued").length;
   const completedCount = scans.filter((s) => s.status === "completed").length;
@@ -233,10 +239,11 @@ export default function ScansPage() {
             )}
           </div>
         ) : (
+          <>
           <div className="space-y-2">
-            {sorted.map((s, idx) => {
+            {paged.map((s, idx) => {
               const hostname = getHostname(s.target);
-              const prevHostname = idx > 0 ? getHostname(sorted[idx - 1].target) : "";
+              const prevHostname = idx > 0 ? getHostname(paged[idx - 1].target) : "";
               const showDomainHeader = sortBy === "domain" && hostname !== prevHostname;
               const isRunning = s.status === "scanning" || s.status === "queued";
               const isFailed = s.status === "failed";
@@ -328,6 +335,15 @@ export default function ScansPage() {
               );
             })}
           </div>
+          {hasMore && (
+            <button
+              onClick={() => setPage((p) => p + 1)}
+              className="w-full mt-3 py-2.5 text-xs text-zinc-500 hover:text-zinc-300 bg-zinc-900/30 border border-zinc-800/30 rounded-xl hover:border-zinc-700/50 transition-colors"
+            >
+              Show more ({sorted.length - paged.length} remaining)
+            </button>
+          )}
+          </>
         )}
       </main>
     </div>

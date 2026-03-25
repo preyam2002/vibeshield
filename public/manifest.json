@@ -1,0 +1,16 @@
+{
+  "name": "VibeShield",
+  "short_name": "VibeShield",
+  "description": "Black-box security scanner for vibe-coded apps",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#ef4444",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
