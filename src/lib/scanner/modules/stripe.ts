@@ -186,6 +186,108 @@ export const stripeModule: ScanModule = async (target) => {
     break;
   }
 
+  // Check for coupon/promo code abuse
+  const couponEndpoints = target.apiEndpoints.filter((ep) =>
+    /coupon|promo|discount|redeem|code/i.test(ep),
+  );
+  const couponJsMatches = allJs.matchAll(/["'`](\/api\/[a-zA-Z0-9/_-]*(?:coupon|promo|discount|redeem)[a-zA-Z0-9/_-]*)["'`]/gi);
+  for (const m of couponJsMatches) {
+    if (m[1]) {
+      const url = target.baseUrl + m[1];
+      if (!couponEndpoints.includes(url)) couponEndpoints.push(url);
+    }
+  }
+
+  if (couponEndpoints.length > 0) {
+    const couponAbuse = await Promise.allSettled(
+      couponEndpoints.slice(0, 3).map(async (endpoint) => {
+        const testCodes = [
+          { code: "100OFF", desc: "common promo code" },
+          { code: "INTERNAL", desc: "internal discount" },
+          { code: "TEST", desc: "test coupon" },
+          { code: "WELCOME100", desc: "max discount code" },
+          { code: "ADMIN", desc: "admin coupon" },
+        ];
+        for (const { code, desc } of testCodes) {
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, coupon: code, promo_code: code }),
+            timeoutMs: 5000,
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (/discount|percent|amount_off|valid|applied|success/i.test(text) && !/invalid|expired|not found/i.test(text.substring(0, 200))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, code, desc, text: text.substring(0, 200) };
+          }
+        }
+        return null;
+      }),
+    );
+
+    for (const r of couponAbuse) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `stripe-coupon-abuse-${findings.length}`, module: "Stripe", severity: "medium",
+        title: `Coupon/promo endpoint accepts guessable codes on ${v.pathname}`,
+        description: `The coupon endpoint accepted "${v.code}" (${v.desc}) and returned discount information. Attackers can brute-force or guess common promo codes to get unauthorized discounts.`,
+        evidence: `POST ${v.endpoint}\nCode: ${v.code}\nResponse: ${v.text}`,
+        remediation: "Rate-limit coupon validation. Use random, unguessable coupon codes. Validate coupons server-side against your database, not client-side.",
+        cwe: "CWE-330", owasp: "A04:2021",
+        codeSnippet: `// Rate-limit coupon validation\nimport { Ratelimit } from "@upstash/ratelimit";\nconst ratelimit = new Ratelimit({ limiter: Ratelimit.slidingWindow(5, "1 m") });\n\nexport async function POST(req: Request) {\n  const { success } = await ratelimit.limit(getIP(req));\n  if (!success) return Response.json({ error: "Too many attempts" }, { status: 429 });\n  const { code } = await req.json();\n  // Validate against Stripe API, not local lookup\n  const promo = await stripe.promotionCodes.list({ code, active: true, limit: 1 });\n  if (!promo.data.length) return Response.json({ error: "Invalid code" });\n}`,
+      });
+      break;
+    }
+  }
+
+  // Check for subscription plan manipulation (downgrade/upgrade without auth)
+  const subEndpoints = target.apiEndpoints.filter((ep) =>
+    /subscribe|subscription|plan|upgrade|downgrade/i.test(ep),
+  );
+  if (subEndpoints.length > 0) {
+    const subResults = await Promise.allSettled(
+      subEndpoints.slice(0, 3).map(async (endpoint) => {
+        const payloads = [
+          { plan: "free", desc: "downgrade to free" },
+          { plan: "enterprise", desc: "upgrade to enterprise" },
+          { plan_id: "price_fake_enterprise", desc: "fake price ID" },
+          { interval: "year", desc: "interval switch" },
+        ];
+        for (const { desc, ...body } of payloads) {
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            timeoutMs: 5000,
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (looksLikeHtml(text) || text.length < 10) continue;
+          if (/success|updated|subscription|plan|changed/i.test(text) && !/unauthorized|forbidden|login/i.test(text.substring(0, 200))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, desc, text: text.substring(0, 200) };
+          }
+        }
+        return null;
+      }),
+    );
+
+    for (const r of subResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `stripe-sub-tamper-${findings.length}`, module: "Stripe", severity: "high",
+        title: `Subscription plan tampering on ${v.pathname}`,
+        description: `The subscription endpoint accepted a "${v.desc}" request without proper authentication or validation. Users may be able to upgrade to premium plans without paying.`,
+        evidence: `POST ${v.endpoint}\nPayload: ${v.desc}\nResponse: ${v.text}`,
+        remediation: "Authenticate users before plan changes. Validate the plan ID against your allowed plans. Always change subscriptions via the Stripe API, not by updating your database directly.",
+        cwe: "CWE-862", owasp: "A01:2021",
+        codeSnippet: `// Secure plan change via Stripe API\nexport async function POST(req: Request) {\n  const user = await getAuthUser(req);\n  if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  const { planId } = await req.json();\n  // Validate planId against your known plans\n  const plan = ALLOWED_PLANS.find(p => p.id === planId);\n  if (!plan) return Response.json({ error: "Invalid plan" }, { status: 400 });\n  // Use Stripe API to change subscription\n  await stripe.subscriptions.update(user.stripeSubId, {\n    items: [{ id: user.stripeItemId, price: plan.stripePriceId }],\n  });\n}`,
+      });
+      break;
+    }
+  }
+
   // Check for success URL bypass
   const successUrls = allJs.match(/success_url.*?["'](https?:\/\/[^"']+)["']/gi);
   if (successUrls) {
