@@ -389,5 +389,69 @@ export const cspModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for worker-src (Service Workers can intercept all requests)
+  const workerSrc = directives.get("worker-src") || "";
+  if (!workerSrc && !directives.get("default-src")?.includes("'none'")) {
+    const hasServiceWorker = /serviceWorker|navigator\.serviceWorker|workbox/i.test(
+      Array.from(target.jsContents.values()).join("\n").substring(0, 200000),
+    );
+    if (hasServiceWorker) {
+      findings.push({
+        id: `csp-worker-src-${findings.length}`,
+        module: "CSP Analysis",
+        severity: "medium",
+        title: "CSP missing worker-src (Service Worker detected)",
+        description: "The app registers a Service Worker but CSP has no worker-src directive. Without it, an XSS attacker could register a malicious Service Worker that intercepts all requests, persisting after the XSS is fixed.",
+        evidence: "Service Worker registration found in JS bundles, no worker-src directive in CSP",
+        remediation: "Add worker-src 'self' to restrict Service Worker sources. This prevents attackers from registering rogue workers.",
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+        codeSnippet: `// Add worker-src to your CSP\nworker-src 'self';`,
+      });
+    }
+  }
+
+  // Detect static/reused CSP nonces across multiple requests
+  const nonceMatch = mainCSP.match(/nonce-([A-Za-z0-9+/=_-]+)/);
+  if (nonceMatch) {
+    // Fetch the page again and check if the nonce is the same
+    try {
+      const secondRes = await scanFetch(target.url, { timeoutMs: 5000, noCache: true });
+      const secondCSP = secondRes.headers.get("content-security-policy") || "";
+      const secondNonce = secondCSP.match(/nonce-([A-Za-z0-9+/=_-]+)/);
+      if (secondNonce && secondNonce[1] === nonceMatch[1]) {
+        findings.push({
+          id: `csp-static-nonce-${findings.length}`,
+          module: "CSP Analysis",
+          severity: "high",
+          title: "CSP nonce is static (reused across requests)",
+          description: `The CSP nonce "${nonceMatch[1].substring(0, 12)}..." is identical across multiple requests. A static nonce completely defeats nonce-based CSP protection — attackers can observe the nonce and include it in injected scripts.`,
+          evidence: `First request nonce: ${nonceMatch[1].substring(0, 20)}...\nSecond request nonce: ${secondNonce[1].substring(0, 20)}...\nNonces are identical`,
+          remediation: "Generate a unique nonce for every request using crypto.randomUUID() or crypto.randomBytes(16). The nonce must be different on each page load.",
+          cwe: "CWE-693",
+          owasp: "A05:2021",
+          codeSnippet: `// middleware.ts — generate unique nonce per request\nimport { NextResponse } from "next/server";\nexport function middleware() {\n  const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");\n  const csp = \`script-src 'strict-dynamic' 'nonce-\${nonce}';\`;\n  const res = NextResponse.next();\n  res.headers.set("Content-Security-Policy", csp);\n  res.headers.set("x-nonce", nonce); // Pass to RSC for <script nonce>\n  return res;\n}`,
+        });
+      }
+    } catch { /* skip */ }
+  }
+
+  // Check for script-src-elem / script-src-attr (modern CSP Level 3 granularity)
+  const hasStrictScript = scriptSrc.includes("'strict-dynamic'") || (!scriptSrc.includes("'unsafe-inline'") && scriptSrc);
+  const scriptSrcElem = directives.get("script-src-elem") || "";
+  if (hasStrictScript && scriptSrcElem && scriptSrcElem.includes("'unsafe-inline'")) {
+    findings.push({
+      id: `csp-script-src-elem-bypass-${findings.length}`,
+      module: "CSP Analysis",
+      severity: "high",
+      title: "script-src-elem overrides strict script-src",
+      description: "While script-src is restrictive, script-src-elem allows 'unsafe-inline'. In CSP Level 3, script-src-elem overrides script-src for inline <script> elements, defeating the intended protection.",
+      evidence: `script-src: ${scriptSrc.substring(0, 100)}\nscript-src-elem: ${scriptSrcElem}`,
+      remediation: "Ensure script-src-elem is at least as restrictive as script-src. Remove 'unsafe-inline' from script-src-elem.",
+      cwe: "CWE-693",
+      owasp: "A05:2021",
+    });
+  }
+
   return findings;
 };
