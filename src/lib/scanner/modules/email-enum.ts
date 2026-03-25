@@ -221,5 +221,95 @@ app.post("/api/auth/login", async (req, res) => {
     }
   }
 
+  // Phase 4: GraphQL user lookup enumeration
+  if (findings.length < 3) {
+    const gqlEndpoints = target.apiEndpoints.filter((ep) => /graphql|gql/i.test(ep));
+    if (gqlEndpoints.length > 0) {
+      const gqlResults = await Promise.allSettled(
+        gqlEndpoints.slice(0, 2).map(async (ep) => {
+          // Try checking if a user query reveals existence
+          const queries = [
+            { query: `query { user(email: "${testEmails[0]}") { id } }` },
+            { query: `query { user(email: "${testEmails[1]}") { id } }` },
+          ];
+          const [res1, res2] = await Promise.all(
+            queries.map((q) => scanFetch(ep, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(q), timeoutMs: 5000,
+            })),
+          );
+          const [text1, text2] = await Promise.all([res1.text(), res2.text()]);
+          // Different responses = enumeration
+          if (text1 !== text2 && text1.length > 5 && text2.length > 5) {
+            const hasNull = text1.includes('"user":null') || text2.includes('"user":null');
+            const hasData = text1.includes('"user":{') || text2.includes('"user":{');
+            if (hasNull || hasData) {
+              return { endpoint: new URL(ep).pathname };
+            }
+          }
+          return null;
+        }),
+      );
+      for (const r of gqlResults) {
+        if (r.status !== "fulfilled" || !r.value) continue;
+        findings.push({
+          id: `email-enum-graphql-${findings.length}`, module: "Email Enumeration", severity: "medium",
+          title: `GraphQL user lookup enables email enumeration on ${r.value.endpoint}`,
+          description: "The GraphQL user query returns null for non-existent users and data for existing users, allowing attackers to enumerate valid email addresses.",
+          evidence: `GraphQL query: { user(email: "...") { id } }\nDifferent responses for existing vs non-existing users`,
+          remediation: "Require authentication for user lookup queries. Return consistent errors for both found and not-found cases.",
+          cwe: "CWE-204", owasp: "A07:2021",
+          codeSnippet: `// Require auth for user queries\nconst resolvers = {\n  Query: {\n    user: (_, { email }, ctx) => {\n      if (!ctx.currentUser) throw new AuthenticationError("Login required");\n      if (ctx.currentUser.email !== email && !ctx.currentUser.isAdmin)\n        throw new ForbiddenError("Access denied");\n      return db.users.findByEmail(email);\n    },\n  },\n};`,
+        });
+        break;
+      }
+    }
+  }
+
+  // Phase 5: Signup endpoint enumeration — different error for existing emails
+  if (findings.length < 3) {
+    const signupPaths = validPaths.filter((p) => /signup|register|create/i.test(p));
+    const signupResults = await Promise.allSettled(
+      signupPaths.map(async (path) => {
+        const url = target.baseUrl + path;
+        const [fakeRes, realRes] = await Promise.all([
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: "nonexistent-signup-test-777@test.com", password: "TestPassword123!", name: "Test" }),
+            timeoutMs: 5000,
+          }),
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: testEmails[1], password: "TestPassword123!", name: "Test" }),
+            timeoutMs: 5000,
+          }),
+        ]);
+        const fakeText = await fakeRes.text();
+        const realText = await realRes.text();
+        const alreadyExists = /already (exists|registered|in use|taken)|email.*(in use|taken|exists)|duplicate.*email|account.*exists/i;
+        if (alreadyExists.test(realText) && !alreadyExists.test(fakeText)) {
+          return { path, fakeStatus: fakeRes.status, realStatus: realRes.status };
+        }
+        if (fakeRes.status !== realRes.status && (realRes.status === 409 || realRes.status === 422)) {
+          return { path, fakeStatus: fakeRes.status, realStatus: realRes.status };
+        }
+        return null;
+      }),
+    );
+    for (const r of signupResults) {
+      if (findings.length >= 3) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      findings.push({
+        id: `email-enum-signup-${findings.length}`, module: "Email Enumeration", severity: "medium",
+        title: `Signup endpoint reveals existing accounts on ${r.value.path}`,
+        description: `The signup endpoint returns "email already exists" for registered emails (status ${r.value.realStatus}) but a different response for new emails (status ${r.value.fakeStatus}). Attackers can enumerate all registered emails.`,
+        evidence: `New email → ${r.value.fakeStatus}\nExisting email → ${r.value.realStatus}`,
+        remediation: 'Use a two-step signup: accept the email, send a verification link. If already registered, send a "someone tried to create an account" email instead of showing an error.',
+        cwe: "CWE-204", owasp: "A07:2021",
+        codeSnippet: `// Two-step signup prevents enumeration\napp.post("/api/auth/signup", async (req, res) => {\n  const { email, password } = req.body;\n  const existing = await db.users.findByEmail(email);\n  if (existing) {\n    // Send "someone tried to register" email\n    await sendAlreadyRegisteredEmail(email);\n  } else {\n    const user = await db.users.create({ email, password });\n    await sendVerificationEmail(user);\n  }\n  // Always return the same response\n  res.json({ message: "Check your email to continue." });\n});`,
+      });
+    }
+  }
+
   return findings;
 };
