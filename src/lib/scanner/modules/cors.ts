@@ -12,7 +12,7 @@ const makeEvilOrigins = (targetHost: string) => [
 
 export const corsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
-  const endpoints = [target.url, ...target.apiEndpoints.filter((ep) => !ep.includes("/.well-known/")).slice(0, 10)];
+  const endpoints = [target.url, ...target.apiEndpoints.filter((ep) => !ep.includes("/.well-known/")).slice(0, 5)];
   const targetHost = new URL(target.url).hostname;
   const evilOrigins = makeEvilOrigins(targetHost);
   let wildcardFound = false;

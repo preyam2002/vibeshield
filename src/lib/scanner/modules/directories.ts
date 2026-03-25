@@ -90,7 +90,7 @@ export const directoriesModule: ScanModule = async (target) => {
   const results = await Promise.allSettled(
     CHECKS.map(async (check) => {
       const url = target.baseUrl + check.path;
-      const res = await scanFetch(url, { timeoutMs: 5000, redirect: "follow" });
+      const res = await scanFetch(url, { timeoutMs: 3000, redirect: "follow" });
       const text = res.ok ? await res.text() : "";
       return { check, url, status: res.status, text };
     }),
