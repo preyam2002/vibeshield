@@ -951,6 +951,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               if (techs.some((t) => t.includes("sentry"))) tips.push({ tech: "Sentry", tip: "Configure allowed origins for DSN, strip PII from error reports" });
               if (techs.some((t) => t.includes("deepseek") || t.includes("groq") || t.includes("replicate") || t.includes("google ai"))) tips.push({ tech: "AI Provider", tip: "Proxy all API calls through backend, add per-user rate limits, set billing alerts" });
               if (techs.some((t) => t.includes("lemon"))) tips.push({ tech: "Lemon Squeezy", tip: "Verify webhook signatures, validate prices server-side, protect API keys" });
+              if (techs.some((t) => t.includes("drizzle"))) tips.push({ tech: "Drizzle", tip: "Use parameterized queries, validate input with Zod, never expose Drizzle Studio in prod" });
+              if (techs.some((t) => t.includes("trpc"))) tips.push({ tech: "tRPC", tip: "Add auth middleware to protected procedures, disable tRPC panel in production" });
+              if (techs.some((t) => t.includes("inngest"))) tips.push({ tech: "Inngest", tip: "Set signing key in production, validate event payloads, use background functions for sensitive ops" });
+              if (techs.some((t) => t.includes("uploadthing") || t.includes("upload"))) tips.push({ tech: "File Uploads", tip: "Validate file types server-side, limit file size, scan for malware, store outside web root" });
+              if (techs.some((t) => t.includes("resend") || t.includes("sendgrid") || t.includes("postmark"))) tips.push({ tech: "Email Service", tip: "Protect API key, rate-limit email sends, validate recipient addresses to prevent abuse" });
               if (tips.length === 0) return null;
               return (
                 <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
@@ -1004,6 +1009,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 "SSL/TLS": "HTTPS/TLS properly set up",
                 "Cookies": "Cookie security flags set",
                 "CORS": "CORS policy is restrictive",
+                "CSP Analysis": "Content Security Policy enforced",
                 "Secret Detection": "No exposed API keys",
                 "Source Maps": "Source maps not public",
                 "CSRF": "CSRF protection in place",
@@ -1015,6 +1021,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 "Environment Leak": "No env variable leaks",
                 "Dependencies": "Dependencies up to date",
                 "JWT Security": "JWT implementation secure",
+                "Directory & File Exposure": "No sensitive files exposed",
+                "Exposed Dev Tools": "No dev tools in production",
+                "API Security": "API endpoints hardened",
+                "Information Leakage": "No info leaks in errors",
+                "GraphQL": "GraphQL security configured",
               };
 
               for (const mod of modules) {
