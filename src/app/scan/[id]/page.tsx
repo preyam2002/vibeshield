@@ -1361,6 +1361,40 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                       );
                     })}
                   </div>
+                  {/* Score progression bar */}
+                  {steps.length > 0 && (() => {
+                    const maxScore = Math.min(100, scan.score + steps.reduce((a, s) => a + s.points, 0));
+                    const quickFixScore = Math.min(100, scan.score + steps.filter((s) => s.effort === "quick").reduce((a, s) => a + s.points, 0));
+                    return (
+                      <div className="mt-3 pt-3 border-t border-zinc-800/30">
+                        <div className="flex items-center justify-between text-[9px] text-zinc-600 mb-1.5">
+                          <span>Score progression</span>
+                          <span>{scan.score} → {maxScore}</span>
+                        </div>
+                        <div className="relative h-2 bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className="absolute inset-y-0 left-0 bg-zinc-600/40 rounded-full"
+                            style={{ width: `${maxScore}%` }}
+                          />
+                          {quickFixScore > scan.score && (
+                            <div
+                              className="absolute inset-y-0 left-0 bg-emerald-500/30 rounded-full"
+                              style={{ width: `${quickFixScore}%` }}
+                            />
+                          )}
+                          <div
+                            className="absolute inset-y-0 left-0 bg-linear-to-r from-red-500 to-orange-500 rounded-full"
+                            style={{ width: `${scan.score}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center gap-3 mt-1.5 text-[8px] text-zinc-700">
+                          <span className="flex items-center gap-1"><span className="w-2 h-1 bg-linear-to-r from-red-500 to-orange-500 rounded-full inline-block" /> Current</span>
+                          {quickFixScore > scan.score && <span className="flex items-center gap-1"><span className="w-2 h-1 bg-emerald-500/30 rounded-full inline-block" /> Quick fixes (+{quickFixScore - scan.score})</span>}
+                          <span className="flex items-center gap-1"><span className="w-2 h-1 bg-zinc-600/40 rounded-full inline-block" /> All fixes (+{maxScore - scan.score})</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {milestones.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-zinc-800/30 space-y-1">
                       {milestones.map((m) => {
