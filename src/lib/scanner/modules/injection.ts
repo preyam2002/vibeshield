@@ -52,6 +52,27 @@ const XSS_PAYLOADS: { payload: string; check: (text: string) => boolean }[] = [
     payload: '<iframe src="javascript:alert(1)">',
     check: (t) => t.includes('<iframe src="javascript:alert(1)">'),
   },
+  // Filter evasion payloads
+  {
+    payload: '<img/src=x onerror=alert(1)>',
+    check: (t) => t.includes('<img/src=x onerror=alert(1)>'),
+  },
+  {
+    payload: '<svg/onload=alert(1)>',
+    check: (t) => t.includes('<svg/onload=alert(1)>'),
+  },
+  {
+    payload: '<details/open/ontoggle=alert(1)>',
+    check: (t) => t.includes('<details/open/ontoggle=alert(1)>'),
+  },
+  {
+    payload: '"><svg><animate onbegin=alert(1) attributeName=x>',
+    check: (t) => t.includes('<animate onbegin=alert(1)'),
+  },
+  {
+    payload: 'javascript:alert(1)//',
+    check: (t) => /href\s*=\s*["']?javascript:alert/i.test(t),
+  },
 ];
 
 const SSTI_PAYLOADS = [
@@ -61,6 +82,10 @@ const SSTI_PAYLOADS = [
   "<%= 7*7 %>",
   "{7*7}",
   "{{constructor.constructor('return 1')()}}",
+  "{{7*'7'}}", // Jinja2/Twig: returns '7777777'
+  "<%=7*7%>",  // ERB without spaces
+  "#{7*7}",    // Ruby string interpolation
+  "{{range.constructor(\"return 7*7\")()}}",  // AngularJS sandbox escape
 ];
 
 export const injectionModule: ScanModule = async (target) => {
@@ -411,6 +436,10 @@ export const injectionModule: ScanModule = async (target) => {
       { pattern: /\bnew\s+Function\s*\(/, name: "new Function()" },
       { pattern: /setTimeout\s*\(\s*[^,)]*(?:location|search|hash|href|name)/, name: "setTimeout with URL data" },
       { pattern: /dangerouslySetInnerHTML/, name: "dangerouslySetInnerHTML" },
+      { pattern: /\.insertAdjacentHTML\s*\(/, name: "insertAdjacentHTML" },
+      { pattern: /\.srcdoc\s*=/, name: "iframe.srcdoc" },
+      { pattern: /\bimport\s*\(.*(?:location|search|hash|href)/, name: "dynamic import()" },
+      { pattern: /\.src\s*=\s*(?:location|window\.name|document\.)/, name: "element.src from DOM" },
     ];
 
     const foundSources = domSources.filter((s) => s.pattern.test(allJs));
