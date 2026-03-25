@@ -35,7 +35,7 @@ export default function DocsPage() {
   -d '{"url": "https://your-app.vercel.app"}'
 
 # Scan modes:
-#   "quick"    - 12 essential modules, ~15s (headers, SSL, secrets, cookies)
+#   "quick"    - 13 essential modules, ~15s (headers, SSL, CSP, secrets, cookies)
 #   "security" - all 42 security modules, ~45s (default)
 #   "full"     - security + 6 stress tests (load, race, rate limit), ~90s
 # -d '{"url": "...", "mode": "quick"}'

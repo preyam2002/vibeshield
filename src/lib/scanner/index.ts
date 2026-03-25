@@ -148,7 +148,7 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
       if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
     }).catch((err) => {
       console.error(`Scan ${scanId} failed:`, err);
-      updateScanStatus(scanId, "failed");
+      updateScanStatus(scanId, "failed", humanizeError(err, targetUrl));
       if (callbackUrl) sendCallback(callbackUrl, scanId).catch(() => {});
     });
   }, 0);
@@ -172,8 +172,9 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
     });
     updateModule(scanId, "Recon", { status: "completed", durationMs: Date.now() - reconStart });
   } catch (err) {
-    updateModule(scanId, "Recon", { status: "failed", error: String(err), durationMs: Date.now() - reconStart });
-    updateScanStatus(scanId, "failed");
+    const errorMsg = humanizeError(err, targetUrl);
+    updateModule(scanId, "Recon", { status: "failed", error: errorMsg, durationMs: Date.now() - reconStart });
+    updateScanStatus(scanId, "failed", errorMsg);
     return;
   }
 
@@ -222,6 +223,43 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   }
 
   updateScanStatus(scanId, "completed");
+};
+
+const humanizeError = (err: unknown, targetUrl: string): string => {
+  const msg = String(err);
+  const causeMsg = err instanceof Error && err.cause ? String(err.cause) : "";
+  let hostname = "the target";
+  try { hostname = new URL(targetUrl).hostname; } catch {}
+
+  const combined = msg + " " + causeMsg;
+  if (combined.includes("ENOTFOUND") || combined.includes("getaddrinfo")) {
+    return `DNS lookup failed for ${hostname}. The domain may not exist or DNS is misconfigured.`;
+  }
+  if (combined.includes("ECONNREFUSED")) {
+    return `Connection refused by ${hostname}. The server may be down or not accepting connections on this port.`;
+  }
+  if (combined.includes("ETIMEDOUT") || combined.includes("CONNECT_TIMEOUT") || combined.includes("UND_ERR_CONNECT_TIMEOUT")) {
+    return `Connection to ${hostname} timed out. The server may be unreachable or behind a firewall.`;
+  }
+  if (combined.includes("ECONNRESET")) {
+    return `Connection reset by ${hostname}. The server closed the connection unexpectedly.`;
+  }
+  if (combined.includes("CERT_") || combined.includes("certificate") || combined.includes("SSL")) {
+    return `SSL/TLS error connecting to ${hostname}. The certificate may be invalid or expired.`;
+  }
+  if (combined.includes("AbortError") || combined.includes("abort")) {
+    return `Request to ${hostname} was aborted (timeout). The server took too long to respond.`;
+  }
+  if (combined.includes("403") || combined.includes("Forbidden")) {
+    return `${hostname} returned 403 Forbidden. The server is blocking our requests (WAF/bot protection).`;
+  }
+  if (combined.includes("fetch failed") && !causeMsg) {
+    return `Could not connect to ${hostname}. The server may be down or the URL may be incorrect.`;
+  }
+  if (combined.includes("fetch failed") && causeMsg) {
+    return `Could not connect to ${hostname}: ${causeMsg.length > 150 ? causeMsg.substring(0, 150) + "..." : causeMsg}`;
+  }
+  return `Failed to scan ${hostname}: ${msg.length > 200 ? msg.substring(0, 200) + "..." : msg}`;
 };
 
 const sendCallback = async (callbackUrl: string, scanId: string) => {

@@ -31,6 +31,7 @@ interface ScanResult {
   mode?: "full" | "security" | "quick";
   startedAt: string;
   completedAt?: string;
+  error?: string;
   findings: Finding[];
   modules: ModuleStatus[];
   grade: string;
@@ -469,10 +470,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               <div>
                 <div className="text-sm font-medium text-red-400">Scan failed</div>
                 <div className="text-xs text-zinc-500 mt-0.5">
-                  The target may be unreachable, blocking our requests, or behind a firewall.
-                  {scan.modules.find((m) => m.error) && (
-                    <span className="text-zinc-600"> — {scan.modules.find((m) => m.error)?.error}</span>
-                  )}
+                  {scan.error || (scan.modules.find((m) => m.error)?.error) || "The target may be unreachable, blocking our requests, or behind a firewall."}
                 </div>
               </div>
               <button

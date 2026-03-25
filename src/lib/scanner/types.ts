@@ -65,6 +65,7 @@ export interface ScanResult {
   mode: "full" | "security" | "quick";
   startedAt: string;
   completedAt?: string;
+  error?: string;
   findings: Finding[];
   modules: ModuleStatus[];
   grade: string;

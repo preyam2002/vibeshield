@@ -77,10 +77,11 @@ export const getRecentScans = (): { id: string; target: string; grade: string; s
     }));
 };
 
-export const updateScanStatus = (id: string, status: ScanResult["status"]) => {
+export const updateScanStatus = (id: string, status: ScanResult["status"], error?: string) => {
   const scan = scans.get(id);
   if (scan) {
     scan.status = status;
+    if (error) scan.error = error;
     if (status === "completed" || status === "failed") {
       scan.completedAt = new Date().toISOString();
     }
