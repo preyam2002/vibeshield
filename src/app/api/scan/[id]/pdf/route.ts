@@ -173,6 +173,12 @@ ${scan.modules.map((m) => `<tr>
 </tbody>
 </table>
 
+${passed.length > 0 ? `
+<div style="margin-bottom:16px;padding:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px">
+  <strong style="color:#166534;font-size:11px">✓ ${passed.length} modules passed with no findings:</strong>
+  <div style="color:#15803d;font-size:10px;margin-top:4px">${passed.map((m) => escapeHtml(m.name)).join(" · ")}</div>
+</div>` : ""}
+
 ${scan.findings.length > 0 ? `<h2 style="font-size:14px;margin-bottom:12px">Findings (${s.total})</h2>${moduleSections}` : '<div class="no-findings">✅ No vulnerabilities found</div>'}
 
 ${scan.comparison ? `
