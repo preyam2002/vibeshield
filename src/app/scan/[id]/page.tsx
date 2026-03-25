@@ -13,6 +13,7 @@ interface Finding {
   remediation: string;
   cwe?: string;
   owasp?: string;
+  codeSnippet?: string;
 }
 
 interface ModuleStatus {
@@ -60,6 +61,7 @@ interface ScanResult {
     newFindings?: { title: string; severity: string; module: string }[];
     fixedFindings?: { title: string; severity: string; module: string }[];
   };
+  percentile?: number;
 }
 
 const SEVERITY_CONFIG = {
@@ -135,6 +137,26 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
             <h4 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">How to Fix</h4>
             <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">{finding.remediation}</p>
           </div>
+          {finding.codeSnippet && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">Code Fix</h4>
+              <div className="relative group/snippet">
+                <pre className="text-xs bg-zinc-900/80 border border-emerald-500/20 rounded-lg p-3 pr-10 text-emerald-300/80 overflow-x-auto whitespace-pre-wrap">
+                  {finding.codeSnippet}
+                </pre>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(finding.codeSnippet!);
+                    const btn = e.currentTarget;
+                    btn.textContent = "Copied!";
+                    setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+                  }}
+                  className="absolute top-2 right-2 text-zinc-600 hover:text-emerald-400 text-[10px] opacity-0 group-hover/snippet:opacity-100 transition-opacity bg-zinc-800/80 rounded px-1.5 py-0.5"
+                >Copy</button>
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2 pt-1 flex-wrap">
             {finding.cwe && (
               <span className="text-[10px] bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5 text-zinc-500">{finding.cwe}</span>
@@ -482,6 +504,9 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     {" — "}
                     <ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /> scan time
                     {scan.mode && scan.mode !== "full" && ` (${scan.mode} mode)`}
+                    {scan.percentile !== undefined && scan.percentile >= 0 && (
+                      <span className="ml-1">— better than {scan.percentile}% of scanned apps</span>
+                    )}
                   </div>
                   {scan.comparison && (
                     <div className="mt-1 space-y-1">

@@ -7,6 +7,7 @@ const REQUIRED_HEADERS: {
   description: string;
   remediation: string;
   cwe: string;
+  codeSnippet?: string;
 }[] = [
   {
     header: "content-security-policy",
@@ -17,6 +18,7 @@ const REQUIRED_HEADERS: {
     remediation:
       "Add a Content-Security-Policy header. Start with: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
     cwe: "CWE-693",
+    codeSnippet: `// next.config.ts\nconst securityHeaders = [\n  { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" }\n];\nexport default { async headers() { return [{ source: "/(.*)", headers: securityHeaders }]; } };`,
   },
   {
     header: "strict-transport-security",
@@ -27,6 +29,7 @@ const REQUIRED_HEADERS: {
     remediation:
       "Add header: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
     cwe: "CWE-319",
+    codeSnippet: `// next.config.ts headers()\n{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" }`,
   },
   {
     header: "x-content-type-options",
@@ -36,6 +39,7 @@ const REQUIRED_HEADERS: {
       "Without this header, browsers may MIME-sniff responses, potentially executing uploaded files as scripts.",
     remediation: "Add header: X-Content-Type-Options: nosniff",
     cwe: "CWE-693",
+    codeSnippet: `// next.config.ts headers()\n{ key: "X-Content-Type-Options", value: "nosniff" }`,
   },
   {
     header: "referrer-policy",
@@ -45,6 +49,7 @@ const REQUIRED_HEADERS: {
       "Without a referrer policy, your site may leak sensitive URL paths and query parameters to third-party sites.",
     remediation: "Add header: Referrer-Policy: strict-origin-when-cross-origin",
     cwe: "CWE-200",
+    codeSnippet: `// next.config.ts headers()\n{ key: "Referrer-Policy", value: "strict-origin-when-cross-origin" }`,
   },
   {
     header: "permissions-policy",
@@ -55,6 +60,7 @@ const REQUIRED_HEADERS: {
     remediation:
       "Add header: Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()",
     cwe: "CWE-693",
+    codeSnippet: `// next.config.ts headers()\n{ key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" }`,
   },
 ];
 
@@ -93,6 +99,7 @@ export const headersModule: ScanModule = async (target) => {
         remediation: check.remediation,
         cwe: check.cwe,
         owasp: "A05:2021",
+        ...(check.codeSnippet ? { codeSnippet: check.codeSnippet } : {}),
       });
     }
   }

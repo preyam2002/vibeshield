@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getScan, findPreviousScan } from "@/lib/scanner/store";
+import { getScan, findPreviousScan, getPercentile } from "@/lib/scanner/store";
 
 export async function GET(
   _req: Request,
@@ -38,5 +38,6 @@ export async function GET(
     };
   }
 
-  return NextResponse.json({ ...scan, comparison });
+  const percentile = scan.status === "completed" ? getPercentile(scan.score) : undefined;
+  return NextResponse.json({ ...scan, comparison, ...(percentile !== undefined && percentile >= 0 ? { percentile } : {}) });
 }

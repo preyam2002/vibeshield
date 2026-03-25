@@ -171,6 +171,15 @@ export const getStats = () => {
   };
 };
 
+export const getPercentile = (score: number): number => {
+  const scores = Array.from(scans.values())
+    .filter((s) => s.status === "completed")
+    .map((s) => s.score);
+  if (scores.length < 3) return -1;
+  const below = scores.filter((s) => s <= score).length;
+  return Math.round((below / scores.length) * 100);
+};
+
 const recalcSummary = (scan: ScanResult) => {
   const s = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
   for (const f of scan.findings) {
@@ -190,10 +199,11 @@ const calcGrade = (s: ScanResult["summary"]): { grade: string; score: number } =
     Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
 
   let score = 100;
-  score -= penalty(s.critical, 25, 0.7);  // 25, 17.5, 12.25, ...
-  score -= penalty(s.high, 10, 0.75);     // 10, 7.5, 5.6, ...
+  score -= penalty(s.critical, 30, 0.6);  // 30, 18, 10.8, ...
+  score -= penalty(s.high, 12, 0.7);      // 12, 8.4, 5.9, ...
   score -= penalty(s.medium, 4, 0.8);     // 4, 3.2, 2.56, ...
   score -= penalty(s.low, 1, 0.85);       // 1, 0.85, 0.72, ...
+  if (s.critical >= 1 && s.high >= 2) score -= 10;
   score = Math.max(0, Math.min(100, Math.round(score)));
 
   let grade: string;

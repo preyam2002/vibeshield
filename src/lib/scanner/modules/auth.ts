@@ -86,7 +86,7 @@ export const authModule: ScanModule = async (target) => {
       }),
     ),
 
-    // 3. Weak token validation
+    // 3. Weak token validation + alg:none bypass
     Promise.allSettled(
       target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
         const pathname = new URL(endpoint).pathname;
@@ -95,6 +95,7 @@ export const authModule: ScanModule = async (target) => {
         const noAuthRes = await scanFetch(endpoint, { timeoutMs: 5000 });
         if (noAuthRes.status !== 401 && noAuthRes.status !== 403) return null;
 
+        // Test 1: random invalid token
         const invalidRes = await scanFetch(endpoint, {
           headers: { Authorization: "Bearer invalid-token-vibeshield-test" },
           timeoutMs: 5000,
@@ -103,7 +104,22 @@ export const authModule: ScanModule = async (target) => {
           const text = await invalidRes.text();
           if (looksLikeHtml(text) && isSoft404(text, target)) return null;
           if (text.length < 10) return null;
-          return { pathname, noAuthStatus: noAuthRes.status, invalidStatus: invalidRes.status, text };
+          return { pathname, noAuthStatus: noAuthRes.status, invalidStatus: invalidRes.status, text, type: "invalid-token" as const };
+        }
+
+        // Test 2: JWT with alg:none (signature bypass)
+        const header = btoa(JSON.stringify({ alg: "none", typ: "JWT" })).replace(/=/g, "");
+        const payload = btoa(JSON.stringify({ sub: "test", admin: true, exp: Math.floor(Date.now() / 1000) + 3600 })).replace(/=/g, "");
+        const algNoneToken = `${header}.${payload}.`;
+        const algNoneRes = await scanFetch(endpoint, {
+          headers: { Authorization: `Bearer ${algNoneToken}` },
+          timeoutMs: 5000,
+        });
+        if (algNoneRes.ok) {
+          const text = await algNoneRes.text();
+          if (looksLikeHtml(text) && isSoft404(text, target)) return null;
+          if (text.length < 10) return null;
+          return { pathname, noAuthStatus: noAuthRes.status, invalidStatus: algNoneRes.status, text, type: "alg-none" as const };
         }
         return null;
       }),
@@ -193,18 +209,33 @@ export const authModule: ScanModule = async (target) => {
   for (const r of tokenResults) {
     if (findings.length >= 6) break;
     if (r.status !== "fulfilled" || !r.value) continue;
-    const { pathname, noAuthStatus, invalidStatus, text } = r.value;
-    findings.push({
-      id: `auth-weak-validation-${findings.length}`,
-      module: "Authentication",
-      severity: "critical",
-      title: `Weak token validation on ${pathname}`,
-      description: "This endpoint accepts invalid Bearer tokens. The server is not properly validating authentication tokens, allowing anyone with any string as a token to access protected data.",
-      evidence: `Without token: ${noAuthStatus}\nWith invalid token: ${invalidStatus}\nResponse: ${text.substring(0, 200)}`,
-      remediation: "Validate tokens cryptographically. Use a JWT library that verifies signatures, or validate tokens against your auth provider.",
-      cwe: "CWE-287",
-      owasp: "A07:2021",
-    });
+    const { pathname, noAuthStatus, invalidStatus, text, type } = r.value;
+    if (type === "alg-none") {
+      findings.push({
+        id: `auth-alg-none-${findings.length}`,
+        module: "Authentication",
+        severity: "critical",
+        title: `JWT alg:none bypass on ${pathname}`,
+        description: "This endpoint accepts JWTs with algorithm set to 'none', meaning signatures are not verified. An attacker can forge tokens with arbitrary claims.",
+        evidence: `Without token: ${noAuthStatus}\nWith alg:none JWT: ${invalidStatus}\nResponse: ${text.substring(0, 200)}`,
+        remediation: "Configure your JWT library to reject alg:none tokens. Always specify the expected algorithm explicitly.",
+        cwe: "CWE-327",
+        owasp: "A02:2021",
+        codeSnippet: `// Fix: Explicitly set algorithms\njwt.verify(token, secret, { algorithms: ["HS256"] });`,
+      });
+    } else {
+      findings.push({
+        id: `auth-weak-validation-${findings.length}`,
+        module: "Authentication",
+        severity: "critical",
+        title: `Weak token validation on ${pathname}`,
+        description: "This endpoint accepts invalid Bearer tokens. The server is not properly validating authentication tokens, allowing anyone with any string as a token to access protected data.",
+        evidence: `Without token: ${noAuthStatus}\nWith invalid token: ${invalidStatus}\nResponse: ${text.substring(0, 200)}`,
+        remediation: "Validate tokens cryptographically. Use a JWT library that verifies signatures, or validate tokens against your auth provider.",
+        cwe: "CWE-287",
+        owasp: "A07:2021",
+      });
+    }
   }
 
   // Collect HTTP method findings

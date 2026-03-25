@@ -10,6 +10,7 @@ export interface Finding {
   remediation: string;
   cwe?: string;
   owasp?: string;
+  codeSnippet?: string;
 }
 
 export interface FormField {
