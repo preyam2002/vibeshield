@@ -36,7 +36,7 @@ export default function DocsPage() {
 
 # Scan modes:
 #   "quick"    - 13 essential modules, ~15s (headers, SSL, CSP, secrets, cookies)
-#   "security" - all 47 security modules, ~45s (default)
+#   "security" - all 48 security modules, ~45s (default)
 #   "full"     - security + 6 stress tests (load, race, rate limit), ~90s
 # -d '{"url": "...", "mode": "quick"}'
 
@@ -94,7 +94,7 @@ curl ${baseUrl}/api/scan/abc-123/csv -o findings.csv`}
 #   "score": 78,
 #   "summary": {"critical": 0, "high": 1, "medium": 3, ...},
 #   "gate": {"passed": true},  // if minScore/failOnCritical set
-#   "moduleHealth": {"failed": 0, "skipped": 0, "total": 53}  // if any modules failed/skipped
+#   "moduleHealth": {"failed": 0, "skipped": 0, "total": 54}  // if any modules failed/skipped
 # }
 # Callbacks retry up to 3x with exponential backoff on server errors.
 #

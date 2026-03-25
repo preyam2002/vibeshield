@@ -59,6 +59,7 @@ const ATTACK_MODULES = [
   { name: "Request Smuggling", desc: "CL.TE desync, hop-by-hop header abuse, method override bypass, WS upgrade", icon: "🔀" },
   { name: "Response Security", desc: "MIME confusion, content-disposition, sensitive caching, error stack leaks", icon: "📨" },
   { name: "Type Confusion", desc: "JSON type coercion, content-type confusion, server prototype pollution, XXE", icon: "🔄" },
+  { name: "DNS & Email Security", desc: "SPF/DMARC analysis, CAA records, dangling CNAMEs, security.txt", icon: "🌐" },
 ];
 
 interface RecentScan {
@@ -278,8 +279,8 @@ export default function Home() {
               <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
                 {([
                   { key: "quick" as const, label: "Quick (~10s)", title: "13 modules: headers, SSL, secrets, CORS, cookies, CSP, dependencies, source maps" },
-                  { key: "security" as const, label: "Security (~45s)", title: "47 modules: all security checks including injection, auth bypass, SSRF, IDOR" },
-                  { key: "full" as const, label: "Full + Stress (~90s)", title: "53 modules: everything + load testing, race conditions, rate limit checks" },
+                  { key: "security" as const, label: "Security (~45s)", title: "48 modules: all security checks including injection, auth bypass, SSRF, IDOR" },
+                  { key: "full" as const, label: "Full + Stress (~90s)", title: "54 modules: everything + load testing, race conditions, rate limit checks" },
                 ]).map((m) => (
                   <button
                     key={m.key}

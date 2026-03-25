@@ -66,6 +66,7 @@ import { privacyModule } from "./modules/privacy";
 import { requestSmugglingModule } from "./modules/request-smuggling";
 import { responseSecurityModule } from "./modules/response-security";
 import { typeConfusionModule } from "./modules/type-confusion";
+import { dnsSecurityModule } from "./modules/rate-limit";
 import {
   MODULE_TIMEOUT_MS,
   MAX_FINDINGS_PER_MODULE,
@@ -125,6 +126,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Request Smuggling", description: "Test for HTTP request smuggling, hop-by-hop abuse, and method override bypass", category: "security", run: requestSmugglingModule },
   { name: "Response Security", description: "MIME confusion, content-disposition, sensitive response caching", category: "security", run: responseSecurityModule },
   { name: "Type Confusion", description: "JSON type coercion, content-type confusion, server prototype pollution, XXE", category: "security", run: typeConfusionModule },
+  { name: "DNS & Email Security", description: "SPF, DMARC, CAA records, dangling CNAMEs, security.txt", category: "security", run: dnsSecurityModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [
