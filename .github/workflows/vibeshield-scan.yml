@@ -1,0 +1,192 @@
+# VibeShield Security Scan — drop this into any repo's .github/workflows/
+# Runs a DAST scan against your preview/staging deployment on every PR.
+#
+# Required secrets:
+#   VIBESHIELD_URL  — your VibeShield instance URL (e.g. https://vibeshield.yourdomain.com)
+#   VIBESHIELD_KEY  — API key (optional, only if auth is enabled)
+#
+# Optional inputs:
+#   deployment_url  — override the target URL (defaults to Vercel preview URL)
+#   scan_mode       — quick | security | full (default: security)
+#   min_score       — minimum passing score (default: 60)
+#   fail_on_critical — fail if critical findings exist (default: true)
+
+name: VibeShield Security Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      deployment_url:
+        description: 'Target URL to scan'
+        required: true
+      scan_mode:
+        description: 'Scan mode'
+        required: false
+        default: 'security'
+        type: choice
+        options: [quick, security, full]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for deployment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        id: deployment
+        with:
+          script: |
+            // Wait up to 5 minutes for a deployment to appear
+            const maxWait = 300000;
+            const start = Date.now();
+            while (Date.now() - start < maxWait) {
+              const { data: deployments } = await github.rest.repos.listDeployments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: context.payload.pull_request.head.sha,
+                per_page: 1,
+              });
+              if (deployments.length > 0) {
+                const { data: statuses } = await github.rest.repos.listDeploymentStatuses({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  deployment_id: deployments[0].id,
+                  per_page: 1,
+                });
+                if (statuses.length > 0 && statuses[0].state === 'success') {
+                  core.setOutput('url', statuses[0].environment_url || statuses[0].target_url);
+                  return;
+                }
+              }
+              await new Promise(r => setTimeout(r, 15000));
+            }
+            core.setFailed('No deployment found within 5 minutes');
+
+      - name: Run VibeShield scan
+        id: scan
+        env:
+          TARGET_URL: ${{ steps.deployment.outputs.url || github.event.inputs.deployment_url }}
+          VIBESHIELD_URL: ${{ secrets.VIBESHIELD_URL }}
+          VIBESHIELD_KEY: ${{ secrets.VIBESHIELD_KEY }}
+          SCAN_MODE: ${{ github.event.inputs.scan_mode || 'security' }}
+          MIN_SCORE: '60'
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TARGET_URL" ]; then
+            echo "::error::No deployment URL available"
+            exit 1
+          fi
+
+          echo "Scanning $TARGET_URL (mode: $SCAN_MODE)..."
+
+          AUTH_HEADER=""
+          if [ -n "$VIBESHIELD_KEY" ]; then
+            AUTH_HEADER="-H \"Authorization: Bearer $VIBESHIELD_KEY\""
+          fi
+
+          # Start scan
+          RESPONSE=$(eval curl -sf -X POST "$VIBESHIELD_URL/api/scan" \
+            -H "Content-Type: application/json" \
+            $AUTH_HEADER \
+            -d "{\"url\": \"$TARGET_URL\", \"mode\": \"$SCAN_MODE\"}")
+
+          SCAN_ID=$(echo "$RESPONSE" | jq -r '.id')
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+
+          if [ "$SCAN_ID" = "null" ] || [ -z "$SCAN_ID" ]; then
+            echo "::error::Failed to start scan: $RESPONSE"
+            exit 1
+          fi
+
+          echo "Scan started: $SCAN_ID"
+
+          # Poll for completion (max 5 minutes)
+          for i in $(seq 1 60); do
+            sleep 5
+            STATUS=$(eval curl -sf "$VIBESHIELD_URL/api/scan/$SCAN_ID" $AUTH_HEADER | jq -r '.status')
+            echo "  Status: $STATUS"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              break
+            fi
+          done
+
+          # Get CI results
+          CI_RESULT=$(eval curl -sf "$VIBESHIELD_URL/api/scan/$SCAN_ID/ci?minScore=$MIN_SCORE&failOnCritical=true" $AUTH_HEADER)
+          echo "ci_result<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CI_RESULT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          PASS=$(echo "$CI_RESULT" | jq -r '.pass')
+          GRADE=$(echo "$CI_RESULT" | jq -r '.grade')
+          SCORE=$(echo "$CI_RESULT" | jq -r '.score')
+          FINDINGS=$(echo "$CI_RESULT" | jq -r '.findings')
+
+          echo "grade=$GRADE" >> "$GITHUB_OUTPUT"
+          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "Grade: $GRADE ($SCORE/100) — $FINDINGS findings"
+
+          if [ "$PASS" != "true" ]; then
+            echo "::error::Security gate failed: $GRADE ($SCORE/100)"
+            exit 1
+          fi
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const grade = '${{ steps.scan.outputs.grade }}' || '?';
+            const score = '${{ steps.scan.outputs.score }}' || '?';
+            const pass = '${{ steps.scan.outputs.pass }}' === 'true';
+            const scanId = '${{ steps.scan.outputs.scan_id }}';
+            const targetUrl = '${{ steps.deployment.outputs.url }}';
+            const vsUrl = '${{ secrets.VIBESHIELD_URL }}';
+
+            const emoji = pass ? ':white_check_mark:' : ':x:';
+            const status = pass ? 'Passed' : 'Failed';
+
+            let body = `## ${emoji} VibeShield Security Scan ${status}\n\n`;
+            body += `| Metric | Value |\n|--------|-------|\n`;
+            body += `| **Grade** | ${grade} |\n`;
+            body += `| **Score** | ${score}/100 |\n`;
+            body += `| **Target** | ${targetUrl} |\n`;
+            if (vsUrl && scanId) {
+              body += `| **Report** | [View full report](${vsUrl}/scan/${scanId}) |\n`;
+            }
+            body += `\n---\n*Scanned by [VibeShield](https://github.com/vibeshield/vibeshield)*`;
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.includes('VibeShield Security Scan'));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

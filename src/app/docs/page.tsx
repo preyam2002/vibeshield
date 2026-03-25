@@ -280,6 +280,17 @@ vercel deploy --prod && \\
           </pre>
         </section>
 
+        {/* GitHub Actions */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">GitHub Actions</h2>
+          <p className="text-sm text-zinc-500 mb-4">Drop-in workflow that scans preview deployments on every PR. Copy <code className="text-orange-400">.github/workflows/vibeshield-scan.yml</code> from this repo, then add these secrets:</p>
+          <div className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-400 space-y-1 mb-4">
+            <p><code className="text-zinc-200">VIBESHIELD_URL</code> — your VibeShield instance URL</p>
+            <p><code className="text-zinc-200">VIBESHIELD_KEY</code> — API key (optional, only if auth enabled)</p>
+          </div>
+          <p className="text-sm text-zinc-500">The workflow waits for the Vercel preview deployment, runs a security scan, posts results as a PR comment, and fails the check if the score is below threshold.</p>
+        </section>
+
         {/* Slack/Discord Integration */}
         <section className="mb-12">
           <h2 className="text-lg font-bold text-zinc-200 mb-4">Slack & Discord Notifications</h2>
