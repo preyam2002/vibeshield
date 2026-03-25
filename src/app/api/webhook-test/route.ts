@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+import { validateApiKey } from "@/lib/auth";
 
 /**
  * Webhook test endpoint — sends a sample payload to a webhook URL
@@ -7,7 +8,9 @@ import { NextResponse } from "next/server";
  * POST /api/webhook-test
  * Body: { url: string, format: "slack" | "discord" | "json" }
  */
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const auth = validateApiKey(req);
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
   const body = await req.json() as { url?: string; format?: string };
 
   const webhookUrl = typeof body.url === "string" ? body.url.trim() : "";

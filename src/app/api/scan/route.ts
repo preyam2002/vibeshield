@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { startScan } from "@/lib/scanner";
 import { getActiveScansCount, findActiveScan } from "@/lib/scanner/store";
+import { validateApiKey } from "@/lib/auth";
 import {
   MAX_CONCURRENT_SCANS,
   RATE_LIMIT_PER_TARGET,
@@ -43,7 +44,9 @@ const isPrivateHost = (host: string): boolean => {
   return false;
 };
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const auth = validateApiKey(req);
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
   const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick"; minScore?: number; failOnCritical?: boolean };
   const url = typeof body.url === "string" ? body.url.trim() : "";
   // Validate callback URL — only allow public HTTPS URLs

@@ -25,6 +25,18 @@ export default function DocsPage() {
         <h1 className="text-3xl font-black text-zinc-100 mb-2">API & CI/CD Integration</h1>
         <p className="text-zinc-500 mb-10">Integrate VibeShield into your deployment pipeline to catch security issues before they ship.</p>
 
+        {/* Authentication */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Authentication</h2>
+          <div className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-400 space-y-2">
+            <p>API key auth is <span className="text-zinc-200">optional</span>. Set <code className="text-orange-400">VIBESHIELD_API_KEY</code> env var to enable it. Multiple keys can be comma-separated.</p>
+            <p className="text-zinc-500">When enabled, all write endpoints require one of:</p>
+            <pre className="text-zinc-300 mt-2">{`Authorization: Bearer <your-key>
+X-API-Key: <your-key>`}</pre>
+            <p className="text-zinc-500">Read-only endpoints (scan status, stats, scans list) remain unauthenticated.</p>
+          </div>
+        </section>
+
         {/* Quick start */}
         <section className="mb-12">
           <h2 className="text-lg font-bold text-zinc-200 mb-4">Quick Start</h2>

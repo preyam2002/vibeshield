@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { startScan } from "@/lib/scanner";
 import { findActiveScan } from "@/lib/scanner/store";
+import { validateApiKey } from "@/lib/auth";
 
 interface ScheduledScan {
   id: string;
@@ -72,7 +73,9 @@ if (!globalForSchedule.__vibeshieldScheduleTimer) {
  * POST /api/scan/schedule
  * Body: { url, mode?, callbackUrl?, intervalHours? }
  */
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const auth = validateApiKey(req);
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
   const body = await req.json() as {
     url?: string;
     mode?: "full" | "security" | "quick";
@@ -180,7 +183,9 @@ export async function GET() {
 /**
  * DELETE a scheduled scan by ID (passed as query param).
  */
-export async function DELETE(req: Request) {
+export async function DELETE(req: NextRequest) {
+  const auth = validateApiKey(req);
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
   const url = new URL(req.url);
   const scheduleId = url.searchParams.get("id");
   if (!scheduleId) {

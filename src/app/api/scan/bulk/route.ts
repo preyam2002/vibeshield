@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { startScan } from "@/lib/scanner";
 import { getActiveScansCount, findActiveScan } from "@/lib/scanner/store";
 import { MAX_CONCURRENT_SCANS } from "@/lib/scanner/config";
+import { validateApiKey } from "@/lib/auth";
 
 const MAX_BULK_URLS = 10;
 
@@ -34,7 +35,9 @@ const isPrivateHost = (host: string): boolean => {
  *
  * Returns: { scans: Array<{ url, id, error? }> }
  */
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const auth = validateApiKey(req);
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
   const body = await req.json() as {
     urls?: string[];
     mode?: "full" | "security" | "quick";
