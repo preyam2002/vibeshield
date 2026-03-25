@@ -74,6 +74,7 @@ export const getRecentScans = (): { id: string; target: string; grade: string; s
       findings: s.summary.total, summary: s.summary, startedAt: s.startedAt,
       completedAt: s.completedAt, mode: s.mode,
       ...(s.comparison ? { delta: { score: s.comparison.delta.score, findings: s.comparison.delta.findings } } : {}),
+      ...(s.error ? { error: s.error } : {}),
     }));
 };
 

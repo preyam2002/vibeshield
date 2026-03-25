@@ -270,7 +270,7 @@ const sendCallback = async (callbackUrl: string, scanId: string) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        event: "scan.completed",
+        event: scan.status === "failed" ? "scan.failed" : "scan.completed",
         scanId: scan.id,
         target: scan.target,
         status: scan.status,
@@ -278,6 +278,7 @@ const sendCallback = async (callbackUrl: string, scanId: string) => {
         score: scan.score,
         summary: scan.summary,
         resultUrl: `/scan/${scan.id}`,
+        ...(scan.error ? { error: scan.error } : {}),
       }),
     });
   } catch (err) {
