@@ -64,6 +64,7 @@ import { storageModule } from "./modules/storage";
 import { sessionModule } from "./modules/session";
 import { privacyModule } from "./modules/privacy";
 import { requestSmugglingModule } from "./modules/request-smuggling";
+import { responseSecurityModule } from "./modules/response-security";
 import {
   MODULE_TIMEOUT_MS,
   MAX_FINDINGS_PER_MODULE,
@@ -121,6 +122,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
   { name: "Privacy & Tracking", description: "Detect trackers, fingerprinting, consent gaps, and PII exposure", category: "security", run: privacyModule },
   { name: "Request Smuggling", description: "Test for HTTP request smuggling, hop-by-hop abuse, and method override bypass", category: "security", run: requestSmugglingModule },
+  { name: "Response Security", description: "MIME confusion, content-disposition, sensitive response caching", category: "security", run: responseSecurityModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [
