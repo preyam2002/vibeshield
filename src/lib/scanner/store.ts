@@ -43,7 +43,23 @@ export const findPreviousScan = (target: string, excludeId: string): ScanResult 
     [0];
 };
 
+const STALE_SCAN_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
+const cleanupStaleScans = () => {
+  const now = Date.now();
+  for (const scan of scans.values()) {
+    if (
+      (scan.status === "scanning" || scan.status === "queued") &&
+      now - new Date(scan.startedAt).getTime() > STALE_SCAN_TIMEOUT
+    ) {
+      scan.status = "failed";
+      scan.completedAt = new Date().toISOString();
+    }
+  }
+};
+
 export const getRecentScans = (): { id: string; target: string; grade: string; score: number; status: string; findings: number; summary: ScanResult["summary"]; startedAt: string; completedAt?: string }[] => {
+  cleanupStaleScans();
   return Array.from(scans.values())
     .sort((a, b) => {
       if (a.status === "scanning" && b.status !== "scanning") return -1;

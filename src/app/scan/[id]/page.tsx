@@ -499,6 +499,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     {scan.summary.critical === 0 && scan.summary.high === 0 && scan.summary.medium === 0 && "No significant issues found"}
                     {" — "}
                     <ElapsedTimer startedAt={scan.startedAt} completedAt={scan.completedAt} /> scan time
+                    {scan.mode && scan.mode !== "full" && ` (${scan.mode} mode)`}
                   </div>
                   {scan.comparison && (
                     <div className="mt-1 space-y-1">
