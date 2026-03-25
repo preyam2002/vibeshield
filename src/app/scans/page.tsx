@@ -40,6 +40,7 @@ export default function ScansPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("date");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [localOnly, setLocalOnly] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -51,10 +52,11 @@ export default function ScansPage() {
         for (const s of stored) merged.set(s.id, s);
         for (const s of serverScans) merged.set(s.id, s);
         setScans([...merged.values()]);
+        setLocalOnly(serverScans.length === 0 && stored.length > 0);
       } catch {
         try {
           const stored: ScanEntry[] = JSON.parse(localStorage.getItem("vibeshield-history") || "[]");
-          if (stored.length > 0) setScans(stored);
+          if (stored.length > 0) { setScans(stored); setLocalOnly(true); }
         } catch { /* skip */ }
       }
     };
@@ -111,6 +113,7 @@ export default function ScansPage() {
             <p className="text-sm text-zinc-500">
               {scans.length} {scans.length === 1 ? "scan" : "scans"}
               {runningCount > 0 && <span className="text-red-400"> · {runningCount} running</span>}
+              {localOnly && <span className="text-zinc-600"> · from browser cache</span>}
             </p>
           </div>
           <input

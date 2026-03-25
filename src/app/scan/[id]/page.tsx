@@ -656,6 +656,14 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             <div className="text-xs text-zinc-500 mt-1">
               {isRunning ? "Scanning" : scan.status === "failed" ? "Scan failed" : `${scan.score}/100 · ${gradeConf.desc}`}
             </div>
+            {!isRunning && scan.status === "completed" && scan.summary.total > 0 && (
+              <div className="mt-2 text-[10px] text-zinc-600 space-y-0.5">
+                {scan.summary.critical > 0 && <div className="text-red-400/70">-{Math.round(25 * (1 - Math.pow(0.7, scan.summary.critical)) / (1 - 0.7))} critical</div>}
+                {scan.summary.high > 0 && <div className="text-orange-400/70">-{Math.round(10 * (1 - Math.pow(0.75, scan.summary.high)) / (1 - 0.75))} high</div>}
+                {scan.summary.medium > 0 && <div className="text-yellow-400/70">-{Math.round(4 * (1 - Math.pow(0.8, scan.summary.medium)) / (1 - 0.8))} medium</div>}
+                {scan.summary.low > 0 && <div className="text-blue-400/70">-{Math.round(1 * (1 - Math.pow(0.85, scan.summary.low)) / (1 - 0.85))} low</div>}
+              </div>
+            )}
           </div>
 
           {/* Severity breakdown */}

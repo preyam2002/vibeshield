@@ -13,36 +13,38 @@ const INTROSPECTION_QUERY = JSON.stringify({
 export const graphqlModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // Find GraphQL endpoints
-  const graphqlEndpoints: string[] = [];
-
-  for (const path of GRAPHQL_PATHS) {
-    const url = target.baseUrl + path;
-    try {
+  // Discover GraphQL endpoints in parallel
+  const discoveryResults = await Promise.allSettled(
+    GRAPHQL_PATHS.map(async (path) => {
+      const url = target.baseUrl + path;
       const res = await scanFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: INTROSPECTION_QUERY,
+        timeoutMs: 5000,
       });
-      if (res.ok) {
-        const data = await res.json() as { data?: { __schema?: { types?: unknown[] } } };
-        if (data?.data?.__schema) {
-          graphqlEndpoints.push(url);
-        }
-      }
-    } catch {
-      // skip
-    }
+      if (!res.ok) return null;
+      const data = await res.json() as { data?: { __schema?: unknown } };
+      return data?.data?.__schema ? url : null;
+    }),
+  );
+
+  const graphqlEndpoints: string[] = [];
+  for (const r of discoveryResults) {
+    if (r.status === "fulfilled" && r.value) graphqlEndpoints.push(r.value);
   }
 
-  // Also check endpoints discovered during recon
+  // Also check recon-discovered endpoints
   for (const ep of target.apiEndpoints) {
     if (/graphql|gql/i.test(ep) && !graphqlEndpoints.includes(ep)) {
       graphqlEndpoints.push(ep);
     }
   }
 
-  for (const endpoint of graphqlEndpoints) {
+  // Test each endpoint in parallel
+  const endpointTests = graphqlEndpoints.map(async (endpoint) => {
+    const endpointFindings: Finding[] = [];
+
     // Test introspection
     try {
       const res = await scanFetch(endpoint, {
@@ -56,45 +58,55 @@ export const graphqlModule: ScanModule = async (target) => {
         const schema = data?.data?.__schema;
         if (schema?.types) {
           const userTypes = schema.types.filter(
-            (t: { name: string }) => !t.name.startsWith("__") && !["String", "Int", "Float", "Boolean", "ID"].includes(t.name),
+            (t) => !t.name.startsWith("__") && !["String", "Int", "Float", "Boolean", "ID"].includes(t.name),
           );
-          const sensitiveTypes = userTypes.filter((t: { name: string; fields?: { name: string }[] }) =>
-            t.fields?.some((f: { name: string }) => /password|secret|token|key|ssn|credit/i.test(f.name)),
+          const sensitiveTypes = userTypes.filter((t) =>
+            t.fields?.some((f) => /password|secret|token|key|ssn|credit/i.test(f.name)),
           );
 
-          findings.push({
-            id: `graphql-introspection-${findings.length}`,
+          endpointFindings.push({
+            id: `graphql-introspection-${endpoint}`,
             module: "GraphQL",
             severity: "high",
             title: `GraphQL introspection enabled on ${new URL(endpoint).pathname}`,
             description: `Introspection is enabled, exposing your entire API schema. Found ${userTypes.length} custom types.${sensitiveTypes.length > 0 ? ` ${sensitiveTypes.length} types contain sensitive-looking fields.` : ""}`,
-            evidence: `Types: ${userTypes.map((t: { name: string }) => t.name).slice(0, 10).join(", ")}${sensitiveTypes.length > 0 ? `\nSensitive types: ${sensitiveTypes.map((t: { name: string }) => t.name).join(", ")}` : ""}`,
+            evidence: `Types: ${userTypes.map((t) => t.name).slice(0, 10).join(", ")}${sensitiveTypes.length > 0 ? `\nSensitive types: ${sensitiveTypes.map((t) => t.name).join(", ")}` : ""}`,
             remediation: "Disable introspection in production. For Apollo Server: new ApolloServer({ introspection: false })",
             cwe: "CWE-200",
             owasp: "A05:2021",
           });
         }
       }
-    } catch {
-      // skip
-    }
+    } catch { /* skip */ }
 
-    // Test for query depth limit
-    const deepQuery = JSON.stringify({
-      query: `{__schema{types{fields{type{fields{type{fields{type{name}}}}}}}}}`,
-    });
-    try {
-      const res = await scanFetch(endpoint, {
+    // Test depth limit, batch queries, and alias abuse in parallel
+    const [depthRes, batchRes, aliasRes] = await Promise.allSettled([
+      // Depth limit test
+      scanFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: deepQuery,
-      });
-      if (res.ok) {
-        const data = await res.json() as { data?: unknown; errors?: unknown[] };
-        // Only flag if the deep query actually succeeded (not rejected by depth limiter)
+        body: JSON.stringify({ query: `{__schema{types{fields{type{fields{type{fields{type{name}}}}}}}}}` }),
+      }),
+      // Batch query test
+      scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Array.from({ length: 20 }, () => ({ query: `{__typename}` }))),
+      }),
+      // Alias abuse test — 50 aliased fields in a single query
+      scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: `{${Array.from({ length: 50 }, (_, i) => `a${i}:__typename`).join(" ")}}` }),
+      }),
+    ]);
+
+    if (depthRes.status === "fulfilled" && depthRes.value.ok) {
+      try {
+        const data = await depthRes.value.json() as { data?: unknown; errors?: unknown[] };
         if (data?.data && !data?.errors) {
-          findings.push({
-            id: `graphql-no-depth-limit-${findings.length}`,
+          endpointFindings.push({
+            id: `graphql-no-depth-limit-${endpoint}`,
             module: "GraphQL",
             severity: "medium",
             title: "No GraphQL query depth limit",
@@ -104,26 +116,15 @@ export const graphqlModule: ScanModule = async (target) => {
             cwe: "CWE-400",
           });
         }
-      }
-    } catch {
-      // skip
+      } catch { /* skip */ }
     }
 
-    // Test batch query (DoS vector)
-    const batchQuery = JSON.stringify(
-      Array.from({ length: 20 }, () => ({ query: `{__typename}` })),
-    );
-    try {
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: batchQuery,
-      });
-      if (res.ok) {
-        const data = await res.json();
+    if (batchRes.status === "fulfilled" && batchRes.value.ok) {
+      try {
+        const data = await batchRes.value.json();
         if (Array.isArray(data) && data.length >= 10) {
-          findings.push({
-            id: `graphql-batch-${findings.length}`,
+          endpointFindings.push({
+            id: `graphql-batch-${endpoint}`,
             module: "GraphQL",
             severity: "medium",
             title: "GraphQL batch queries allowed",
@@ -133,10 +134,34 @@ export const graphqlModule: ScanModule = async (target) => {
             cwe: "CWE-400",
           });
         }
-      }
-    } catch {
-      // skip
+      } catch { /* skip */ }
     }
+
+    if (aliasRes.status === "fulfilled" && aliasRes.value.ok) {
+      try {
+        const data = await aliasRes.value.json() as { data?: Record<string, unknown>; errors?: unknown[] };
+        const aliasCount = data?.data ? Object.keys(data.data).length : 0;
+        if (aliasCount >= 40 && !data?.errors) {
+          endpointFindings.push({
+            id: `graphql-alias-abuse-${endpoint}`,
+            module: "GraphQL",
+            severity: "medium",
+            title: "No GraphQL alias limit",
+            description: `The server accepts queries with ${aliasCount} aliased fields. Attackers can use aliases to multiply query cost and bypass per-field rate limits.`,
+            evidence: `Query with 50 aliases accepted, ${aliasCount} fields returned at ${endpoint}`,
+            remediation: "Implement alias limits or query cost analysis. Libraries like graphql-query-complexity can help.",
+            cwe: "CWE-400",
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    return endpointFindings;
+  });
+
+  const results = await Promise.allSettled(endpointTests);
+  for (const r of results) {
+    if (r.status === "fulfilled") findings.push(...r.value);
   }
 
   return findings;
