@@ -901,6 +901,9 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               if (techs.some((t) => t.includes("convex"))) tips.push({ tech: "Convex", tip: "Use argument validation in mutations, never expose deploy keys client-side" });
               if (techs.some((t) => t.includes("clerk") || t.includes("auth0"))) tips.push({ tech: "Auth Provider", tip: "Verify JWT signatures server-side, restrict redirect URIs, enable MFA" });
               if (techs.some((t) => t.includes("mongodb") || t.includes("prisma"))) tips.push({ tech: "Database", tip: "Use parameterized queries, validate input types, never expose connection strings" });
+              if (techs.some((t) => t.includes("sentry"))) tips.push({ tech: "Sentry", tip: "Configure allowed origins for DSN, strip PII from error reports" });
+              if (techs.some((t) => t.includes("deepseek") || t.includes("groq") || t.includes("replicate") || t.includes("google ai"))) tips.push({ tech: "AI Provider", tip: "Proxy all API calls through backend, add per-user rate limits, set billing alerts" });
+              if (techs.some((t) => t.includes("lemon"))) tips.push({ tech: "Lemon Squeezy", tip: "Verify webhook signatures, validate prices server-side, protect API keys" });
               if (tips.length === 0) return null;
               return (
                 <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">

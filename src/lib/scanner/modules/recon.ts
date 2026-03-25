@@ -59,6 +59,19 @@ const TECH_SIGNATURES: Record<string, RegExp[]> = {
   tRPC: [/trpc/i, /\.trpc\./i],
   Neon: [/neon\.tech/i, /neondb/i],
   Turso: [/turso/i, /\.turso\.io/i],
+  "Lemon Squeezy": [/lemonsqueezy/i, /\.lemonsqueezy\.com/i],
+  Sentry: [/sentry/i, /\.sentry\.io/i, /Sentry\.init/i],
+  PostHog: [/posthog/i, /\.posthog\.com/i],
+  Plausible: [/plausible/i, /plausible\.io/i],
+  "Radix UI": [/radix-ui/i, /@radix/i],
+  Shadcn: [/shadcn/i, /\bcn\(/],
+  Zustand: [/zustand/i],
+  "React Query": [/tanstack.*query/i, /react-query/i],
+  Zod: [/\bzod\b/i, /z\.object/],
+  "Google AI": [/generativelanguage\.googleapis/i, /gemini/i],
+  DeepSeek: [/deepseek/i, /api\.deepseek\.com/i],
+  Groq: [/groq/i, /api\.groq\.com/i],
+  Replicate: [/replicate/i, /api\.replicate\.com/i],
 };
 
 export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
