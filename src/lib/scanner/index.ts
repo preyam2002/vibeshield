@@ -209,17 +209,13 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   if (mode === "quick") {
     await Promise.all(QUICK_MODULES.map(runModule));
   } else {
-    const BATCH_SIZE = 15;
+    const BATCH_SIZE = 21;
     for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
       const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
       await Promise.all(batch.map(runModule));
     }
     if (mode === "full") {
-      // Run stress modules in small batches (not fully parallel to avoid overwhelming target)
-      for (let i = 0; i < STRESS_MODULES.length; i += 3) {
-        const batch = STRESS_MODULES.slice(i, i + 3);
-        await Promise.all(batch.map(runModule));
-      }
+      await Promise.all(STRESS_MODULES.map(runModule));
     }
   }
 

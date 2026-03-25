@@ -102,6 +102,9 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
             lines.push(`<details><summary>Evidence</summary>`, ``, "```", f.evidence, "```", ``, `</details>`, ``);
           }
           lines.push(`**Remediation:** ${f.remediation}`, ``);
+          if (f.codeSnippet) {
+            lines.push(`<details><summary>Code Fix</summary>`, ``, "```ts", f.codeSnippet, "```", ``, `</details>`, ``);
+          }
           if (f.cwe || f.owasp) {
             const refs = [f.cwe, f.owasp ? `OWASP ${f.owasp}` : ""].filter(Boolean).join(" | ");
             lines.push(`*${refs}*`, ``);

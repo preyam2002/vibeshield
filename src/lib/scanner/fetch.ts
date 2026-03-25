@@ -1,6 +1,6 @@
 // Global concurrency-limited fetch with retry logic
 let active = 0;
-const MAX_CONCURRENT = 12;
+const MAX_CONCURRENT = 20;
 const queue: (() => void)[] = [];
 
 // Response cache for identical GET requests within a scan

@@ -6,6 +6,9 @@ const REDIRECT_PARAMS = [
   "return_to", "returnTo", "next", "url", "target", "rurl",
   "dest", "destination", "redir", "redirect_to", "callback",
   "callbackUrl", "go", "goto", "link", "navigate",
+  "next_url", "back_url", "back", "continue", "continueTo",
+  "forward", "to", "out", "view", "login_redirect",
+  "fallback", "exit_url", "service_url", "ref",
 ];
 
 const EVIL_URLS = [
@@ -22,8 +25,8 @@ const EVIL_URLS = [
 export const openRedirectModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // Test redirect parameters on a subset of pages and endpoints
-  const testUrls = [target.url, ...target.pages.slice(0, 3), ...target.apiEndpoints.slice(0, 3)];
+  // Test redirect parameters on pages and endpoints
+  const testUrls = [target.url, ...target.pages.slice(0, 8), ...target.apiEndpoints.slice(0, 8)];
   const foundPaths = new Set<string>();
   const MAX_FINDINGS = 3;
 
@@ -68,6 +71,7 @@ export const openRedirectModule: ScanModule = async (target) => {
           remediation: "Validate redirect URLs against a whitelist of allowed domains. Never redirect to user-controlled URLs.",
           cwe: "CWE-601",
           owasp: "A01:2021",
+          codeSnippet: `// Validate redirect URL\nconst ALLOWED_HOSTS = [new URL(process.env.APP_URL!).hostname];\nconst redirectUrl = new URL(userInput, process.env.APP_URL);\nif (!ALLOWED_HOSTS.includes(redirectUrl.hostname)) {\n  return Response.redirect(process.env.APP_URL!);\n}\nreturn Response.redirect(redirectUrl.href);`,
         });
         break;
       }

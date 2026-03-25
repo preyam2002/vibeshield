@@ -31,6 +31,7 @@ const findingHtml = (f: Finding) => `
   <p class="finding-desc">${escapeHtml(f.description)}</p>
   ${f.evidence ? `<div class="evidence"><strong>Evidence</strong><pre>${escapeHtml(f.evidence)}</pre></div>` : ""}
   <div class="remediation"><strong>Fix:</strong> ${escapeHtml(f.remediation)}</div>
+  ${f.codeSnippet ? `<div class="code-fix"><strong>Code Fix:</strong><pre class="code-snippet">${escapeHtml(f.codeSnippet)}</pre></div>` : ""}
   ${f.cwe || f.owasp ? `<div class="refs">${[f.cwe, f.owasp ? `OWASP ${f.owasp}` : ""].filter(Boolean).join(" · ")}</div>` : ""}
 </div>`;
 
@@ -98,6 +99,8 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
   .evidence { margin: 6px 0; }
   .evidence pre { background: #1a1a2e; color: #e5e7eb; padding: 8px; border-radius: 4px; font-size: 9px; overflow-wrap: break-word; white-space: pre-wrap; max-height: 120px; overflow: hidden; }
   .remediation { color: #047857; font-size: 11px; margin-top: 4px; }
+  .code-fix { margin-top: 6px; }
+  .code-snippet { background: #ecfdf5; color: #065f46; padding: 8px; border-radius: 4px; font-size: 9px; overflow-wrap: break-word; white-space: pre-wrap; border: 1px solid #a7f3d0; }
   .refs { font-size: 9px; color: #9ca3af; margin-top: 4px; }
   .modules-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 10px; }
   .modules-table th { text-align: left; background: #f3f4f6; padding: 4px 8px; border: 1px solid #e5e7eb; }
