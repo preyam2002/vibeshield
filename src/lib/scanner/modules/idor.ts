@@ -170,5 +170,100 @@ export const idorModule: ScanModule = async (target) => {
     });
   }
 
+  // Phase 3: HTTP method-based IDOR — test if changing GET to PUT/DELETE works without auth
+  const methodTestEndpoints = idEndpoints.slice(0, 5).filter((ep) => ep.currentId > 0 && !PUBLIC_RESOURCE_PATTERNS.test(ep.base));
+  const methodResults = await Promise.allSettled(
+    methodTestEndpoints.map(async (ep) => {
+      const testUrl = `${ep.base}/${ep.currentId}`;
+      const methods = ["PUT", "PATCH", "DELETE"] as const;
+      const results = await Promise.allSettled(
+        methods.map(async (method) => {
+          const res = await scanFetch(testUrl, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: method !== "DELETE" ? JSON.stringify({ id: ep.currentId }) : undefined,
+            timeoutMs: 5000,
+          });
+          // 2xx or 405 with allow header listing the method = method accepted
+          if (res.ok) return { method, status: res.status };
+          // Some servers return 200/204 for DELETE without checking auth
+          if (method === "DELETE" && res.status === 204) return { method, status: res.status };
+          return null;
+        }),
+      );
+      const accepted = results.filter((r) => r.status === "fulfilled" && r.value).map((r) => (r as PromiseFulfilledResult<{ method: string; status: number }>).value);
+      if (accepted.length > 0) return { base: ep.base, id: ep.currentId, methods: accepted };
+      return null;
+    }),
+  );
+
+  for (const r of methodResults) {
+    if (findings.length >= MAX_IDOR_FINDINGS + 2) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const hasDangerous = v.methods.some((m) => m.method === "DELETE");
+    findings.push({
+      id: `idor-method-${findings.length}`, module: "IDOR",
+      severity: hasDangerous ? "critical" : "high",
+      title: `${v.methods.map((m) => m.method).join("/")} accepted without auth on ${v.base}/[id]`,
+      description: `The endpoint accepts ${v.methods.map((m) => `${m.method} (→${m.status})`).join(", ")} requests on resource IDs without apparent authentication. ${hasDangerous ? "DELETE access enables arbitrary resource deletion." : "Write access enables unauthorized data modification."}`,
+      evidence: v.methods.map((m) => `${m.method} ${v.base}/${v.id} → ${m.status}`).join("\n"),
+      remediation: "Require authentication and ownership verification for all state-changing operations on resources.",
+      cwe: "CWE-639", owasp: "A01:2021",
+      codeSnippet: `// Verify auth + ownership for mutations\nexport async function DELETE(req: Request, { params }) {\n  const user = await getAuthUser(req);\n  if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  const resource = await db.findById(params.id);\n  if (resource.userId !== user.id) return Response.json({ error: "Forbidden" }, { status: 403 });\n  await db.delete(params.id);\n  return new Response(null, { status: 204 });\n}`,
+    });
+  }
+
+  // Phase 4: Role/privilege escalation via body parameter injection
+  const roleEndpoints = target.apiEndpoints.filter((ep) =>
+    /\/(users?|profile|account|settings|me)\b/i.test(ep) && !/\/(login|register|signup|reset)/i.test(ep),
+  ).slice(0, 3);
+
+  const roleResults = await Promise.allSettled(
+    roleEndpoints.map(async (endpoint) => {
+      const escalationPayloads = [
+        { role: "admin" },
+        { isAdmin: true },
+        { admin: true },
+        { permissions: ["admin", "write", "delete"] },
+        { user_type: "admin" },
+        { privilege: "superuser" },
+      ];
+      for (const payload of escalationPayloads) {
+        const res = await scanFetch(endpoint, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          timeoutMs: 5000,
+        });
+        if (res.ok) {
+          const text = await res.text();
+          // Check if the response reflects the escalated role
+          const payloadKey = Object.keys(payload)[0];
+          if (text.includes('"admin"') || text.includes('"superuser"') || text.includes(`"${payloadKey}"`)) {
+            return { endpoint, payload: payloadKey, pathname: new URL(endpoint).pathname };
+          }
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of roleResults) {
+    if (findings.length >= MAX_IDOR_FINDINGS + 3) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `idor-role-escalation-${findings.length}`, module: "IDOR",
+      severity: "critical",
+      title: `Privilege escalation via ${v.payload} parameter on ${v.pathname}`,
+      description: `PATCH request with "${v.payload}" field was accepted and reflected in the response. Users may be able to escalate their own privileges by injecting role fields in profile update requests.`,
+      evidence: `PATCH ${v.endpoint}\nBody: {"${v.payload}": ...}\nResponse reflects escalated privilege`,
+      remediation: "Never trust client-supplied role/permission fields. Use an allowlist of updatable fields and derive roles from server-side logic only.",
+      cwe: "CWE-269", owasp: "A01:2021",
+      codeSnippet: `// Allowlist updatable fields — never allow role changes\nconst ALLOWED_FIELDS = ["name", "email", "avatar"];\nexport async function PATCH(req: Request) {\n  const body = await req.json();\n  const updates = Object.fromEntries(\n    Object.entries(body).filter(([k]) => ALLOWED_FIELDS.includes(k))\n  );\n  await db.user.update({ where: { id: session.userId }, data: updates });\n}`,
+    });
+  }
+
   return findings;
 };
