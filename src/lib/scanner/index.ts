@@ -60,6 +60,7 @@ import { businessLogicModule } from "./modules/business-logic";
 import { oauthModule } from "./modules/oauth";
 import { apiVersioningModule } from "./modules/api-versioning";
 import { cspModule } from "./modules/csp";
+import { storageModule } from "./modules/storage";
 
 // Ordered by signal-to-time ratio: fastest/highest-signal modules first
 const SECURITY_MODULES: ScanModuleDefinition[] = [
@@ -106,6 +107,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Cache Poisoning", description: "Test for CDN/proxy cache poisoning via header injection", category: "security", run: cachePoisoningModule },
   { name: "Business Logic", description: "Test for negative values, zero-price bypass, and idempotency issues", category: "security", run: businessLogicModule },
   { name: "API Versioning", description: "Detect hidden API versions, path normalization bypass, and endpoint shadowing", category: "security", run: apiVersioningModule },
+  { name: "Cloud Storage", description: "Check for misconfigured S3/GCS/Azure storage buckets", category: "security", run: storageModule },
   { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
 ];
 
@@ -320,24 +322,39 @@ const sendCallback = async (callbackUrl: string, scanId: string, gateConfig?: { 
     gate = { passed: reasons.length === 0, ...(reasons.length > 0 ? { reason: reasons.join("; ") } : {}) };
   }
 
-  try {
-    await fetch(callbackUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        event: scan.status === "failed" ? "scan.failed" : "scan.completed",
-        scanId: scan.id,
-        target: scan.target,
-        status: scan.status,
-        grade: scan.grade,
-        score: scan.score,
-        summary: scan.summary,
-        resultUrl: `/scan/${scan.id}`,
-        ...(scan.error ? { error: scan.error } : {}),
-        ...(gate ? { gate } : {}),
-      }),
-    });
-  } catch (err) {
-    console.error(`Callback to ${callbackUrl} failed:`, err);
+  // Module health summary
+  const failedModules = scan.modules.filter((m) => m.status === "failed").length;
+  const skippedModules = scan.modules.filter((m) => m.status === "skipped").length;
+
+  const payload = JSON.stringify({
+    event: scan.status === "failed" ? "scan.failed" : "scan.completed",
+    scanId: scan.id,
+    target: scan.target,
+    status: scan.status,
+    grade: scan.grade,
+    score: scan.score,
+    summary: scan.summary,
+    resultUrl: `/scan/${scan.id}`,
+    ...(scan.error ? { error: scan.error } : {}),
+    ...(gate ? { gate } : {}),
+    ...(failedModules > 0 || skippedModules > 0 ? { moduleHealth: { failed: failedModules, skipped: skippedModules, total: scan.modules.length } } : {}),
+  });
+
+  // Retry with exponential backoff (3 attempts)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(callbackUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      if (res.ok || res.status < 500) return; // Success or client error (don't retry 4xx)
+    } catch (err) {
+      if (attempt === 2) {
+        console.error(`Callback to ${callbackUrl} failed after 3 attempts:`, err);
+        return;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt))); // 1s, 2s, 4s
   }
 };

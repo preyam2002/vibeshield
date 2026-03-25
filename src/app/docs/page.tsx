@@ -93,8 +93,10 @@ curl ${baseUrl}/api/scan/abc-123/csv -o findings.csv`}
 #   "grade": "B+",
 #   "score": 78,
 #   "summary": {"critical": 0, "high": 1, "medium": 3, ...},
-#   "gate": {"passed": true}  // if minScore/failOnCritical set
-# }`}
+#   "gate": {"passed": true},  // if minScore/failOnCritical set
+#   "moduleHealth": {"failed": 0, "skipped": 0, "total": 48}  // if any modules failed/skipped
+# }
+# Callbacks retry up to 3x with exponential backoff on server errors.`}
           </pre>
         </section>
 

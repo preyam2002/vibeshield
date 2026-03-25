@@ -67,6 +67,39 @@ export const websocketModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for common WebSocket/Socket.IO namespaces
+  if (/socket\.io/i.test(allJs) || hasWsCode) {
+    const namespaces = ["/admin", "/dashboard", "/internal", "/debug", "/metrics", "/graphql", "/notifications", "/chat"];
+    const nsResults = await Promise.allSettled(
+      namespaces.map(async (ns) => {
+        const res = await scanFetch(`${target.baseUrl}/socket.io/?EIO=4&transport=polling&namespace=${encodeURIComponent(ns)}`, { timeoutMs: 5000 });
+        if (res.ok) {
+          const text = await res.text();
+          if (text.length > 5 && !text.includes("Invalid namespace")) return { ns, status: res.status };
+        }
+        return null;
+      }),
+    );
+    const foundNs: string[] = [];
+    for (const r of nsResults) {
+      if (r.status === "fulfilled" && r.value) foundNs.push(r.value.ns);
+    }
+    if (foundNs.length > 0) {
+      findings.push({
+        id: "websocket-hidden-namespaces",
+        module: "WebSocket",
+        severity: foundNs.some((n) => /admin|internal|debug/.test(n)) ? "high" : "medium",
+        title: `${foundNs.length} hidden Socket.IO namespace${foundNs.length > 1 ? "s" : ""} accessible`,
+        description: `Found accessible Socket.IO namespaces: ${foundNs.join(", ")}. These may expose admin functionality or internal data without authentication.`,
+        evidence: `Accessible namespaces:\n${foundNs.map((n) => `  ${n} → 200 OK`).join("\n")}`,
+        remediation: "Add authentication middleware to all Socket.IO namespaces, especially admin and internal ones.",
+        cwe: "CWE-306",
+        owasp: "A01:2021",
+        codeSnippet: `// Protect all namespaces\nconst adminNs = io.of("/admin");\nadminNs.use((socket, next) => {\n  const token = socket.handshake.auth.token;\n  if (!verifyAdmin(token)) return next(new Error("Unauthorized"));\n  next();\n});`,
+      });
+    }
+  }
+
   // Test WebSocket upgrade without auth on discovered WS URLs
   if (wsMatches) {
     const wsUrls = [...new Set(wsMatches)].slice(0, 3);
@@ -97,6 +130,46 @@ export const websocketModule: ScanModule = async (target) => {
           remediation: "Require authentication tokens in the WebSocket handshake (query param or cookie).",
           cwe: "CWE-306", owasp: "A07:2021",
           codeSnippet: `// Verify auth during WebSocket upgrade\nconst wss = new WebSocketServer({ noServer: true });\nserver.on("upgrade", (req, socket, head) => {\n  const token = new URL(req.url, "http://x").searchParams.get("token");\n  if (!verifyJWT(token)) { socket.destroy(); return; }\n  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));\n});`,
+        });
+        break;
+      }
+    }
+  }
+
+  // Cross-Site WebSocket Hijacking: test if WS upgrade works with a foreign origin
+  if (wsMatches) {
+    const wsUrls = [...new Set(wsMatches)].slice(0, 2);
+    const cswhResults = await Promise.allSettled(
+      wsUrls.map(async (wsUrl) => {
+        const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://");
+        const res = await scanFetch(httpUrl, {
+          headers: {
+            Upgrade: "websocket",
+            Connection: "Upgrade",
+            "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version": "13",
+            Origin: "https://evil-attacker.com",
+          },
+          timeoutMs: 5000,
+        });
+        return { wsUrl, status: res.status, upgrade: res.headers.get("upgrade") };
+      }),
+    );
+    for (const r of cswhResults) {
+      if (r.status !== "fulfilled") continue;
+      const v = r.value;
+      if (v.status === 101 || v.upgrade?.toLowerCase() === "websocket") {
+        findings.push({
+          id: "websocket-cswsh",
+          module: "WebSocket",
+          severity: "high",
+          title: "Cross-Site WebSocket Hijacking (CSWSH)",
+          description: `The WebSocket endpoint ${v.wsUrl} accepts upgrade requests from any Origin. An attacker's website can establish a WebSocket connection to your server using the victim's cookies, enabling real-time data theft.`,
+          evidence: `Origin: https://evil-attacker.com\nUpgrade response: ${v.status} (accepted)`,
+          remediation: "Validate the Origin header during WebSocket handshake. Only accept connections from your own domain.",
+          cwe: "CWE-346",
+          owasp: "A07:2021",
+          codeSnippet: `// Validate origin during WebSocket upgrade\nconst wss = new WebSocketServer({ noServer: true });\nconst ALLOWED_ORIGINS = ["https://yourdomain.com"];\nserver.on("upgrade", (req, socket, head) => {\n  const origin = req.headers.origin || "";\n  if (!ALLOWED_ORIGINS.includes(origin)) {\n    socket.write("HTTP/1.1 403 Forbidden\\r\\n\\r\\n");\n    socket.destroy();\n    return;\n  }\n  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));\n});`,
         });
         break;
       }

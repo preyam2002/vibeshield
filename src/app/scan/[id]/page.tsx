@@ -677,6 +677,34 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
           </div>
         )}
 
+        {/* Module health warning */}
+        {!isRunning && scan.status === "completed" && (() => {
+          const failed = scan.modules.filter((m) => m.status === "failed");
+          const skipped = scan.modules.filter((m) => m.status === "skipped");
+          if (failed.length === 0 && skipped.length === 0) return null;
+          const circuitBroken = skipped.length >= 4;
+          return (
+            <div className="mb-4 bg-zinc-800/30 border border-zinc-700/30 rounded-xl p-3 flex items-start gap-3">
+              <span className="text-zinc-500 text-sm mt-0.5">⚡</span>
+              <div className="text-xs text-zinc-500 space-y-1">
+                {failed.length > 0 && (
+                  <div>
+                    <span className="text-zinc-400">{failed.length} module{failed.length !== 1 ? "s" : ""} failed:</span>{" "}
+                    {failed.map((m) => m.name).join(", ")}
+                  </div>
+                )}
+                {skipped.length > 0 && (
+                  <div>
+                    <span className="text-zinc-400">{skipped.length} module{skipped.length !== 1 ? "s" : ""} skipped</span>
+                    {circuitBroken && " — target became unresponsive, remaining modules were skipped"}
+                  </div>
+                )}
+                <div className="text-zinc-600">Results may be incomplete. Try rescanning if the target was temporarily unavailable.</div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Quick scan upsell */}
         {!isRunning && scan.status === "completed" && scan.mode === "quick" && scan.summary.total > 0 && (
           <div className="mb-4 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center justify-between gap-3">
@@ -1147,6 +1175,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 "API Security": "API endpoints hardened",
                 "Information Leakage": "No info leaks in errors",
                 "GraphQL": "GraphQL security configured",
+                "Cloud Storage": "No public storage buckets",
               };
 
               for (const mod of modules) {
