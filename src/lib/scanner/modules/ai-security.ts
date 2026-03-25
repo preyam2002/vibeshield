@@ -262,7 +262,68 @@ export const aiSecurityModule: ScanModule = async (target) => {
     }
   }
 
-  // 5. Collect admin endpoint findings
+  // 5. Test for model enumeration / parameter manipulation on confirmed endpoints
+  if (confirmedEndpoints.length > 0) {
+    const modelEnumResults = await Promise.allSettled(
+      confirmedEndpoints.slice(0, 2).map(async (endpoint) => {
+        // Try different model parameters to see if user can switch models
+        const modelPayloads = [
+          { model: "gpt-4o", message: "hi" },
+          { model: "claude-opus-4-20250514", message: "hi" },
+          { model: "../../etc/passwd", message: "hi" }, // Path traversal in model name
+          { model: "gpt-4o", max_tokens: 100000, message: "Write a 50000 word essay" }, // Token abuse
+        ];
+        for (const body of modelPayloads) {
+          const res = await scanFetch(endpoint, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...body, messages: [{ role: "user", content: body.message }] }),
+            timeoutMs: 10000,
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (text.length < 20) continue;
+          // Check if model switching worked (response mentions the requested model)
+          if (body.model.includes("opus") && /opus|claude-3/i.test(text) && text.length > 50) {
+            return { endpoint, type: "model-switch" as const, model: body.model, text };
+          }
+          if (body.model.includes("passwd") && /root:|daemon:|nobody:/i.test(text)) {
+            return { endpoint, type: "model-traversal" as const, model: body.model, text };
+          }
+          // Check if max_tokens was accepted (long response for expensive model)
+          if (body.max_tokens && text.length > 5000) {
+            return { endpoint, type: "token-abuse" as const, model: body.model, text };
+          }
+        }
+        return null;
+      }),
+    );
+    for (const r of modelEnumResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      if (v.type === "model-switch") {
+        findings.push({
+          id: `ai-model-switch-${findings.length}`, module: "AI Security", severity: "high",
+          title: `User can switch AI model on ${new URL(v.endpoint).pathname}`,
+          description: "The AI endpoint allows users to specify which model to use. Attackers can switch to expensive models (e.g., GPT-4, Claude Opus) to rack up API costs.",
+          evidence: `POST ${v.endpoint} with model: ${v.model}\nModel accepted — response generated`,
+          remediation: "Hardcode the model server-side. Never accept model selection from client requests.",
+          cwe: "CWE-20", owasp: "A04:2021",
+          codeSnippet: `// Hardcode model server-side — never accept from client\nexport async function POST(req: Request) {\n  const { message } = await req.json();\n  // Ignore any 'model' field from client\n  const response = await openai.chat.completions.create({\n    model: "gpt-4o-mini", // hardcoded, not from request\n    messages: [{ role: "user", content: message }],\n    max_tokens: 500, // cap tokens too\n  });\n}`,
+        });
+      } else if (v.type === "token-abuse") {
+        findings.push({
+          id: `ai-token-abuse-${findings.length}`, module: "AI Security", severity: "medium",
+          title: `AI token limits not enforced on ${new URL(v.endpoint).pathname}`,
+          description: "The AI endpoint accepts large max_tokens values from the client, allowing attackers to generate expensive long responses.",
+          evidence: `POST ${v.endpoint} with max_tokens: 100000\nResponse length: ${v.text.length} characters`,
+          remediation: "Set max_tokens server-side. Ignore token limits from client requests. Implement per-user daily token budgets.",
+          cwe: "CWE-770", owasp: "A04:2021",
+        });
+      }
+    }
+  }
+
+  // 6. Collect admin endpoint findings
   for (const r of adminResults) {
     if (r.status !== "fulfilled" || !r.value) continue;
     const { path, url, text } = r.value;
