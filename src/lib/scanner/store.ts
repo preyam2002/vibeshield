@@ -167,7 +167,7 @@ export const getStats = () => {
     completedScans: completed.length,
     totalFindings,
     totalCritical,
-    uniqueTargets: new Set(all.map((s) => new URL(s.target).hostname)).size,
+    uniqueTargets: new Set(all.map((s) => { try { return new URL(s.target).hostname; } catch { return s.target; } })).size,
   };
 };
 

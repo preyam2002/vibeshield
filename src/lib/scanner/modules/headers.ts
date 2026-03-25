@@ -134,87 +134,9 @@ export const headersModule: ScanModule = async (target) => {
     });
   }
 
-  // Check CSP quality if present
-  const csp = target.headers["content-security-policy"];
-  if (csp) {
-    if (csp.includes("'unsafe-inline'") && csp.includes("script-src")) {
-      findings.push({
-        id: "headers-csp-unsafe-inline",
-        module: "Security Headers",
-        severity: "medium",
-        title: "CSP allows unsafe-inline scripts",
-        description:
-          "Your Content-Security-Policy includes 'unsafe-inline' for scripts, which defeats most of the XSS protection CSP provides.",
-        evidence: `CSP: ${csp.substring(0, 200)}`,
-        remediation:
-          "Remove 'unsafe-inline' from script-src and use nonces or hashes instead.",
-        cwe: "CWE-693",
-      });
-    }
-    if (csp.includes("'unsafe-eval'")) {
-      findings.push({
-        id: "headers-csp-unsafe-eval",
-        module: "Security Headers",
-        severity: "medium",
-        title: "CSP allows unsafe-eval",
-        description:
-          "Your CSP includes 'unsafe-eval', allowing eval() and similar dangerous functions that attackers can exploit.",
-        evidence: `CSP: ${csp.substring(0, 200)}`,
-        remediation: "Remove 'unsafe-eval' from your CSP.",
-        cwe: "CWE-693",
-      });
-    }
-    // Wildcard script sources
-    const scriptSrc = csp.match(/script-src\s+([^;]+)/)?.[1] || "";
-    const defaultSrc = csp.match(/default-src\s+([^;]+)/)?.[1] || "";
-    const effectiveScriptSrc = scriptSrc || defaultSrc;
-    if (/\*(?!\.)/.test(effectiveScriptSrc) || effectiveScriptSrc.includes("https:")) {
-      findings.push({
-        id: "headers-csp-wildcard-script",
-        module: "Security Headers",
-        severity: "high",
-        title: "CSP script-src allows wildcard or any HTTPS source",
-        description: "Your CSP allows loading scripts from any origin (via * or https:), making it trivially bypassable for XSS.",
-        evidence: `Effective script-src: ${effectiveScriptSrc.substring(0, 200)}`,
-        remediation: "Restrict script-src to specific trusted domains.",
-        cwe: "CWE-693",
-        owasp: "A05:2021",
-      });
-    }
-    // data: URI in script-src enables XSS
-    if (effectiveScriptSrc.includes("data:")) {
-      findings.push({
-        id: "headers-csp-data-script",
-        module: "Security Headers",
-        severity: "high",
-        title: "CSP script-src allows data: URIs",
-        description: "Allowing data: URIs in script-src lets attackers inject scripts via data:text/javascript payloads.",
-        evidence: `Effective script-src: ${effectiveScriptSrc.substring(0, 200)}`,
-        remediation: "Remove data: from script-src.",
-        cwe: "CWE-693",
-        owasp: "A05:2021",
-      });
-    }
-
-    // Check for missing critical CSP directives
-    const missingDirectives: { name: string; why: string }[] = [];
-    if (!csp.includes("base-uri")) missingDirectives.push({ name: "base-uri", why: "allows <base> tag injection to redirect relative URLs" });
-    if (!csp.includes("form-action")) missingDirectives.push({ name: "form-action", why: "allows forms to submit to attacker-controlled URLs" });
-    if (!csp.includes("object-src") && !defaultSrc.includes("'none'")) missingDirectives.push({ name: "object-src", why: "allows Flash/Java plugins that bypass CSP" });
-    if (missingDirectives.length > 0) {
-      findings.push({
-        id: "headers-csp-missing-directives",
-        module: "Security Headers",
-        severity: "low",
-        title: `CSP missing ${missingDirectives.length} recommended directive${missingDirectives.length > 1 ? "s" : ""}`,
-        description: `Your CSP is missing: ${missingDirectives.map((d) => `${d.name} (${d.why})`).join("; ")}.`,
-        evidence: `CSP: ${csp.substring(0, 300)}`,
-        remediation: `Add: ${missingDirectives.map((d) => `${d.name} 'self'`).join("; ")}`,
-        cwe: "CWE-693",
-        owasp: "A05:2021",
-      });
-    }
-  }
+  // Note: Detailed CSP analysis (unsafe-inline, unsafe-eval, CDN bypasses, etc.)
+  // is handled by the dedicated CSP Analysis module. Headers module only flags
+  // the missing header itself (above).
 
   // SRI check for external scripts
   const sriFinding = checkSriMissing(target);
