@@ -135,6 +135,28 @@ const CHECKS: DirCheck[] = [
   { path: "/fly.toml", severity: "medium", title: "Fly.io config exposed", description: "Fly.io deployment config reveals app name, region, and service settings.", remediation: "Block access to fly.toml.", contentCheck: /app|primary_region/i },
   { path: "/railway.json", severity: "medium", title: "Railway config exposed", description: "Railway deployment config is accessible.", remediation: "Block access to railway.json.", contentCheck: /\{/ },
   { path: "/.env.sentry-build-plugin", severity: "high", title: "Sentry build plugin env exposed", description: "Sentry build env may contain auth tokens.", remediation: "Block access to .env files.", contentCheck: /SENTRY/ },
+
+  // AI coding assistant artifacts
+  { path: "/.claude/CLAUDE.md", severity: "low", title: "Claude Code memory exposed", description: "Claude Code project memory file reveals architecture decisions and coding conventions.", remediation: "Block access to .claude/ directory." },
+  { path: "/.windsurf/rules", severity: "low", title: "Windsurf rules exposed", description: "Windsurf AI coding rules reveal project architecture.", remediation: "Block access to dotfiles." },
+  { path: "/.bolt", severity: "low", title: "Bolt project config exposed", description: "Bolt.new project configuration is accessible.", remediation: "Block access to dotfiles." },
+  { path: "/codegen.yml", severity: "low", title: "GraphQL Codegen config exposed", description: "GraphQL code generation config reveals API schema and endpoints.", remediation: "Block access to config files.", contentCheck: /schema|generates|documents/i },
+
+  // Modern deployment/infra
+  { path: "/render.yaml", severity: "medium", title: "Render config exposed", description: "Render deployment config reveals service architecture, env vars, and scaling settings.", remediation: "Block access to render.yaml.", contentCheck: /services|envVars/i },
+  { path: "/coolify.json", severity: "medium", title: "Coolify config exposed", description: "Coolify self-hosted deployment config is accessible.", remediation: "Block access to coolify.json.", contentCheck: /\{/ },
+  { path: "/kamal.yml", severity: "medium", title: "Kamal deploy config exposed", description: "Kamal deployment config may contain server addresses, registry credentials.", remediation: "Block access to kamal.yml.", contentCheck: /service|image|servers/i },
+  { path: "/.kamal/secrets", severity: "critical", title: "Kamal secrets file exposed", description: "Kamal deployment secrets are publicly accessible.", remediation: "Immediately rotate all credentials. Block .kamal/ directory.", contentCheck: /=/ },
+
+  // More backup patterns common in vibe-coded apps
+  { path: "/db.json", severity: "high", title: "JSON database exposed", description: "A JSON database file (lowdb/json-server) is publicly accessible.", remediation: "Move outside web root or behind authentication.", contentCheck: /\{|\[/ },
+  { path: "/data.db", severity: "critical", title: "SQLite database exposed", description: "SQLite database file is publicly downloadable.", remediation: "Move outside web root." },
+  { path: "/dev.db", severity: "critical", title: "Dev SQLite database exposed", description: "Development database is publicly accessible — may contain test credentials or real data.", remediation: "Remove from production deployment." },
+  { path: "/prisma/dev.db", severity: "critical", title: "Prisma dev.db exposed", description: "Prisma development SQLite database is accessible.", remediation: "Remove dev.db from production. Block /prisma/ directory." },
+
+  // Source maps (explicit check for production builds)
+  { path: "/main.js.map", severity: "medium", title: "Source map at root", description: "JavaScript source map at root exposes original source code.", remediation: "Remove .map files from production builds." },
+  { path: "/app.js.map", severity: "medium", title: "Source map at root", description: "JavaScript source map exposes original source code.", remediation: "Remove .map files from production builds." },
 ];
 
 export const directoriesModule: ScanModule = async (target) => {
