@@ -262,13 +262,13 @@ const TOOL_CHECKS: ToolCheck[] = [
     description: "Vite development server is running in production. This exposes source code and HMR functionality.",
     remediation: "Deploy production builds, not the Vite dev server. Run `vite build` for production.",
   },
-  // Convex dashboard
+  // Convex config
   {
-    path: "/.convex",
-    name: "Convex Dashboard",
-    contentPatterns: [/convex/i, /function/i, /table/i, /schema/i],
+    path: "/.convex/_generated/api.js",
+    name: "Convex Generated API",
+    contentPatterns: [/convex/i, /mutation/i, /query/i, /action/i],
     severity: "high",
-    description: "Convex backend dashboard or configuration is accessible.",
+    description: "Convex generated API code is publicly accessible, revealing all backend functions and their signatures.",
     remediation: "Block access to .convex directory in production.",
   },
 ];
