@@ -13,6 +13,13 @@ const ERROR_PATTERNS: { pattern: RegExp; tech: string }[] = [
   { pattern: /pg_connect|pg_query/i, tech: "PostgreSQL" },
   { pattern: /mysql_connect|mysqli/i, tech: "MySQL" },
   { pattern: /at\s+.*\.java:\d+/i, tech: "Java" },
+  { pattern: /PrismaClientKnownRequestError|prisma\..*\.findUnique/i, tech: "Prisma" },
+  { pattern: /DrizzleError|drizzle-orm/i, tech: "Drizzle ORM" },
+  { pattern: /TRPCError|tRPC.*error/i, tech: "tRPC" },
+  { pattern: /SupabaseError|supabase.*error.*policy/i, tech: "Supabase" },
+  { pattern: /MongoServerError|MongoError/i, tech: "MongoDB" },
+  { pattern: /AxiosError.*ERR_/i, tech: "Axios" },
+  { pattern: /ConvexError|convex.*internal/i, tech: "Convex" },
 ];
 
 const SENSITIVE_INFO_PATTERNS: { pattern: RegExp; description: string }[] = [
@@ -21,6 +28,9 @@ const SENSITIVE_INFO_PATTERNS: { pattern: RegExp; description: string }[] = [
   { pattern: /debug\s*=\s*True|DEBUG\s*=\s*true/i, description: "Debug mode enabled" },
   { pattern: /django\.core|django\.db/i, description: "Django framework details" },
   { pattern: /express-session/i, description: "Express session details" },
+  { pattern: /DATABASE_URL|POSTGRES_|MYSQL_|REDIS_URL/i, description: "Database connection strings" },
+  { pattern: /node_modules\/.*\/lib\//i, description: "Node.js module paths" },
+  { pattern: /\.prisma\/client/i, description: "Prisma client internals" },
 ];
 
 export const infoLeakModule: ScanModule = async (target) => {
