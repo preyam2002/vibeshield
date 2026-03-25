@@ -136,6 +136,67 @@ export const websocketModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for Ably key exposure
+  const ablyMatch = allJs.match(/(?:ably|ABLY).*?["']([a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,})["']/i);
+  if (ablyMatch) {
+    const keyParts = ablyMatch[1].split(".");
+    findings.push({
+      id: "websocket-ably-key",
+      module: "WebSocket",
+      severity: keyParts.length > 1 && keyParts[1].length > 10 ? "high" : "info",
+      title: keyParts.length > 1 && keyParts[1].length > 10
+        ? "Ably API key with secret exposed in client code"
+        : "Ably API key found",
+      description: keyParts.length > 1 && keyParts[1].length > 10
+        ? "A full Ably API key (including the secret) is exposed in client code. This allows publishing to any channel and accessing all channel history."
+        : "Ably key is in client code. Ensure only subscribe-only token auth is used client-side.",
+      evidence: `Key: ${ablyMatch[1].substring(0, 10)}...`,
+      remediation: "Use Ably token auth on the client. Generate tokens server-side with restricted capabilities (subscribe only).",
+      cwe: "CWE-798",
+      codeSnippet: `// Server-side token generation\nconst ably = new Ably.Rest(process.env.ABLY_API_KEY!);\nexport async function POST(req: Request) {\n  const session = await auth();\n  if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  const tokenRequest = await ably.auth.createTokenRequest({\n    capability: { "public:*": ["subscribe"] }, // subscribe only\n  });\n  return Response.json(tokenRequest);\n}`,
+    });
+  }
+
+  // Check for Supabase Realtime or LiveBlocks keys
+  const liveblocksMatch = allJs.match(/pk_(?:live|test)_[a-zA-Z0-9_-]{20,}/);
+  if (liveblocksMatch) {
+    findings.push({
+      id: "websocket-liveblocks-key",
+      module: "WebSocket",
+      severity: "info",
+      title: "Liveblocks public key found",
+      description: "Liveblocks public key is in client code (expected). Ensure room-level auth is configured to prevent unauthorized access.",
+      evidence: `Key: ${liveblocksMatch[0].substring(0, 12)}...`,
+      remediation: "Configure Liveblocks room authorization in your /api/liveblocks-auth endpoint to restrict access.",
+      codeSnippet: `// app/api/liveblocks-auth/route.ts\nimport { Liveblocks } from "@liveblocks/node";\nconst liveblocks = new Liveblocks({ secret: process.env.LIVEBLOCKS_SECRET_KEY! });\nexport async function POST(req: Request) {\n  const user = await getUser(req);\n  if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  const session = liveblocks.prepareSession(user.id);\n  session.allow("room:*", session.READ_ACCESS); // restrict as needed\n  const { body, status } = await session.authorize();\n  return new Response(body, { status });\n}`,
+    });
+  }
+
+  // Check for PartyKit/Partyserver patterns (common in vibe-coded apps)
+  const partyMatch = allJs.match(/partykit\.dev|partysocket|PartySocket|partykit\.ai/i);
+  if (partyMatch) {
+    const partyUrlMatch = allJs.match(/["'](https?:\/\/[^"']*\.partykit\.dev[^"']*)["']/);
+    if (partyUrlMatch) {
+      // Test if the party server is accessible without auth
+      try {
+        const res = await scanFetch(partyUrlMatch[1], { timeoutMs: 5000 });
+        if (res.ok || res.status === 426) {
+          findings.push({
+            id: "websocket-partykit-open",
+            module: "WebSocket",
+            severity: "medium",
+            title: "PartyKit server accessible without authentication",
+            description: "The PartyKit real-time server is accessible. Verify that room-level authentication is configured to prevent unauthorized access to collaboration sessions.",
+            evidence: `PartyKit URL: ${partyUrlMatch[1]}\nStatus: ${res.status}`,
+            remediation: "Implement onConnect authentication in your PartyKit server to validate user tokens before allowing connections.",
+            cwe: "CWE-306",
+            codeSnippet: `// party/main.ts — authenticate connections\nimport type { Party, Connection } from "partykit/server";\nexport default {\n  async onConnect(conn: Connection, room: Party) {\n    const token = new URL(conn.uri, "http://x").searchParams.get("token");\n    if (!token || !await verifyToken(token)) {\n      conn.close(4001, "Unauthorized");\n      return;\n    }\n  },\n};`,
+          });
+        }
+      } catch { /* skip */ }
+    }
+  }
+
   // Cross-Site WebSocket Hijacking: test if WS upgrade works with a foreign origin
   if (wsMatches) {
     const wsUrls = [...new Set(wsMatches)].slice(0, 2);

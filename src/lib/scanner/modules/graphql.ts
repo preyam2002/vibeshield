@@ -207,6 +207,70 @@ export const graphqlModule: ScanModule = async (target) => {
       }
     } catch { /* skip */ }
 
+    // Test field suggestion leak (returns "Did you mean" hints even with introspection off)
+    try {
+      const suggestRes = await scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: `{use}` }), // partial field name
+        timeoutMs: 5000,
+      });
+      if (suggestRes.ok || suggestRes.status === 400) {
+        const data = await suggestRes.json() as { errors?: { message?: string }[] };
+        const suggestions = data?.errors?.filter((e) =>
+          /did you mean|did you mean one of/i.test(e?.message || ""),
+        );
+        if (suggestions && suggestions.length > 0) {
+          const suggestedFields = suggestions
+            .flatMap((s) => s.message?.match(/"([^"]+)"/g) || [])
+            .map((f) => f.replace(/"/g, ""));
+          endpointFindings.push({
+            id: `graphql-field-suggestions-${endpoint}`,
+            module: "GraphQL",
+            severity: "low",
+            title: `GraphQL field suggestions leak schema info on ${new URL(endpoint).pathname}`,
+            description: `The server returns "Did you mean" suggestions for mistyped fields. Even with introspection disabled, attackers can enumerate the schema by sending partial field names.`,
+            evidence: `Query: {use}\nSuggested fields: ${suggestedFields.join(", ")}`,
+            remediation: "Disable field suggestion hints in production. In Apollo Server, configure the validationRules to suppress suggestions.",
+            cwe: "CWE-200",
+            codeSnippet: `// Disable field suggestions in Apollo Server\nimport { NoSchemaIntrospectionCustomRule } from "graphql";\nconst server = new ApolloServer({\n  introspection: false,\n  // Custom validation rule to suppress "Did you mean" hints\n  formatError: (err) => ({\n    message: err.message.replace(/Did you mean.*$/, ""),\n    ...err,\n  }),\n});`,
+          });
+        }
+      }
+    } catch { /* skip */ }
+
+    // Test GraphQL subscription endpoint (WebSocket-based real-time queries)
+    try {
+      const subRes = await scanFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: `{__schema{subscriptionType{fields{name}}}}` }),
+        timeoutMs: 5000,
+      });
+      if (subRes.ok) {
+        const data = await subRes.json() as { data?: { __schema?: { subscriptionType?: { fields?: { name: string }[] } } } };
+        const subscriptions = data?.data?.__schema?.subscriptionType?.fields;
+        if (subscriptions && subscriptions.length > 0) {
+          const sensitiveSubscriptions = subscriptions.filter((s) =>
+            /admin|user|order|payment|message|notification|event|log/i.test(s.name),
+          );
+          if (sensitiveSubscriptions.length > 0) {
+            endpointFindings.push({
+              id: `graphql-subscriptions-${endpoint}`,
+              module: "GraphQL",
+              severity: "medium",
+              title: `${subscriptions.length} GraphQL subscriptions exposed (${sensitiveSubscriptions.length} sensitive)`,
+              description: `Found ${subscriptions.length} GraphQL subscription types. ${sensitiveSubscriptions.length} appear to expose sensitive real-time data: ${sensitiveSubscriptions.map((s) => s.name).join(", ")}. If subscriptions lack auth, attackers can monitor all events in real-time.`,
+              evidence: `Subscriptions: ${subscriptions.map((s) => s.name).join(", ")}`,
+              remediation: "Add authentication to GraphQL subscriptions. Validate the connection_init payload for a valid auth token.",
+              cwe: "CWE-862", owasp: "A01:2021",
+              codeSnippet: `// Authenticate GraphQL subscriptions (graphql-ws)\nimport { useServer } from "graphql-ws/lib/use/ws";\nuseServer({\n  onConnect: async (ctx) => {\n    const token = ctx.connectionParams?.authorization;\n    if (!token || !await verifyJWT(token)) return false;\n  },\n  schema,\n}, wsServer);`,
+            });
+          }
+        }
+      }
+    } catch { /* skip */ }
+
     // Test if mutations are discoverable and accessible without auth
     try {
       const mutationProbe = await scanFetch(endpoint, {
