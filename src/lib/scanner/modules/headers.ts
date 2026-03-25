@@ -1,4 +1,5 @@
 import type { ScanModule, Finding } from "../types";
+import { scanFetch } from "../fetch";
 
 const REQUIRED_HEADERS: {
   header: string;
@@ -175,7 +176,7 @@ export const headersModule: ScanModule = async (target) => {
     const endpointsToCheck = target.apiEndpoints.slice(0, 5);
     for (const endpoint of endpointsToCheck) {
       try {
-        const res = await fetch(endpoint, { method: "GET", redirect: "follow" });
+        const res = await scanFetch(endpoint, { timeoutMs: 5000 });
         const cacheControl = res.headers.get("cache-control") || "";
         if (!cacheControl || (cacheControl.includes("public") && !cacheControl.includes("no-store"))) {
           findings.push({
@@ -196,6 +197,83 @@ export const headersModule: ScanModule = async (target) => {
         // Endpoint not reachable, skip
       }
     }
+  }
+
+  // Check for inconsistent security headers across pages/API routes
+  const pagesToCheck = [...target.pages.slice(0, 5), ...target.apiEndpoints.slice(0, 3)];
+  if (pagesToCheck.length > 1) {
+    const headerChecks = ["content-security-policy", "strict-transport-security", "x-frame-options"];
+    const pageHeaderResults = await Promise.allSettled(
+      pagesToCheck.map(async (pageUrl) => {
+        const res = await scanFetch(pageUrl, { timeoutMs: 5000 });
+        const hdrs: Record<string, string> = {};
+        for (const h of headerChecks) {
+          const val = res.headers.get(h);
+          if (val) hdrs[h] = val;
+        }
+        return { url: new URL(pageUrl).pathname, headers: hdrs };
+      }),
+    );
+
+    const pageHeaders = pageHeaderResults
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<{ url: string; headers: Record<string, string> }>).value);
+
+    // Find pages missing headers that the main page has
+    const mainHeaders = new Set(Object.keys(pageHeaders[0]?.headers || {}));
+    const inconsistentPages: { url: string; missing: string[] }[] = [];
+    for (const page of pageHeaders.slice(1)) {
+      const missing = [...mainHeaders].filter((h) => !page.headers[h]);
+      if (missing.length > 0) {
+        inconsistentPages.push({ url: page.url, missing });
+      }
+    }
+
+    if (inconsistentPages.length > 0) {
+      findings.push({
+        id: "headers-inconsistent",
+        module: "Security Headers",
+        severity: "medium",
+        title: `Inconsistent security headers across ${inconsistentPages.length} page${inconsistentPages.length > 1 ? "s" : ""}`,
+        description: "Some pages/endpoints are missing security headers that the main page has. This often happens when API routes or dynamic pages don't inherit the global header configuration, creating security gaps.",
+        evidence: inconsistentPages.slice(0, 5).map((p) => `${p.url}: missing ${p.missing.join(", ")}`).join("\n"),
+        remediation: "Apply security headers globally via middleware or next.config.ts with a catch-all source pattern, not per-route.",
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+        confidence: 75,
+        codeSnippet: `// Apply headers globally in middleware.ts (catches ALL routes)\nimport { NextResponse } from "next/server";\n\nexport function middleware() {\n  const res = NextResponse.next();\n  res.headers.set("X-Frame-Options", "DENY");\n  res.headers.set("Content-Security-Policy", "frame-ancestors 'none'");\n  res.headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");\n  return res;\n}\n\nexport const config = { matcher: "/(.*)" }; // Match ALL routes`,
+      });
+    }
+  }
+
+  // Cross-Origin-Embedder-Policy (COEP) — needed for cross-origin isolation
+  if (!target.headers["cross-origin-embedder-policy"] && target.headers["cross-origin-opener-policy"]) {
+    findings.push({
+      id: "headers-no-coep",
+      module: "Security Headers",
+      severity: "low",
+      title: "Missing Cross-Origin-Embedder-Policy (COEP) with COOP present",
+      description: "COOP is set but COEP is missing. Full cross-origin isolation requires both. Without COEP, SharedArrayBuffer and high-resolution timers remain restricted, and Spectre-class attacks are not fully mitigated.",
+      remediation: "Add header: Cross-Origin-Embedder-Policy: require-corp (or credentialless for easier adoption)",
+      cwe: "CWE-693",
+      codeSnippet: `// next.config.ts headers()\n{ key: "Cross-Origin-Embedder-Policy", value: "credentialless" }\n// Note: "require-corp" is stricter but breaks cross-origin images/fonts\n// "credentialless" is more permissive and usually sufficient`,
+    });
+  }
+
+  // Check for deprecated X-XSS-Protection (can introduce vulnerabilities in some browsers)
+  const xssProtection = target.headers["x-xss-protection"];
+  if (xssProtection && xssProtection !== "0") {
+    findings.push({
+      id: "headers-xss-protection-deprecated",
+      module: "Security Headers",
+      severity: "info",
+      title: "X-XSS-Protection header is set (deprecated)",
+      description: `X-XSS-Protection is set to "${xssProtection}". This header is deprecated and can actually introduce XSS vulnerabilities in older browsers (via selective script blocking that can be exploited). Modern browsers ignore it. Use CSP instead.`,
+      evidence: `X-XSS-Protection: ${xssProtection}`,
+      remediation: "Set X-XSS-Protection: 0 to disable it, and rely on Content-Security-Policy for XSS protection.",
+      cwe: "CWE-693",
+      codeSnippet: `// Disable deprecated XSS filter — rely on CSP instead\n{ key: "X-XSS-Protection", value: "0" }`,
+    });
   }
 
   return findings;
