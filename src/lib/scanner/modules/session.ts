@@ -305,5 +305,278 @@ export const sessionModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 10: Session fixation — check if session tokens remain the same before and after authentication
+  const loginPages = target.pages.filter((p) =>
+    /\/(login|signin|sign-in|auth)\b/i.test(p),
+  ).slice(0, 3);
+
+  const fixationResults = await Promise.allSettled(
+    loginPages.map(async (loginPage) => {
+      // Step 1: GET the login page to receive a pre-auth session cookie
+      const preAuthRes = await scanFetch(loginPage, {
+        timeoutMs: 5000,
+        noCache: true,
+      });
+      const preAuthSetCookie = preAuthRes.headers.get("set-cookie") || "";
+      const preAuthTokens = preAuthSetCookie.match(
+        /(?:session|sid|connect\.sid|__session|__Secure-session|PHPSESSID|JSESSIONID|ASP\.NET_SessionId)=([^;]+)/gi,
+      );
+      if (!preAuthTokens || preAuthTokens.length === 0) return null;
+
+      // Step 2: POST a dummy login to see if the token changes
+      const postAuthRes = await scanFetch(loginPage, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: preAuthSetCookie.split(";")[0] },
+        body: "username=test@vibeshield.dev&password=test123",
+        timeoutMs: 5000,
+        noCache: true,
+      });
+      const postAuthSetCookie = postAuthRes.headers.get("set-cookie") || "";
+      const postAuthTokens = postAuthSetCookie.match(
+        /(?:session|sid|connect\.sid|__session|__Secure-session|PHPSESSID|JSESSIONID|ASP\.NET_SessionId)=([^;]+)/gi,
+      );
+
+      // If no new cookie is set, or the token value is the same, session fixation is possible
+      if (!postAuthTokens) {
+        return { loginPage, preAuth: preAuthTokens[0], postAuth: null, fixed: true };
+      }
+      const preVal = preAuthTokens[0].split("=")[1];
+      const postVal = postAuthTokens[0].split("=")[1];
+      if (preVal === postVal) {
+        return { loginPage, preAuth: preVal, postAuth: postVal, fixed: true };
+      }
+      return null;
+    }),
+  );
+
+  for (const result of fixationResults) {
+    if (result.status === "fulfilled" && result.value?.fixed) {
+      const { loginPage, preAuth, postAuth } = result.value;
+      findings.push({
+        id: `session-fixation-${findings.length}`,
+        module: "Session Management",
+        severity: "high",
+        title: `Possible session fixation on ${new URL(loginPage).pathname}`,
+        description: "The session token issued before authentication is not regenerated after login. An attacker can set a known session ID in the victim's browser (via XSS or subdomain cookie injection), wait for the victim to authenticate, then hijack the now-authenticated session.",
+        evidence: postAuth
+          ? `Pre-auth token: ${preAuth?.substring(0, 20)}…\nPost-auth token: ${postAuth.substring(0, 20)}… (unchanged)`
+          : `Pre-auth token: ${preAuth?.substring(0, 20)}…\nNo new Set-Cookie after login POST`,
+        remediation: "Always regenerate the session ID after successful authentication. Invalidate the old session on the server side.",
+        cwe: "CWE-384",
+        owasp: "A07:2021",
+        codeSnippet: `// Express: regenerate session after login\napp.post("/login", (req, res) => {\n  authenticate(req.body).then((user) => {\n    req.session.regenerate((err) => {\n      req.session.userId = user.id;\n      req.session.save(() => res.redirect("/dashboard"));\n    });\n  });\n});`,
+      });
+      break;
+    }
+  }
+
+  // Phase 11: Session cookie scope — check for overly broad domain/path that could leak to subdomains
+  const targetHost = new URL(target.baseUrl).hostname;
+  for (const cookie of sessionCookies) {
+    const issues: string[] = [];
+    // Check overly broad domain (leading dot means all subdomains)
+    if (cookie.domain) {
+      const cookieDomain = cookie.domain.startsWith(".") ? cookie.domain.slice(1) : cookie.domain;
+      // If the cookie domain is a parent of the target host (e.g., .example.com for app.example.com)
+      if (targetHost !== cookieDomain && targetHost.endsWith(`.${cookieDomain}`)) {
+        issues.push(`Domain "${cookie.domain}" allows all subdomains of ${cookieDomain} to read this cookie`);
+      }
+      // Cookie set on bare domain with leading dot
+      if (cookie.domain.startsWith(".")) {
+        issues.push(`Leading-dot domain "${cookie.domain}" shares the cookie with all subdomains`);
+      }
+    }
+    // Check overly broad path
+    if (cookie.path === "/" || !cookie.path) {
+      // Path=/ is default and common, only flag if combined with broad domain
+      if (issues.length > 0) {
+        issues.push(`Path="${cookie.path || "/"}" makes the cookie available to all routes`);
+      }
+    }
+    if (issues.length > 0) {
+      findings.push({
+        id: `session-cookie-scope-${findings.length}`,
+        module: "Session Management",
+        severity: "medium",
+        title: `Session cookie "${cookie.name}" has overly broad scope`,
+        description: `The session cookie is scoped too broadly, meaning it will be sent to subdomains or paths that may not need it. A compromised or malicious subdomain could read or relay the session cookie, enabling session hijacking across the domain.`,
+        evidence: issues.join("\n"),
+        remediation: "Set the cookie Domain to the most specific hostname needed. Avoid leading-dot domains unless cross-subdomain auth is required. Use __Host- prefix to lock cookies to the exact origin.",
+        cwe: "CWE-1275",
+        owasp: "A07:2021",
+        codeSnippet: `// Use __Host- prefix to lock cookie to exact origin (no Domain, Path=/)\nres.setHeader("Set-Cookie", [\n  "__Host-session=<token>; Secure; HttpOnly; SameSite=Lax; Path=/",\n]);\n\n// Or scope to the specific subdomain\nres.setHeader("Set-Cookie", [\n  "session=<token>; Domain=app.example.com; Secure; HttpOnly; SameSite=Lax; Path=/app",\n]);`,
+      });
+      break;
+    }
+  }
+
+  // Phase 12: Concurrent session limits — verify the app enforces session limits via parallel login attempts
+  const concurrentLoginEps = target.apiEndpoints.filter((ep) =>
+    /\/(login|signin|sign-in|auth\/callback|auth\/session)\b/i.test(ep),
+  ).slice(0, 2);
+
+  const concurrentResults = await Promise.allSettled(
+    concurrentLoginEps.map(async (endpoint) => {
+      // Fire 3 simultaneous login requests to check if all produce distinct valid sessions
+      const requests = Array.from({ length: 3 }, () =>
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "test@vibeshield.dev", password: "test123" }),
+          timeoutMs: 5000,
+          noCache: true,
+        }),
+      );
+      const responses = await Promise.all(requests);
+      const setCookies: string[] = [];
+      for (const res of responses) {
+        const sc = res.headers.get("set-cookie") || "";
+        if (sc) setCookies.push(sc);
+      }
+      // Extract session token values from Set-Cookie headers
+      const tokenValues = setCookies
+        .map((sc) => {
+          const m = sc.match(/(?:session|sid|connect\.sid|__session|token)=([^;]+)/i);
+          return m ? m[1] : null;
+        })
+        .filter(Boolean);
+      const uniqueTokens = new Set(tokenValues);
+      // If we got 3 distinct session tokens, no concurrent session limit is enforced
+      if (uniqueTokens.size >= 3) {
+        return { endpoint, count: uniqueTokens.size };
+      }
+      return null;
+    }),
+  );
+
+  for (const result of concurrentResults) {
+    if (result.status === "fulfilled" && result.value) {
+      const { endpoint, count } = result.value;
+      findings.push({
+        id: `session-no-concurrent-limit-${findings.length}`,
+        module: "Session Management",
+        severity: "medium",
+        title: `No concurrent session limit on ${new URL(endpoint).pathname}`,
+        description: `${count} simultaneous login requests each produced a distinct session cookie, indicating no limit on concurrent sessions per user. An attacker with stolen credentials can create persistent sessions that survive password changes if old sessions are not invalidated.`,
+        evidence: `POST ${endpoint} × ${count} → ${count} unique session tokens issued concurrently`,
+        remediation: "Enforce a maximum number of active sessions per user. Invalidate all existing sessions on password change. Consider notifying users of new logins from unrecognized devices.",
+        cwe: "CWE-384",
+        owasp: "A07:2021",
+        codeSnippet: `// Limit concurrent sessions on login\nexport async function login(userId: string, maxSessions = 3) {\n  const existing = await db.session.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });\n  if (existing.length >= maxSessions) {\n    // Remove oldest sessions to stay within limit\n    const toRemove = existing.slice(0, existing.length - maxSessions + 1);\n    await db.session.deleteMany({ where: { id: { in: toRemove.map((s) => s.id) } } });\n  }\n  return db.session.create({ data: { userId, expiresAt: addHours(new Date(), 24) } });\n}`,
+      });
+      break;
+    }
+  }
+
+  // Phase 13: Session token in URL parameters — deep check across HTML content, JS bundles, and link patterns
+  const sessionUrlPatterns = [
+    /[;?&](jsessionid|JSESSIONID)=([a-zA-Z0-9._-]{10,})/,
+    /[;?&](phpsessid|PHPSESSID)=([a-zA-Z0-9._-]{10,})/,
+    /[;?&](sid|SID)=([a-zA-Z0-9._-]{16,})/,
+    /[;?&](token|TOKEN)=([a-zA-Z0-9._-]{16,})/,
+    /[;?&](session_id|sessionid|SESSION_ID)=([a-zA-Z0-9._-]{10,})/,
+  ];
+
+  // Check JS bundles for URL construction that embeds session tokens
+  const jsSessionUrlPatterns = [
+    /["'`][^"'`]*[?&](?:jsessionid|sid|session_id|sessionid|token)=[^"'`]+["'`]/i,
+    /url\s*[+=]\s*["'`].*[?&](?:jsessionid|sid|session_id|token)=/i,
+    /location\.href\s*=\s*.*[?&](?:jsessionid|sid|session_id|token)=/i,
+    /window\.location\s*=\s*.*[?&](?:jsessionid|sid|session_id|token)=/i,
+  ];
+
+  // Check redirect URLs and link URLs for embedded session params
+  const allUrlsToScan = [...target.linkUrls, ...target.redirectUrls, ...target.pages].slice(0, 100);
+  let sessionInUrlFound = false;
+  for (const url of allUrlsToScan) {
+    for (const pattern of sessionUrlPatterns) {
+      const match = url.match(pattern);
+      if (match && !sessionInUrlFound) {
+        findings.push({
+          id: `session-url-param-${findings.length}`,
+          module: "Session Management",
+          severity: "high",
+          title: `Session ID "${match[1]}" embedded in URL parameter`,
+          description: `The URL contains a session identifier in the "${match[1]}" parameter. Session IDs in URLs are leaked via Referer headers to third-party resources, stored in browser history, cached by proxies, and recorded in server access logs — all of which are accessible to attackers.`,
+          evidence: `URL: ${url.substring(0, 200)}`,
+          remediation: "Never pass session identifiers in URL parameters. Use HttpOnly cookies or the Authorization header. Configure URL rewriting to strip session parameters.",
+          cwe: "CWE-598",
+          owasp: "A07:2021",
+          codeSnippet: `// Java/Spring: disable URL-based session tracking\n@Configuration\npublic class SecurityConfig {\n  @Bean\n  public ServletContextInitializer servletContextInitializer() {\n    return ctx -> ctx.setSessionTrackingModes(\n      EnumSet.of(SessionTrackingMode.COOKIE) // disable URL rewriting\n    );\n  }\n}`,
+        });
+        sessionInUrlFound = true;
+        break;
+      }
+    }
+    if (sessionInUrlFound) break;
+  }
+
+  // Also check JS bundles for URL construction embedding sessions
+  if (!sessionInUrlFound) {
+    for (const pattern of jsSessionUrlPatterns) {
+      const match = allJs.match(pattern);
+      if (match) {
+        findings.push({
+          id: `session-url-param-js-${findings.length}`,
+          module: "Session Management",
+          severity: "medium",
+          title: "JavaScript constructs URLs containing session parameters",
+          description: "Client-side JavaScript builds URLs that embed session tokens as query parameters. These URLs leak session data through Referer headers, browser history, and server logs.",
+          evidence: `Found in JS bundle: ${match[0].substring(0, 120)}`,
+          remediation: "Refactor client-side code to use cookies or Authorization headers for session management. Remove URL-based session parameter construction.",
+          cwe: "CWE-598",
+          owasp: "A07:2021",
+          codeSnippet: `// Bad: session token in URL\nfetch(\`/api/data?token=\${sessionToken}\`);\n\n// Good: session token in header\nfetch("/api/data", {\n  headers: { Authorization: \`Bearer \${sessionToken}\` },\n});`,
+        });
+        break;
+      }
+    }
+  }
+
+  // Phase 14: Insecure session storage — check if session cookies lack HttpOnly flag
+  for (const cookie of sessionCookies) {
+    if (!cookie.httpOnly) {
+      findings.push({
+        id: `session-no-httponly-${findings.length}`,
+        module: "Session Management",
+        severity: "high",
+        title: `Session cookie "${cookie.name}" is missing HttpOnly flag`,
+        description: `The session cookie "${cookie.name}" does not have the HttpOnly attribute. This means JavaScript can access it via document.cookie, allowing XSS attacks to trivially steal the session token and exfiltrate it to an attacker-controlled server.`,
+        evidence: `Cookie: ${cookie.name}\nHttpOnly: false\nAccessible via: document.cookie`,
+        remediation: "Set the HttpOnly flag on all session cookies to prevent JavaScript access. This is a critical defense-in-depth measure against XSS-based session theft.",
+        cwe: "CWE-1004",
+        owasp: "A07:2021",
+        codeSnippet: `// Always set HttpOnly on session cookies\nres.setHeader("Set-Cookie", [\n  "session=<token>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",\n]);\n\n// Express session middleware\napp.use(session({\n  cookie: {\n    httpOnly: true, // Prevent document.cookie access\n    secure: true,\n    sameSite: "lax",\n  },\n}));`,
+      });
+      break;
+    }
+  }
+
+  // Also check if JS code reads session data from document.cookie
+  const docCookieReadPatterns = [
+    /document\.cookie\.(?:match|split|indexOf|includes)\s*\(\s*["'](?:session|sid|token|auth|jwt)/i,
+    /document\.cookie\b[^=]*\.(?:match|split)\b/,
+    /(?:getCookie|parseCookies?|readCookie)\s*\(\s*["'](?:session|sid|token|auth|jwt)/i,
+  ];
+
+  for (const pattern of docCookieReadPatterns) {
+    const match = allJs.match(pattern);
+    if (match) {
+      findings.push({
+        id: `session-js-cookie-read-${findings.length}`,
+        module: "Session Management",
+        severity: "medium",
+        title: "JavaScript reads session data from document.cookie",
+        description: "Client-side JavaScript explicitly reads session/auth cookie values via document.cookie. This confirms the session cookie is accessible to scripts, which means any XSS vulnerability can exfiltrate the session token.",
+        evidence: `Found in JS bundle: ${match[0].substring(0, 100)}`,
+        remediation: "Make session cookies HttpOnly so JavaScript cannot read them. If the client needs user info, expose it via a /api/me endpoint instead of reading the session cookie directly.",
+        cwe: "CWE-1004",
+        owasp: "A07:2021",
+        codeSnippet: `// Bad: reading session from document.cookie\nconst session = document.cookie.match(/session=([^;]+)/)?.[1];\n\n// Good: fetch user state from API (cookie sent automatically)\nconst res = await fetch("/api/me", { credentials: "include" });\nconst user = await res.json();`,
+      });
+      break;
+    }
+  }
+
   return findings;
 };
