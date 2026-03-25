@@ -873,7 +873,16 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
               const weights = { critical: { w: 25, d: 0.7 }, high: { w: 10, d: 0.75 }, medium: { w: 4, d: 0.8 }, low: { w: 1, d: 0.85 } } as const;
               type Sev = keyof typeof weights;
-              const steps: { fix: string; severity: Sev; points: number; findingId: string }[] = [];
+              const effortForModule = (mod: string): "quick" | "medium" | "complex" => {
+                const quickModules = /headers|cookies|clickjacking|ssl|cors|source.maps|dependencies|http.methods|environment/i;
+                const complexModules = /injection|ssrf|auth|idor|business|command|nosql|supabase|firebase/i;
+                if (quickModules.test(mod)) return "quick";
+                if (complexModules.test(mod)) return "complex";
+                return "medium";
+              };
+              const effortLabel = { quick: "5 min fix", medium: "~30 min", complex: "1+ hour" };
+              const effortColor = { quick: "text-emerald-500/60", medium: "text-yellow-500/50", complex: "text-orange-500/50" };
+              const steps: { fix: string; severity: Sev; points: number; findingId: string; effort: "quick" | "medium" | "complex" }[] = [];
               const remaining = { critical: scan.summary.critical, high: scan.summary.high, medium: scan.summary.medium, low: scan.summary.low };
 
               for (const sev of ["critical", "high", "medium", "low"] as Sev[]) {
@@ -884,7 +893,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   remaining[sev]--;
                   const after = penalty(Math.max(0, remaining[sev]), w, d);
                   const pts = Math.round(before - after);
-                  if (pts > 0) steps.push({ fix: f.title, severity: sev, points: pts, findingId: f.id });
+                  if (pts > 0) steps.push({ fix: f.title, severity: sev, points: pts, findingId: f.id, effort: effortForModule(f.module) });
                 }
               }
 
@@ -923,6 +932,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                             <div className="flex-1 min-w-0">
                               <div className="text-zinc-300 font-medium leading-snug truncate">{s.fix}</div>
                             </div>
+                            <span className={`text-[9px] shrink-0 ${effortColor[s.effort]}`}>{effortLabel[s.effort]}</span>
                             <span className="text-green-400/70 text-[10px] shrink-0">+{s.points}</span>
                           </div>
                         </button>
