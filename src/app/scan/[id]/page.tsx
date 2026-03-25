@@ -1338,6 +1338,45 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               );
             })()}
 
+            {/* Compliance impact */}
+            {!isRunning && scan.status === "completed" && scan.findings.length > 0 && (() => {
+              const frameworks: { name: string; abbr: string; impacts: string[] }[] = [
+                { name: "SOC 2", abbr: "SOC2", impacts: [] },
+                { name: "PCI DSS", abbr: "PCI", impacts: [] },
+                { name: "OWASP Top 10", abbr: "OWASP", impacts: [] },
+                { name: "GDPR", abbr: "GDPR", impacts: [] },
+              ];
+              for (const f of scan.findings) {
+                if (f.severity === "info") continue;
+                // SOC 2: auth, encryption, monitoring
+                if (/auth|session|ssl|tls|encrypt|secret|key|token|password/i.test(f.module + f.title)) frameworks[0].impacts.push(f.title);
+                // PCI DSS: payment, encryption, access control
+                if (/ssl|tls|encrypt|secret|key|card|payment|stripe|cookie|session|auth|idor|inject/i.test(f.module + f.title)) frameworks[1].impacts.push(f.title);
+                // OWASP: any finding with owasp mapping
+                if (f.owasp) frameworks[2].impacts.push(f.title);
+                // GDPR: privacy, data exposure, tracking
+                if (/privacy|tracking|pii|personal|cookie|consent|gdpr|data.*expos|over.?fetch|email.*enum/i.test(f.module + f.title + f.description)) frameworks[3].impacts.push(f.title);
+              }
+              const affected = frameworks.filter((fw) => fw.impacts.length > 0);
+              if (affected.length === 0) return null;
+              return (
+                <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+                  <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Compliance Impact</h3>
+                  <div className="space-y-2">
+                    {affected.map((fw) => (
+                      <div key={fw.abbr} className="flex items-center justify-between">
+                        <span className="text-xs text-zinc-400">{fw.name}</span>
+                        <span className="text-[10px] text-orange-400 font-medium">{fw.impacts.length} issue{fw.impacts.length !== 1 ? "s" : ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-zinc-800/30 text-[9px] text-zinc-600">
+                    Based on finding categories and severity
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Attack surface */}
             {scan.surface && (
               <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
