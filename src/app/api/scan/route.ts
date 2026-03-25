@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { startScan } from "@/lib/scanner";
-import { getActiveScansCount } from "@/lib/scanner/store";
+import { getActiveScansCount, findActiveScan } from "@/lib/scanner/store";
 
 const MAX_CONCURRENT_SCANS = 10;
 
@@ -126,6 +126,17 @@ export async function POST(req: Request) {
       { error: `Server busy: ${MAX_CONCURRENT_SCANS} scans are already running. Try again in a minute.` },
       { status: 503 },
     );
+  }
+
+  // Deduplicate: if an identical scan is already running, return its ID
+  const existingScan = findActiveScan(parsed.href);
+  if (existingScan) {
+    return NextResponse.json({
+      id: existingScan.id,
+      url: parsed.href,
+      deduplicated: true,
+      message: "A scan for this URL is already in progress.",
+    });
   }
 
   // CI/CD gating parameters

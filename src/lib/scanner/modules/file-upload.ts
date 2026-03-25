@@ -108,11 +108,42 @@ export const fileUploadModule: ScanModule = async (target) => {
           }
         }
 
+        // Test 4: MIME type confusion — upload .php disguised as image
+        const { boundary: b4, body: body4 } = buildMultipart("shell.php.jpg", "image/jpeg", "<?php echo 'pwned'; ?>");
+        const res4 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b4}` }, body: body4, timeoutMs: 5000,
+        });
+        if (res4.ok) {
+          const text4 = await res4.text();
+          if (!(looksLikeHtml(text4) && (isSoft404(text4, target) || target.isSpa))) {
+            if (text4.length > 10 && /url|path|key|location|filename/i.test(text4)) {
+              const hasDoubleExt = /\.php/i.test(text4);
+              if (hasDoubleExt) {
+                return { type: "mime-confusion" as const, endpoint, pathname, text: text4 };
+              }
+            }
+          }
+        }
+
+        // Test 5: Null byte extension bypass
+        const { boundary: b5, body: body5 } = buildMultipart("test.php%00.jpg", "image/jpeg", "<?php echo 'test'; ?>");
+        const res5 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b5}` }, body: body5, timeoutMs: 5000,
+        });
+        if (res5.ok) {
+          const text5 = await res5.text();
+          if (!(looksLikeHtml(text5) && (isSoft404(text5, target) || target.isSpa))) {
+            if (text5.length > 10 && /url|path|key|location|filename/i.test(text5) && /\.php/i.test(text5)) {
+              return { type: "null-byte" as const, endpoint, pathname, text: text5 };
+            }
+          }
+        }
+
         return null;
       }),
     ),
 
-    // Test 4: Exposed upload directories in parallel
+    // Test 6: Exposed upload directories in parallel
     Promise.allSettled(
       ["/uploads", "/media", "/files", "/assets/uploads", "/public/uploads", "/static/uploads"].map(async (dir) => {
         const res = await scanFetch(target.baseUrl + dir, { timeoutMs: 5000 });
@@ -159,6 +190,20 @@ export const fileUploadModule: ScanModule = async (target) => {
         evidence: `POST ${v.endpoint} with filename="../../../etc/passwd"\nResponse: ${v.text.substring(0, 200)}`,
         remediation: "Sanitize filenames. Strip path separators and traversal sequences. Generate random filenames.", cwe: "CWE-22", owasp: "A01:2021",
         codeSnippet: `import path from 'path';\nimport crypto from 'crypto';\n\nconst safeName = crypto.randomUUID() + path.extname(file.name).toLowerCase();\nconst uploadDir = path.resolve('/app/uploads');\nconst dest = path.join(uploadDir, safeName);\nif (!dest.startsWith(uploadDir)) {\n  return Response.json({ error: 'Invalid path' }, { status: 400 });\n}` });
+    } else if (v.type === "mime-confusion") {
+      findings.push({ id: `file-upload-mime-${findings.length}`, module: "File Upload", severity: "high",
+        title: `Double extension bypass accepted on ${v.pathname}`,
+        description: "The upload endpoint accepted a file with a double extension (shell.php.jpg). On misconfigured servers, the .php extension may execute.",
+        evidence: `POST ${v.endpoint} with filename "shell.php.jpg"\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate file type by reading magic bytes, not file extension. Strip all but the last extension.", cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `import { fileTypeFromBuffer } from 'file-type';\n\n// Validate by content, not name\nconst buffer = Buffer.from(await file.arrayBuffer());\nconst type = await fileTypeFromBuffer(buffer);\nif (!type || !ALLOWED_TYPES.includes(type.mime)) {\n  return Response.json({ error: 'Invalid file type' }, { status: 400 });\n}\n// Generate safe filename\nconst safeName = crypto.randomUUID() + '.' + type.ext;` });
+    } else if (v.type === "null-byte") {
+      findings.push({ id: `file-upload-null-byte-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `Null byte injection in file upload on ${v.pathname}`,
+        description: "The upload endpoint processed a filename containing a null byte (%00), which can truncate the filename and bypass extension checks.",
+        evidence: `POST ${v.endpoint} with filename "test.php%00.jpg"\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Strip null bytes from filenames. Use content-based type detection, not extensions.", cwe: "CWE-158", owasp: "A03:2021",
+        codeSnippet: `// Strip null bytes and validate\nconst safeName = filename.replace(/\\0/g, '').replace(/%00/g, '');\nif (safeName !== filename) {\n  return Response.json({ error: 'Invalid filename' }, { status: 400 });\n}` });
     }
   }
 

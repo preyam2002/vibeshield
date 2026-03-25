@@ -62,6 +62,17 @@ const REQUIRED_HEADERS: {
     cwe: "CWE-693",
     codeSnippet: `// next.config.ts headers()\n{ key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" }`,
   },
+  {
+    header: "cross-origin-resource-policy",
+    severity: "low",
+    title: "Missing Cross-Origin-Resource-Policy (CORP) header",
+    description:
+      "Without CORP, other origins can embed your resources (images, scripts, etc.) in their pages, potentially leaking sensitive data via side-channel attacks.",
+    remediation:
+      "Add header: Cross-Origin-Resource-Policy: same-origin (or same-site if you serve resources across subdomains)",
+    cwe: "CWE-693",
+    codeSnippet: `// next.config.ts headers()\n{ key: "Cross-Origin-Resource-Policy", value: "same-origin" }`,
+  },
 ];
 
 const checkSriMissing = (target: Parameters<ScanModule>[0]): Finding | null => {
@@ -158,6 +169,34 @@ export const headersModule: ScanModule = async (target) => {
   // SRI check for external scripts
   const sriFinding = checkSriMissing(target);
   if (sriFinding) findings.push(sriFinding);
+
+  // Check Cache-Control on API endpoints
+  if (target.apiEndpoints.length > 0) {
+    const endpointsToCheck = target.apiEndpoints.slice(0, 5);
+    for (const endpoint of endpointsToCheck) {
+      try {
+        const res = await fetch(endpoint, { method: "GET", redirect: "follow" });
+        const cacheControl = res.headers.get("cache-control") || "";
+        if (!cacheControl || (cacheControl.includes("public") && !cacheControl.includes("no-store"))) {
+          findings.push({
+            id: "headers-api-cache-control",
+            module: "Security Headers",
+            severity: "low",
+            title: "API endpoint may cache sensitive data",
+            description: `The API endpoint "${endpoint}" ${!cacheControl ? "has no Cache-Control header" : `uses public caching ("${cacheControl}")`}. API responses often contain sensitive data that should not be stored in shared caches.`,
+            evidence: `Endpoint: ${endpoint}\nCache-Control: ${cacheControl || "(missing)"}`,
+            remediation: "Add Cache-Control: no-store, no-cache, private to API responses that may contain sensitive data.",
+            cwe: "CWE-525",
+            owasp: "A05:2021",
+            codeSnippet: `// Next.js API route\nexport async function GET() {\n  return Response.json(data, {\n    headers: { "Cache-Control": "no-store, no-cache, private" },\n  });\n}`,
+          });
+          break; // One finding is enough
+        }
+      } catch {
+        // Endpoint not reachable, skip
+      }
+    }
+  }
 
   return findings;
 };
