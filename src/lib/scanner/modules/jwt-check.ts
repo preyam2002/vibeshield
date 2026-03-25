@@ -89,6 +89,54 @@ export const jwtModule: ScanModule = async (target) => {
       });
     }
 
+    // Check for missing audience/issuer claims
+    if (!payload.aud && !payload.iss) {
+      findings.push({
+        id: `jwt-no-aud-iss-${findings.length}`,
+        module: "JWT Security",
+        severity: "medium",
+        title: "JWT missing audience and issuer claims",
+        description: "This JWT has neither an 'aud' (audience) nor an 'iss' (issuer) claim. Without these, the token can be replayed across different services or environments.",
+        evidence: `Source: ${source}\nPayload keys: ${Object.keys(payload).join(", ")}`,
+        remediation: "Always include 'aud' and 'iss' claims and validate them on the server. This prevents token confusion attacks across services.",
+        cwe: "CWE-345",
+        codeSnippet: `// Include and validate audience/issuer\nconst token = jwt.sign({ sub: userId }, secret, {\n  issuer: "https://yourapp.com",\n  audience: "https://api.yourapp.com",\n  expiresIn: "15m",\n});\n\n// Verify with strict validation\njwt.verify(token, secret, {\n  issuer: "https://yourapp.com",\n  audience: "https://api.yourapp.com",\n  algorithms: ["HS256"],\n});`,
+      });
+    }
+
+    // Check for JWK/JKU header injection vectors
+    if (header.jku || header.jwk || header.x5u) {
+      const param = header.jku ? "jku" : header.jwk ? "jwk" : "x5u";
+      findings.push({
+        id: `jwt-header-injection-${findings.length}`,
+        module: "JWT Security",
+        severity: "critical",
+        title: `JWT contains ${param} header parameter`,
+        description: `This JWT includes a '${param}' header parameter which specifies where to fetch the verification key. If the server trusts this parameter, an attacker can point it to their own key server and forge any token.`,
+        evidence: `Source: ${source}\nHeader: ${JSON.stringify(header)}`,
+        remediation: `Never trust ${param} from the JWT header. Use a pre-configured, server-side key or JWKS URL instead.`,
+        cwe: "CWE-347", owasp: "A02:2021",
+        codeSnippet: `// WRONG: fetching key from JWT header\nconst jwks = await fetch(header.jku); // attacker-controlled!\n\n// CORRECT: use a hardcoded, trusted JWKS URL\nconst JWKS_URL = "https://your-auth-server/.well-known/jwks.json";\nconst jwks = jose.createRemoteJWKSet(new URL(JWKS_URL));`,
+      });
+    }
+
+    // Check for kid parameter with suspicious values
+    if (header.kid && typeof header.kid === "string") {
+      if (/[\/\\]|\.\.|\x00|;|'|"|SELECT|UNION/i.test(header.kid)) {
+        findings.push({
+          id: `jwt-kid-injection-${findings.length}`,
+          module: "JWT Security",
+          severity: "critical",
+          title: "JWT kid parameter contains injection characters",
+          description: "The JWT 'kid' (Key ID) header contains characters suggesting path traversal, SQL injection, or null byte injection. If the server uses 'kid' to look up keys without sanitization, this enables key confusion attacks.",
+          evidence: `Source: ${source}\nkid: ${header.kid}`,
+          remediation: "Sanitize the 'kid' parameter. Use it only as a lookup key against a pre-defined key store — never as a file path or database query parameter.",
+          cwe: "CWE-347", owasp: "A02:2021",
+          codeSnippet: `// Safe kid lookup via Map, not filesystem or DB query\nconst KEY_STORE = new Map([["key-1", publicKey1], ["key-2", publicKey2]]);\nconst key = KEY_STORE.get(header.kid);\nif (!key) throw new Error("Unknown key ID");`,
+        });
+      }
+    }
+
     // Check expiration
     if (payload.exp) {
       const expDate = new Date((payload.exp as number) * 1000);

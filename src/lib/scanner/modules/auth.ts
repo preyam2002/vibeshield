@@ -21,8 +21,8 @@ export const authModule: ScanModule = async (target) => {
 
   const publicPatterns = /webhook|callback|health|status|ping|csp-report|cron|sitemap|feed|rss|\.well-known|auth\/signin|auth\/signup|auth\/login|auth\/register|auth\/providers|auth\/csrf|stripe|chilipiper|calendly|hubspot|intercom|zendesk|crisp|drift|segment|analytics|tracking|pixel|beacon/i;
 
-  // Run all 4 test categories in parallel
-  const [unauthResults, adminResults, tokenResults, methodResults] = await Promise.all([
+  // Run all 5 test categories in parallel
+  const [unauthResults, adminResults, tokenResults, methodResults, pathBypassResults] = await Promise.all([
     // 1. Unauthenticated API access
     Promise.allSettled(
       target.apiEndpoints.map(async (endpoint) => {
@@ -163,6 +163,55 @@ export const authModule: ScanModule = async (target) => {
         }),
       );
     })(),
+
+    // 5. Path traversal, case sensitivity, and trailing slash bypass on protected paths
+    (async () => {
+      // Find endpoints that return 401/403 (protected)
+      const protectedEndpoints: string[] = [];
+      const probeResults = await Promise.allSettled(
+        [...ADMIN_PATHS.slice(0, 6), ...target.apiEndpoints.slice(0, 6)].map(async (path) => {
+          const url = path.startsWith("http") ? path : target.baseUrl + path;
+          const res = await scanFetch(url, { timeoutMs: 5000 });
+          if (res.status === 401 || res.status === 403) {
+            protectedEndpoints.push(url);
+          }
+        }),
+      );
+
+      if (protectedEndpoints.length === 0) return [];
+
+      const bypasses: { endpoint: string; variant: string; bypass: string; status: number; text: string }[] = [];
+      const bypassTests = protectedEndpoints.slice(0, 4).flatMap((endpoint) => {
+        const u = new URL(endpoint);
+        const path = u.pathname;
+        return [
+          { endpoint, variant: path + "/", bypass: "trailing slash" },
+          { endpoint, variant: path + "/.", bypass: "dot segment" },
+          { endpoint, variant: path + "%20", bypass: "trailing space encoding" },
+          { endpoint, variant: path + "%00", bypass: "null byte" },
+          { endpoint, variant: path.replace(/\/([^/]+)$/, "/%2e%2e/$1"), bypass: "path traversal" },
+          { endpoint, variant: "/" + path.slice(1).split("").map((c) => Math.random() > 0.5 ? c.toUpperCase() : c).join(""), bypass: "case variation" },
+          { endpoint, variant: "//" + path.slice(1), bypass: "double slash prefix" },
+        ];
+      });
+
+      const results = await Promise.allSettled(
+        bypassTests.map(async ({ endpoint, variant, bypass }) => {
+          const url = new URL(endpoint);
+          url.pathname = variant;
+          const res = await scanFetch(url.href, { timeoutMs: 5000 });
+          if (res.ok) {
+            const text = await res.text();
+            if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+            if (text.length < 20) return null;
+            return { endpoint, variant, bypass, status: res.status, text };
+          }
+          return null;
+        }),
+      );
+
+      return results;
+    })(),
   ]);
 
   // Collect unauthenticated access findings (max 3)
@@ -262,7 +311,29 @@ export const authModule: ScanModule = async (target) => {
     });
   }
 
-  // 5. Rate limiting check on auth endpoints
+  // Collect path bypass findings (max 2)
+  let pathBypassCount = 0;
+  if (Array.isArray(pathBypassResults)) {
+    for (const r of pathBypassResults) {
+      if (pathBypassCount >= 2) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const { endpoint, variant, bypass, status, text } = r.value;
+      pathBypassCount++;
+      findings.push({
+        id: `auth-path-bypass-${findings.length}`,
+        module: "Authentication",
+        severity: "critical",
+        title: `Auth bypass via ${bypass} on ${new URL(endpoint).pathname}`,
+        description: `This endpoint returns 401/403 normally, but a ${bypass} variant bypasses the auth check. The server's routing doesn't normalize paths before applying security middleware.`,
+        evidence: `Original: ${endpoint} → 401/403\nBypass: ${variant} → ${status}\nResponse: ${text.substring(0, 200)}`,
+        remediation: "Normalize request paths before applying auth middleware. Strip trailing slashes, decode percent-encoding, and canonicalize paths.",
+        cwe: "CWE-863", owasp: "A01:2021",
+        codeSnippet: `// middleware.ts — normalize paths before auth checks\nexport function middleware(req: NextRequest) {\n  const path = req.nextUrl.pathname\n    .replace(/\\/+/g, "/")\n    .replace(/\\/$/, "")\n    .toLowerCase();\n  // Apply auth checks on the normalized path\n  if (isProtectedPath(path)) {\n    const session = getSession(req);\n    if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });\n  }\n}`,
+      });
+    }
+  }
+
+  // 6. Rate limiting check on auth endpoints
   const authEndpoints = target.apiEndpoints.filter((ep) =>
     /auth|login|signin|signup|register|password|forgot|reset|verify|otp|2fa|mfa/i.test(new URL(ep).pathname),
   );

@@ -395,5 +395,45 @@ export const injectionModule: ScanModule = async (target) => {
     });
   }
 
+  // DOM XSS: detect dangerous source→sink patterns in JS bundles
+  const allJs = Array.from(target.jsContents.values()).join("\n");
+  if (allJs.length > 0) {
+    const domSources = [
+      { pattern: /(?:location\.hash|location\.search|location\.href|document\.URL|document\.referrer|window\.name)/, name: "URL/location" },
+      { pattern: /(?:document\.cookie)/, name: "document.cookie" },
+      { pattern: /(?:postMessage|addEventListener\s*\(\s*["']message["'])/, name: "postMessage" },
+    ];
+    const domSinks = [
+      { pattern: /\.innerHTML\s*=/, name: "innerHTML" },
+      { pattern: /\.outerHTML\s*=/, name: "outerHTML" },
+      { pattern: /document\.write\s*\(/, name: "document.write" },
+      { pattern: /\beval\s*\(/, name: "eval()" },
+      { pattern: /\bnew\s+Function\s*\(/, name: "new Function()" },
+      { pattern: /setTimeout\s*\(\s*[^,)]*(?:location|search|hash|href|name)/, name: "setTimeout with URL data" },
+      { pattern: /dangerouslySetInnerHTML/, name: "dangerouslySetInnerHTML" },
+    ];
+
+    const foundSources = domSources.filter((s) => s.pattern.test(allJs));
+    const foundSinks = domSinks.filter((s) => s.pattern.test(allJs));
+
+    if (foundSources.length > 0 && foundSinks.length > 0) {
+      const dangerousCombos = foundSinks.filter((sink) =>
+        sink.name === "eval()" || sink.name === "new Function()" || sink.name === "document.write",
+      );
+      const severity = dangerousCombos.length > 0 ? "high" : "medium";
+      findings.push({
+        id: "injection-dom-xss-0",
+        module: "DOM XSS",
+        severity,
+        title: `Potential DOM XSS: ${foundSources.map((s) => s.name).join(", ")} → ${foundSinks.map((s) => s.name).join(", ")}`,
+        description: `Client-side JavaScript reads from user-controllable sources (${foundSources.map((s) => s.name).join(", ")}) and writes to dangerous sinks (${foundSinks.map((s) => s.name).join(", ")}). This pattern is vulnerable to DOM-based XSS.`,
+        evidence: `Sources detected: ${foundSources.map((s) => s.name).join(", ")}\nSinks detected: ${foundSinks.map((s) => s.name).join(", ")}`,
+        remediation: "Use textContent instead of innerHTML. Avoid eval() and document.write(). Sanitize DOM inputs with DOMPurify before inserting into the page.",
+        cwe: "CWE-79", owasp: "A03:2021",
+        codeSnippet: `// Instead of innerHTML with user data:\n// BAD: element.innerHTML = location.hash.slice(1);\n// GOOD: element.textContent = location.hash.slice(1);\n\n// If HTML is needed, sanitize first:\nimport DOMPurify from "dompurify";\nelement.innerHTML = DOMPurify.sanitize(userControlledData);`,
+      });
+    }
+  }
+
   return findings;
 };
