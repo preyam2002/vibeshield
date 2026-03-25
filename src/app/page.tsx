@@ -243,8 +243,8 @@ export default function Home() {
               <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
                 {([
                   { key: "quick" as const, label: "Quick (~10s)" },
-                  { key: "security" as const, label: "Security" },
-                  { key: "full" as const, label: "Full + Stress" },
+                  { key: "security" as const, label: "Security (~45s)" },
+                  { key: "full" as const, label: "Full + Stress (~90s)" },
                 ]).map((m) => (
                   <button
                     key={m.key}
