@@ -189,6 +189,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const [rescanning, setRescanning] = useState(false);
   const [openFindings, setOpenFindings] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<string>("all");
+  const [moduleFilter, setModuleFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [groupBy, setGroupBy] = useState<"severity" | "module">("severity");
   const [expandAll, setExpandAll] = useState(false);
@@ -341,6 +342,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const searchLower = search.toLowerCase();
   const filteredFindings = scan.findings.filter((f) => {
     if (filter !== "all" && f.severity !== filter) return false;
+    if (moduleFilter && f.module !== moduleFilter) return false;
     if (search && !f.title.toLowerCase().includes(searchLower) && !f.module.toLowerCase().includes(searchLower) && !f.remediation.toLowerCase().includes(searchLower)) return false;
     return true;
   });
@@ -708,10 +710,18 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               </h3>
               <div className="space-y-0.5">
                 {scan.modules.map((mod) => (
-                  <div
+                  <button
                     key={mod.name}
-                    className={`flex items-center gap-2 text-xs py-1.5 px-2 rounded-md transition-colors ${
-                      mod.status === "running" ? "bg-zinc-800/50" : ""
+                    onClick={() => {
+                      if (mod.findingsCount > 0) {
+                        setModuleFilter(moduleFilter === mod.name ? null : mod.name);
+                        setGroupBy("module");
+                      }
+                    }}
+                    className={`flex items-center gap-2 text-xs py-1.5 px-2 rounded-md transition-colors w-full text-left ${
+                      moduleFilter === mod.name ? "bg-zinc-800/80" :
+                      mod.status === "running" ? "bg-zinc-800/50" :
+                      mod.findingsCount > 0 ? "hover:bg-zinc-800/40" : ""
                     }`}
                   >
                     {mod.status === "running" && (
@@ -747,7 +757,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                         <span className="text-[10px] text-zinc-700 tabular-nums">{mod.durationMs < 1000 ? `${mod.durationMs}ms` : `${(mod.durationMs / 1000).toFixed(1)}s`}</span>
                       )}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -789,6 +799,12 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               if (techs.some((t) => t.includes("tailwind"))) tips.push({ tech: "Tailwind", tip: "CSP may need unsafe-inline for styles — use nonce-based CSP" });
               if (techs.some((t) => t.includes("graphql"))) tips.push({ tech: "GraphQL", tip: "Disable introspection in production, set query depth limits" });
               if (techs.some((t) => t.includes("socket"))) tips.push({ tech: "WebSocket", tip: "Use wss://, authenticate connections, validate message schemas" });
+              if (techs.some((t) => t.includes("openai") || t.includes("anthropic"))) tips.push({ tech: "AI/LLM", tip: "Proxy API calls through backend, rate-limit per user, validate/sanitize prompts" });
+              if (techs.some((t) => t.includes("remix"))) tips.push({ tech: "Remix", tip: "Validate loader/action data, use CSRF tokens on forms, sanitize user content" });
+              if (techs.some((t) => t.includes("vite"))) tips.push({ tech: "Vite", tip: "Ensure .env files are not bundled, use VITE_ prefix only for public vars" });
+              if (techs.some((t) => t.includes("convex"))) tips.push({ tech: "Convex", tip: "Use argument validation in mutations, never expose deploy keys client-side" });
+              if (techs.some((t) => t.includes("clerk") || t.includes("auth0"))) tips.push({ tech: "Auth Provider", tip: "Verify JWT signatures server-side, restrict redirect URIs, enable MFA" });
+              if (techs.some((t) => t.includes("mongodb") || t.includes("prisma"))) tips.push({ tech: "Database", tip: "Use parameterized queries, validate input types, never expose connection strings" });
               if (tips.length === 0) return null;
               return (
                 <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
@@ -874,22 +890,37 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 <div className="space-y-1">
                   {scan.modules.filter((m) => m.name !== "Recon").map((m) => {
                     const hasFindings = m.findingsCount > 0;
+                    const isActive = moduleFilter === m.name;
                     return (
-                      <div key={m.name} className="flex items-center gap-2 text-[11px]">
+                      <button
+                        key={m.name}
+                        onClick={() => {
+                          if (hasFindings) {
+                            setModuleFilter(isActive ? null : m.name);
+                            setGroupBy("module");
+                          }
+                        }}
+                        className={`flex items-center gap-2 text-[11px] w-full text-left rounded-md px-1 py-0.5 transition-colors ${
+                          isActive ? "bg-zinc-800/80" : hasFindings ? "hover:bg-zinc-800/40 cursor-pointer" : "cursor-default"
+                        }`}
+                      >
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                           m.status === "failed" ? "bg-zinc-600" :
                           hasFindings ? "bg-orange-500" : "bg-emerald-500"
                         }`} />
-                        <span className={`truncate ${hasFindings ? "text-zinc-300" : "text-zinc-600"}`}>
+                        <span className={`truncate ${
+                          isActive ? "text-zinc-100 font-medium" :
+                          hasFindings ? "text-zinc-300" : "text-zinc-600"
+                        }`}>
                           {m.name}
                         </span>
                         {hasFindings && (
-                          <span className="text-orange-400 ml-auto shrink-0">{m.findingsCount}</span>
+                          <span className={`ml-auto shrink-0 ${isActive ? "text-orange-300" : "text-orange-400"}`}>{m.findingsCount}</span>
                         )}
                         {!hasFindings && m.status === "completed" && (
                           <span className="text-emerald-600 ml-auto shrink-0 text-[10px]">pass</span>
                         )}
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
@@ -906,7 +937,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider shrink-0">
-                  Findings{filter !== "all" ? ` — ${filter}` : ""}
+                  Findings{filter !== "all" ? ` — ${filter}` : ""}{moduleFilter ? ` — ${moduleFilter}` : ""}
                   {filteredFindings.length > 0 && ` (${filteredFindings.length})`}
                 </h3>
                 {scan.findings.length > 3 && (
@@ -920,9 +951,9 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 )}
               </div>
               <div className="flex items-center gap-3">
-                {(filter !== "all" || search) && (
+                {(filter !== "all" || search || moduleFilter) && (
                   <button
-                    onClick={() => { setFilter("all"); setSearch(""); }}
+                    onClick={() => { setFilter("all"); setSearch(""); setModuleFilter(null); }}
                     className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
                   >
                     Clear filters
