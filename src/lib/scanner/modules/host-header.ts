@@ -155,5 +155,105 @@ export const hostHeaderModule: ScanModule = async (target) => {
     break;
   }
 
+  // Phase 4: DNS rebinding — test if app accepts requests with localhost/internal IP as Host
+  const rebindPayloads = [
+    { host: "127.0.0.1", desc: "IPv4 loopback" },
+    { host: "[::1]", desc: "IPv6 loopback" },
+    { host: "0.0.0.0", desc: "all interfaces" },
+    { host: "169.254.169.254", desc: "cloud metadata IP" },
+    { host: "10.0.0.1", desc: "private network" },
+  ];
+
+  const rebindResults = await Promise.allSettled(
+    rebindPayloads.map(async ({ host, desc }) => {
+      const res = await scanFetch(target.url, {
+        headers: { Host: host },
+        redirect: "manual",
+        timeoutMs: 5000,
+      });
+      // If the server responds normally (200/3xx) with an internal IP as Host,
+      // it may be vulnerable to DNS rebinding
+      if (res.ok || (res.status >= 300 && res.status < 400)) {
+        const text = await res.text();
+        // Skip if it's just a generic error page
+        if (text.length > 200 && !/invalid.*host|not.*found|blocked/i.test(text.substring(0, 300))) {
+          return { host, desc, status: res.status, bodyLen: text.length };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of rebindResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `host-header-rebind-${findings.length}`,
+      module: "Host Header Injection",
+      severity: "medium",
+      title: `Server accepts internal IP as Host header (${v.desc})`,
+      description: `The server responded normally (HTTP ${v.status}) when the Host header was set to ${v.host} (${v.desc}). This may allow DNS rebinding attacks where an attacker's domain temporarily resolves to an internal IP, bypassing same-origin restrictions and accessing internal services.`,
+      evidence: `Host: ${v.host} (${v.desc})\nStatus: ${v.status}\nResponse size: ${v.bodyLen} bytes (not a rejection)`,
+      remediation: "Validate the Host header against an allowlist of expected hostnames. Reject requests with IP addresses or unexpected hosts.",
+      cwe: "CWE-350",
+      owasp: "A05:2021",
+      confidence: 70,
+      codeSnippet: `// middleware.ts — validate Host header against allowlist\nconst ALLOWED_HOSTS = new Set([\n  process.env.HOSTNAME || "yourdomain.com",\n  "localhost:3000", // dev only\n]);\n\nexport function middleware(req: NextRequest) {\n  const host = req.headers.get("host") || "";\n  if (!ALLOWED_HOSTS.has(host)) {\n    return new NextResponse("Invalid Host header", { status: 400 });\n  }\n}`,
+    });
+    break;
+  }
+
+  // Phase 5: Port-based host injection
+  // Test if injecting a different port in Host header changes behavior
+  const portRes = await scanFetch(target.url, {
+    headers: { Host: `${hostname}:1337` },
+    redirect: "manual",
+    timeoutMs: 5000,
+  }).catch(() => null);
+
+  if (portRes) {
+    const portLocation = portRes.headers.get("location") || "";
+    if (portLocation.includes(":1337")) {
+      findings.push({
+        id: `host-header-port-${findings.length}`,
+        module: "Host Header Injection",
+        severity: "medium",
+        title: "Host header port injection reflected in redirects",
+        description: "Injecting a custom port in the Host header causes the server to generate redirect URLs with that port. Attackers can redirect users to unexpected ports that may host malicious services.",
+        evidence: `Host: ${hostname}:1337\nLocation: ${portLocation}`,
+        remediation: "Strip or validate the port number in the Host header. Use a hardcoded base URL for generating redirects.",
+        cwe: "CWE-644",
+        owasp: "A05:2021",
+        codeSnippet: `// Strip port from Host header in middleware\nexport function middleware(req: NextRequest) {\n  const host = req.headers.get("host")?.split(":")[0] || "";\n  // Validate against expected hostname\n  if (host !== process.env.HOSTNAME) {\n    return new NextResponse("Invalid host", { status: 400 });\n  }\n}`,
+      });
+    }
+  }
+
+  // Phase 6: Double Host header injection
+  // Some proxies pass the first Host header to the backend but route on the second
+  try {
+    const doubleHostRes = await scanFetch(target.url, {
+      headers: { Host: `evil.com, ${hostname}` },
+      redirect: "manual",
+      timeoutMs: 5000,
+    });
+    const doubleLocation = doubleHostRes.headers.get("location") || "";
+    const doubleText = await doubleHostRes.text();
+    if (doubleLocation.includes("evil.com") || (doubleText.includes("evil.com") && !doubleText.includes(hostname + "evil.com"))) {
+      findings.push({
+        id: `host-header-double-${findings.length}`,
+        module: "Host Header Injection",
+        severity: "high",
+        title: "Double Host header injection accepted",
+        description: "The server accepts a comma-separated Host header containing an attacker domain. This can cause routing confusion between the proxy and the application, leading to cache poisoning or request smuggling.",
+        evidence: `Host: evil.com, ${hostname}\n${doubleLocation ? `Location: ${doubleLocation}` : "evil.com reflected in response body"}`,
+        remediation: "Reject requests with multiple Host header values. Configure your reverse proxy to normalize the Host header.",
+        cwe: "CWE-444",
+        owasp: "A05:2021",
+        codeSnippet: `// Reject requests with multiple Host values\nexport function middleware(req: NextRequest) {\n  const host = req.headers.get("host") || "";\n  if (host.includes(",")) {\n    return new NextResponse("Invalid Host header", { status: 400 });\n  }\n}`,
+      });
+    }
+  } catch { /* skip */ }
+
   return findings;
 };

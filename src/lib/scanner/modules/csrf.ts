@@ -154,5 +154,148 @@ export const csrfModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 5: Login CSRF — check if login forms can be submitted cross-origin
+  // (allows attacker to log victim into attacker's account)
+  const loginEndpoints = target.apiEndpoints.filter((ep) =>
+    /login|signin|sign-in|authenticate/i.test(ep),
+  );
+  const loginForms = target.forms.filter((f) =>
+    f.method === "POST" && /login|signin|sign-in|authenticate/i.test(f.action),
+  );
+  const loginTargets = [
+    ...loginEndpoints.slice(0, 3).map((ep) => ({ url: ep, type: "api" as const })),
+    ...loginForms.slice(0, 2).map((f) => ({
+      url: f.action.startsWith("http") ? f.action : target.baseUrl + f.action,
+      type: "form" as const,
+    })),
+  ];
+
+  const loginResults = await Promise.allSettled(
+    loginTargets.map(async ({ url, type }) => {
+      // Test cross-origin POST with simple content type (bypasses CORS preflight)
+      const res = await scanFetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Origin: "https://evil.com",
+        },
+        body: "email=attacker@evil.com&password=password123",
+        timeoutMs: 5000,
+      });
+      // If the endpoint doesn't reject the cross-origin request, it's vulnerable
+      if (res.status !== 403 && res.status !== 401 && res.status !== 400) {
+        const text = await res.text();
+        if (!/csrf|forbidden|invalid.*origin|cross.*origin/i.test(text.substring(0, 500))) {
+          return { url: new URL(url).pathname, status: res.status, type };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of loginResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (!hasSameSiteCookie) {
+      findings.push({
+        id: `csrf-login-${findings.length}`,
+        module: "CSRF",
+        severity: "medium",
+        title: `Login CSRF: ${v.url} accepts cross-origin login`,
+        description: `The login endpoint accepts cross-origin POST requests without CSRF protection. An attacker can force a victim to log into the attacker's account, then observe the victim's activity or harvest data entered under that session.`,
+        evidence: `POST ${v.url} with Origin: https://evil.com\nStatus: ${v.status}\nContent-Type: application/x-www-form-urlencoded (simple request, no CORS preflight)`,
+        remediation: "Add CSRF protection to login forms. Validate the Origin header, or require a CSRF token even on login endpoints.",
+        cwe: "CWE-352",
+        owasp: "A01:2021",
+        codeSnippet: `// Protect login endpoint with Origin validation\nexport async function POST(req: Request) {\n  const origin = req.headers.get("origin");\n  const host = req.headers.get("host");\n  if (!origin || !origin.includes(host || "")) {\n    return Response.json({ error: "Invalid origin" }, { status: 403 });\n  }\n  // ... handle login\n}`,
+      });
+      break;
+    }
+  }
+
+  // Phase 6: Double-submit cookie pattern weakness detection
+  const csrfCookies = target.cookies.filter((c) =>
+    /csrf|xsrf|_token/i.test(c.name),
+  );
+  for (const cookie of csrfCookies) {
+    // If the CSRF cookie doesn't have SameSite or is SameSite=None, the double-submit pattern is weak
+    if (!cookie.sameSite || cookie.sameSite.toLowerCase() === "none") {
+      findings.push({
+        id: `csrf-double-submit-weak-${findings.length}`,
+        module: "CSRF",
+        severity: "low",
+        title: `Weak double-submit cookie: ${cookie.name}`,
+        description: `The CSRF token cookie "${cookie.name}" is not protected with SameSite attribute. In the double-submit cookie pattern, attackers can set this cookie via a subdomain or cookie injection, then submit a matching token in the request body.`,
+        evidence: `Cookie: ${cookie.name}\nSameSite: ${cookie.sameSite || "(not set)"}\nSecure: ${cookie.secure}\nHttpOnly: ${cookie.httpOnly}`,
+        remediation: "Add SameSite=Strict to CSRF token cookies. Better yet, use HMAC-signed tokens tied to the user session instead of simple double-submit cookies.",
+        cwe: "CWE-352",
+        owasp: "A01:2021",
+        confidence: 70,
+        codeSnippet: `// Use HMAC-signed CSRF tokens instead of plain double-submit\nimport { createHmac } from "crypto";\nconst secret = process.env.CSRF_SECRET!;\n\nfunction generateCsrfToken(sessionId: string) {\n  const hmac = createHmac("sha256", secret);\n  hmac.update(sessionId + ":" + Date.now());\n  return hmac.digest("hex");\n}`,
+      });
+    }
+  }
+
+  // Phase 7: Referer header validation bypass
+  // Some apps check Referer but can be bypassed with Referer suppression
+  const refererResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
+      // First try with no Referer (suppressed via Referrer-Policy: no-referrer)
+      const noRefRes = await scanFetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Referer: "",
+        },
+        body: JSON.stringify({ test: true }),
+        timeoutMs: 5000,
+      });
+      if (!noRefRes.ok) return null;
+
+      // Then try with evil Referer that contains the target domain as substring
+      const hostname = new URL(target.url).hostname;
+      const bypassReferers = [
+        `https://evil.com/${hostname}`,
+        `https://${hostname}.evil.com/`,
+        `https://evil.com?ref=${hostname}`,
+      ];
+      for (const ref of bypassReferers) {
+        const res = await scanFetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Referer: ref,
+            Origin: ref.split("/").slice(0, 3).join("/"),
+          },
+          body: JSON.stringify({ test: true }),
+          timeoutMs: 5000,
+        });
+        if (res.ok) {
+          return { endpoint: new URL(endpoint).pathname, bypass: ref };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of refererResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `csrf-referer-bypass-${findings.length}`,
+      module: "CSRF",
+      severity: "medium",
+      title: `Referer validation bypass on ${v.endpoint}`,
+      description: `The endpoint accepts requests with a manipulated Referer header ("${v.bypass}"). If the application relies on Referer-based CSRF protection, this bypass allows cross-site request forgery.`,
+      evidence: `POST ${v.endpoint} with Referer: ${v.bypass}\nRequest accepted (200 OK)`,
+      remediation: "Don't rely solely on Referer header for CSRF protection. Use proper CSRF tokens or validate the Origin header strictly (exact match, not substring).",
+      cwe: "CWE-352",
+      owasp: "A01:2021",
+      confidence: 65,
+      codeSnippet: `// Strict Origin validation — exact match, not substring\nfunction isValidOrigin(req: Request): boolean {\n  const origin = req.headers.get("origin");\n  const allowed = new Set([process.env.APP_URL]);\n  return origin !== null && allowed.has(origin);\n}`,
+    });
+    break;
+  }
+
   return findings;
 };
