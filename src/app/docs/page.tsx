@@ -283,7 +283,8 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/pdf", desc: "Printable HTML/PDF report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
               { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
-              { method: "GET", path: "/api/scans", desc: "List recent scans" },
+              { method: "GET", path: "/api/scans", desc: "List recent scans. Filter: ?target=domain&status=completed" },
+              { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
             ].map((ep) => (
               <div key={ep.path + ep.method} className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-1">
