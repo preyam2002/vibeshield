@@ -560,6 +560,42 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   >
                     Copy Summary
                   </button>
+                  <button
+                    onClick={() => {
+                      const hostname = (() => { try { return new URL(scan.target).hostname; } catch { return scan.target; } })();
+                      const sevEmoji = (s: string) => s === "critical" ? "🔴" : s === "high" ? "🟠" : s === "medium" ? "🟡" : "🔵";
+                      const critical = scan.findings.filter((f) => f.severity === "critical" || f.severity === "high");
+                      const medium = scan.findings.filter((f) => f.severity === "medium");
+                      const items = [...critical, ...medium];
+                      const body = [
+                        `## VibeShield Security Scan — ${hostname}`,
+                        "",
+                        `**Grade:** ${scan.grade} (${scan.score}/100) | **Findings:** ${scan.summary.total}`,
+                        "",
+                        "### Findings to Fix",
+                        "",
+                        ...items.slice(0, 10).map((f) => [
+                          `#### ${sevEmoji(f.severity)} [${f.severity.toUpperCase()}] ${f.title}`,
+                          "",
+                          f.description,
+                          "",
+                          `**Fix:** ${f.remediation}`,
+                          f.cwe ? `\n*${f.cwe}${f.owasp ? ` | OWASP ${f.owasp}` : ""}*` : "",
+                          "",
+                        ]).flat(),
+                        items.length > 10 ? `...and ${items.length - 10} more findings` : "",
+                        "",
+                        `---`,
+                        `*Scanned by [VibeShield](${window.location.href})*`,
+                      ].filter(Boolean).join("\n");
+                      const title = `[Security] VibeShield scan: ${scan.grade} (${scan.summary.total} findings) — ${hostname}`;
+                      const issueUrl = `https://github.com/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}&labels=security`;
+                      window.open(issueUrl, "_blank");
+                    }}
+                    className="text-xs bg-zinc-950/50 border border-zinc-700/50 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg transition-colors"
+                  >
+                    Create GitHub Issue
+                  </button>
                 </div>
               )}
             </div>
