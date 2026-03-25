@@ -80,9 +80,9 @@ export const idorModule: ScanModule = async (target) => {
   const [seqResults, paramResults] = await Promise.all([
     // Sequential ID tests — each endpoint tests its IDs in parallel
     Promise.allSettled(
-      idEndpoints.slice(0, 8).filter((ep) => ep.currentId !== 0).map(async (ep) => {
+      idEndpoints.slice(0, 8).filter((ep) => ep.currentId > 0).map(async (ep) => {
         if (PUBLIC_RESOURCE_PATTERNS.test(ep.base)) return null;
-        const testIds = [1, 2, 3, ep.currentId + 1, ep.currentId + 2];
+        const testIds = [1, 2, 3, 5, 10, ep.currentId + 1, ep.currentId + 2, ep.currentId + 10];
         const idResults = await Promise.allSettled(
           testIds.map(async (id) => {
             const url = `${ep.base}/${id}`;
@@ -137,6 +137,7 @@ export const idorModule: ScanModule = async (target) => {
       evidence: v.evidence.join("\n"),
       remediation: "Use UUIDs instead of sequential IDs. Always verify the requesting user has permission to access the specific resource.",
       cwe: "CWE-639", owasp: "A01:2021",
+      codeSnippet: `// Always check resource ownership\nexport async function GET(req: Request, { params }) {\n  const user = await getAuthUser(req);\n  const resource = await db.findById(params.id);\n  if (resource.userId !== user.id) {\n    return Response.json({ error: "Forbidden" }, { status: 403 });\n  }\n  return Response.json(resource);\n}`,
     });
   }
 
@@ -150,6 +151,7 @@ export const idorModule: ScanModule = async (target) => {
       description: `Changing the ${v.paramName} parameter returns different users' data without access checks.`,
       remediation: "Validate that the authenticated user owns the requested resource.",
       cwe: "CWE-639", owasp: "A01:2021",
+      codeSnippet: `// Check ownership before returning data\nconst resource = await db.findOne({ id: params.id });\nif (resource.userId !== session.userId) {\n  return Response.json({ error: "Forbidden" }, { status: 403 });\n}`,
     });
   }
 

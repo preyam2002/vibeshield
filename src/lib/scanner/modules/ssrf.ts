@@ -103,23 +103,30 @@ export const ssrfModule: ScanModule = async (target) => {
     if (findings.length >= MAX_FINDINGS) break;
     if (r.status !== "fulfilled" || !r.value) continue;
     const v = r.value;
+    const isErrorLeak = /ECONNREFUSED|getaddrinfo|ETIMEDOUT|EHOSTUNREACH/i.test(v.text);
+    const severity = isErrorLeak ? "high" : "critical";
+    const desc = isErrorLeak
+      ? "The endpoint processes user-supplied URLs server-side, leaking internal network errors. While data wasn't returned, this confirms the server makes internal requests from user input."
+      : "The endpoint fetches user-supplied URLs server-side without validating the target, returning internal data.";
     if (v.type === "get") {
       findings.push({
-        id: `ssrf-get-${ssrfCount++}`, module: "SSRF", severity: "critical",
-        title: `SSRF: ${v.name} accessible via ${v.param} parameter on ${v.pathname}`,
-        description: "The endpoint fetches user-supplied URLs server-side without validating the target.",
+        id: `ssrf-get-${ssrfCount++}`, module: "SSRF", severity,
+        title: `SSRF: ${v.name} ${isErrorLeak ? "connection attempted" : "accessible"} via ${v.param} parameter on ${v.pathname}`,
+        description: desc,
         evidence: `GET ${v.url}\nStatus: ${v.status}\nResponse preview: ${v.text}`,
         remediation: "Validate and sanitize URLs before fetching. Block requests to internal IP ranges. Use an allowlist of permitted domains.",
         cwe: "CWE-918", owasp: "A10:2021",
+        codeSnippet: `// Validate URLs before server-side fetch\nconst url = new URL(input);\nconst BLOCKED = /^(127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2|3[01])\\.|0\\.0\\.0\\.0|localhost|::1)/;\nif (BLOCKED.test(url.hostname)) throw new Error("Blocked");\nif (url.protocol !== "https:") throw new Error("HTTPS only");`,
       });
     } else {
       findings.push({
-        id: `ssrf-post-${ssrfCount++}`, module: "SSRF", severity: "critical",
-        title: `SSRF: ${v.name} accessible via POST body on ${v.pathname}`,
-        description: "The endpoint fetches user-supplied URLs from POST body without validation.",
+        id: `ssrf-post-${ssrfCount++}`, module: "SSRF", severity,
+        title: `SSRF: ${v.name} ${isErrorLeak ? "connection attempted" : "accessible"} via POST body on ${v.pathname}`,
+        description: desc,
         evidence: `POST ${v.endpoint} with url: ${v.payload}\nStatus: ${v.status}\nResponse preview: ${v.text}`,
         remediation: "Validate and sanitize URLs before fetching. Block internal IP ranges. Use domain allowlists.",
         cwe: "CWE-918", owasp: "A10:2021",
+        codeSnippet: `// Validate URLs before server-side fetch\nconst url = new URL(input);\nconst BLOCKED = /^(127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2|3[01])\\.|0\\.0\\.0\\.0|localhost|::1)/;\nif (BLOCKED.test(url.hostname)) throw new Error("Blocked");\nif (url.protocol !== "https:") throw new Error("HTTPS only");`,
       });
     }
   }
@@ -140,12 +147,18 @@ const isSSRFIndicator = (text: string, payloadName: string): boolean => {
   if (payloadName === "Apache server-status") {
     return /Apache Server Status|scoreboard/i.test(text);
   }
-  // For localhost/zero-address: require strong evidence of actual internal service content
+  // For localhost/zero-address: check for internal service interaction evidence
   if (/localhost|zero address|IPv6/.test(payloadName)) {
-    if (text.includes("ECONNREFUSED") || text.includes("fetch failed") || text.length < 50) return false;
-    // Reject error messages that merely mention localhost/127.0.0.1
-    if (/cannot|couldn't|unable|failed|refused|error|timeout|unreachable/i.test(text.substring(0, 200))) return false;
-    // Must contain structural indicators of an internal service response (HTML page or JSON data)
+    // "Connection refused" errors prove the server tried to connect internally — medium severity SSRF
+    if (/ECONNREFUSED|connect ECONNREFUSED|connection refused/i.test(text)) return true;
+    // Generic fetch errors that don't reveal connection behavior aren't useful
+    if (text.includes("fetch failed") || text.length < 50) return false;
+    // DNS resolution or timeout errors still prove the server processes user URLs
+    if (/getaddrinfo|ETIMEDOUT|EHOSTUNREACH/i.test(text)) return true;
+    // Generic "unable/failed" that doesn't leak connection details — skip
+    if (/cannot|couldn't|unable|failed|error|timeout|unreachable/i.test(text.substring(0, 200)) &&
+        !/ECONNREFUSED|127\.0\.0\.1|localhost|::1|0\.0\.0\.0/i.test(text)) return false;
+    // Structural indicators of an actual internal service response
     const hasStructure = (text.includes("<title>") && text.includes("</title>")) ||
       (text.startsWith("{") && text.length > 100) ||
       /server-status|phpinfo|admin|dashboard/i.test(text);
