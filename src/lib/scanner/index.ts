@@ -61,6 +61,7 @@ import { oauthModule } from "./modules/oauth";
 import { apiVersioningModule } from "./modules/api-versioning";
 import { cspModule } from "./modules/csp";
 import { storageModule } from "./modules/storage";
+import { sessionModule } from "./modules/session";
 import {
   MODULE_TIMEOUT_MS,
   MAX_FINDINGS_PER_MODULE,
@@ -97,6 +98,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Next.js", description: "Next.js-specific security checks", category: "security", run: nextjsModule },
   { name: "GraphQL", description: "Test GraphQL introspection and security", category: "security", run: graphqlModule },
   { name: "Email Enumeration", description: "Test for user enumeration via auth endpoints", category: "security", run: emailEnumModule },
+  { name: "Session Management", description: "Test session handling, fixation, invalidation, and storage", category: "security", run: sessionModule },
   { name: "Stripe", description: "Test Stripe payment integration security", category: "security", run: stripeModule },
   { name: "WebSocket", description: "Check WebSocket security", category: "security", run: websocketModule },
   { name: "OAuth/OIDC", description: "Test OAuth flows, redirect_uri validation, and state parameter checks", category: "security", run: oauthModule },

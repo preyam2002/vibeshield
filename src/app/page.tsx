@@ -22,6 +22,7 @@ const ATTACK_MODULES = [
   { name: "Open Redirect", desc: "15 bypass variants: encoding, backslash, javascript:, data:", icon: "↗" },
   { name: "CSRF", desc: "SameSite bypass, content-type confusion, form token checks", icon: "🔄" },
   { name: "Email Enumeration", desc: "User existence disclosure via auth", icon: "📧" },
+  { name: "Session Security", desc: "Token in URL, logout invalidation, localStorage storage, concurrent sessions", icon: "🔐" },
   { name: "Cookie Security", desc: "HttpOnly, Secure, SameSite, __Host- prefix, cookie tossing", icon: "🍪" },
   { name: "Security Headers", desc: "CSP, HSTS, X-Frame-Options, and more", icon: "📋" },
   { name: "SSL/TLS", desc: "HTTPS, cert validity, mixed content", icon: "🔒" },
