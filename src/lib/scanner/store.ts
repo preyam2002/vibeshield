@@ -96,7 +96,7 @@ export const getRecentScans = (): { id: string; target: string; grade: string; s
       if (b.status === "scanning" && a.status !== "scanning") return 1;
       return (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt);
     })
-    .slice(0, 50)
+    .slice(0, 100)
     .map((s) => ({
       id: s.id, target: s.target, grade: s.grade, score: s.score, status: s.status,
       findings: s.summary.total, summary: s.summary, startedAt: s.startedAt,

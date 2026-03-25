@@ -40,12 +40,21 @@ export async function GET(
 
   const percentile = scan.status === "completed" ? getPercentile(scan.score) : undefined;
   const history = scan.status === "completed" ? getScanHistory(scan.target) : undefined;
-  return NextResponse.json({
+  const res = NextResponse.json({
     ...scan,
     comparison,
     ...(percentile !== undefined && percentile >= 0 ? { percentile } : {}),
     ...(history && history.length > 1 ? { history } : {}),
   });
+
+  // Completed/failed scans are immutable — cache aggressively
+  if (scan.status === "completed" || scan.status === "failed") {
+    res.headers.set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
+  } else {
+    res.headers.set("Cache-Control", "no-store");
+  }
+
+  return res;
 }
 
 export async function DELETE(
