@@ -150,6 +150,83 @@ export const firebaseModule: ScanModule = async (target) => {
     });
   }
 
+  // Test Cloud Functions for missing auth
+  if (projectId) {
+    const cloudFnPaths = [
+      "api", "webhook", "onRequest", "processPayment", "sendEmail", "createUser",
+      "generate", "chat", "notify", "sync", "stripe", "cron",
+    ];
+    // Discover function names from JS bundles
+    const fnRegions = ["us-central1", "us-east1", "europe-west1"];
+    const cfMatches = allJs.matchAll(/cloudfunctions\.net\/([a-zA-Z0-9_-]+)/g);
+    for (const m of cfMatches) {
+      if (!cloudFnPaths.includes(m[1])) cloudFnPaths.push(m[1]);
+    }
+    // Also look for callable function references
+    const callableMatches = allJs.matchAll(/httpsCallable\s*\(\s*[^,]*,\s*["']([^"']+)["']/g);
+    for (const m of callableMatches) {
+      if (!cloudFnPaths.includes(m[1])) cloudFnPaths.push(m[1]);
+    }
+
+    const cloudFnResults = await Promise.allSettled(
+      cloudFnPaths.flatMap((fn) =>
+        fnRegions.slice(0, 1).map(async (region) => {
+          const url = `https://${region}-${projectId}.cloudfunctions.net/${fn}`;
+          const res = await scanFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data: { test: true } }),
+            timeoutMs: 8000,
+          });
+          if (res.status === 404 || res.status === 403 || res.status === 401) return null;
+          const text = await res.text();
+          if (text.length < 5) return null;
+          if (res.ok || res.status === 400) {
+            return { fn, region, url, status: res.status, text: text.substring(0, 300) };
+          }
+          return null;
+        }),
+      ),
+    );
+
+    const cfSeen = new Set<string>();
+    for (const r of cloudFnResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const { fn, url, status, text } = r.value;
+      if (cfSeen.has(fn)) continue;
+      cfSeen.add(fn);
+      findings.push({
+        id: `firebase-cloud-fn-no-auth-${fn}`, module: "Firebase", severity: "high",
+        title: `Cloud Function "${fn}" accessible without authentication`,
+        description: "This Firebase Cloud Function responds to unauthenticated requests. Attackers can invoke it directly, potentially abusing server-side logic, consuming your Cloud billing quota, or accessing internal services.",
+        evidence: `POST ${url}\nStatus: ${status}\nResponse: ${text}`,
+        remediation: "Validate Firebase Auth tokens in your Cloud Functions. For HTTP functions, verify the Authorization header. For callable functions, use the built-in auth context.",
+        cwe: "CWE-306", owasp: "A07:2021",
+        codeSnippet: `// Validate auth in HTTP Cloud Functions\nexport const myFunction = onRequest(async (req, res) => {\n  const token = req.headers.authorization?.split("Bearer ")[1];\n  if (!token) { res.status(401).send("Unauthorized"); return; }\n  try {\n    const decoded = await admin.auth().verifyIdToken(token);\n    // ... handle authenticated request\n  } catch {\n    res.status(401).send("Invalid token");\n  }\n});\n\n// Or use callable functions (auth built-in):\nexport const myCallable = onCall((request) => {\n  if (!request.auth) throw new HttpsError("unauthenticated", "Login required");\n});`,
+      });
+    }
+  }
+
+  // Check for service account key exposure in JS bundles
+  const saKeyPatterns = [
+    { pattern: /["']type["']\s*:\s*["']service_account["']/i, desc: "service_account JSON type field" },
+    { pattern: /["']private_key["']\s*:\s*["']-----BEGIN (?:RSA )?PRIVATE KEY/i, desc: "private_key with PEM header" },
+    { pattern: /["']client_email["']\s*:\s*["'][^"']+@[^"']*\.iam\.gserviceaccount\.com["']/i, desc: "IAM service account email" },
+  ];
+
+  const saMatches = saKeyPatterns.filter((p) => p.pattern.test(allJs));
+  if (saMatches.length >= 2) {
+    findings.push({
+      id: "firebase-service-account-exposed", module: "Firebase", severity: "critical",
+      title: "Firebase/GCP service account key exposed in client code",
+      description: `Service account credentials were found in client-side JavaScript (matched: ${saMatches.map((m) => m.desc).join(", ")}). This grants full administrative access to your Firebase project and any GCP services the account has access to.`,
+      evidence: `Found ${saMatches.length} service account key indicators in JS bundles`,
+      remediation: "Remove the service account key from client code IMMEDIATELY. Rotate the key in GCP Console → IAM → Service Accounts. Service account keys should only exist on the server side, ideally using environment variables or GCP Secret Manager.",
+      cwe: "CWE-798", owasp: "A07:2021",
+      codeSnippet: `// NEVER embed service account keys in client code\n// Server-side only:\nimport admin from "firebase-admin";\n\n// Option 1: Use Application Default Credentials (recommended)\nadmin.initializeApp();\n\n// Option 2: Use environment variable\nadmin.initializeApp({\n  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!)),\n});`,
+    });
+  }
+
   if (authConfigResult) {
     if (authConfigResult.signupOpen) {
       findings.push({

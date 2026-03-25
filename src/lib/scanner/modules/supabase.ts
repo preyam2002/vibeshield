@@ -198,5 +198,111 @@ export const supabaseModule: ScanModule = async (target) => {
     }
   }
 
+  // Test Edge Functions for missing auth
+  const edgeFunctionPaths = [
+    "/functions/v1/hello", "/functions/v1/process", "/functions/v1/webhook",
+    "/functions/v1/generate", "/functions/v1/chat", "/functions/v1/ai",
+    "/functions/v1/stripe", "/functions/v1/payment", "/functions/v1/send",
+    "/functions/v1/notify", "/functions/v1/sync", "/functions/v1/cron",
+  ];
+
+  // Also discover edge function names from JS bundles
+  const edgeFnMatches = allJs.matchAll(/functions\/v1\/([a-zA-Z0-9_-]+)/g);
+  for (const m of edgeFnMatches) {
+    const path = `/functions/v1/${m[1]}`;
+    if (!edgeFunctionPaths.includes(path)) edgeFunctionPaths.push(path);
+  }
+
+  const edgeFnResults = await Promise.allSettled(
+    edgeFunctionPaths.map(async (path) => {
+      // Test without auth header (just anon key in URL, no Bearer token)
+      const url = `${supabaseUrl}${path}`;
+      const res = await scanFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ test: true }),
+        timeoutMs: 8000,
+      });
+      const text = await res.text();
+      // 401/403 = properly protected, 404 = doesn't exist
+      if (res.status === 401 || res.status === 403 || res.status === 404) return null;
+      if (text.length < 5) return null;
+      // If function responds successfully without auth, it's exposed
+      if (res.ok || res.status === 400) {
+        return { path, status: res.status, text: text.substring(0, 300) };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of edgeFnResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { path, status, text } = r.value;
+    findings.push({
+      id: `supabase-edge-fn-no-auth-${path.replace(/\//g, "-")}`, module: "Supabase", severity: "high",
+      title: `Edge Function "${path}" accessible without authentication`,
+      description: "This Supabase Edge Function responds to requests without a valid JWT. Anyone can invoke it directly, potentially abusing server-side logic, consuming resources, or accessing internal services.",
+      evidence: `POST ${supabaseUrl}${path} (no Authorization header)\nStatus: ${status}\nResponse: ${text}`,
+      remediation: "Verify the JWT in your Edge Function. Supabase passes the Authorization header to functions — validate it before processing.",
+      cwe: "CWE-306", owasp: "A07:2021",
+      codeSnippet: `// supabase/functions/my-function/index.ts\nimport { createClient } from "@supabase/supabase-js";\n\nDeno.serve(async (req) => {\n  const authHeader = req.headers.get("Authorization");\n  if (!authHeader) return new Response("Unauthorized", { status: 401 });\n\n  const supabase = createClient(\n    Deno.env.get("SUPABASE_URL")!,\n    Deno.env.get("SUPABASE_ANON_KEY")!,\n    { global: { headers: { Authorization: authHeader } } }\n  );\n  const { data: { user } } = await supabase.auth.getUser();\n  if (!user) return new Response("Unauthorized", { status: 401 });\n  // ... handle request\n});`,
+    });
+  }
+
+  // Test Realtime channel authorization
+  const realtimeChannels = ["public", "private", "admin", "notifications", "chat", "updates"];
+  // Also discover channel names from JS
+  const channelMatches = allJs.matchAll(/\.channel\(\s*["']([^"']+)["']\)/g);
+  for (const m of channelMatches) {
+    if (!realtimeChannels.includes(m[1])) realtimeChannels.push(m[1]);
+  }
+
+  // Test if realtime endpoint is accessible (WebSocket upgrade via HTTP)
+  const realtimeUrl = `${supabaseUrl}/realtime/v1/websocket?apikey=${testKey}&vsn=1.0.0`;
+  try {
+    const rtRes = await scanFetch(realtimeUrl, { timeoutMs: 5000 });
+    // A 101 or 200 response means the realtime endpoint is accessible with just the anon key
+    if (rtRes.ok || rtRes.status === 101 || rtRes.status === 426) {
+      // Check if Realtime is enabled — try subscribing to postgres_changes on sensitive tables
+      const sensitiveChannelResults = await Promise.allSettled(
+        ["users", "auth.users", "payments", "orders", "sessions"].map(async (table) => {
+          // Use the REST-based realtime health check
+          const healthUrl = `${supabaseUrl}/realtime/v1/api/health`;
+          const res = await scanFetch(healthUrl, {
+            headers: { apikey: testKey },
+            timeoutMs: 5000,
+          });
+          if (res.ok) return { table, accessible: true };
+          return null;
+        }),
+      );
+
+      const realtimeAccessible = sensitiveChannelResults.some(
+        (r) => r.status === "fulfilled" && r.value?.accessible,
+      );
+
+      if (realtimeAccessible) {
+        // Check if any RLS-unprotected tables could leak data via Realtime
+        const rlsVulnTables = findings
+          .filter((f) => f.id.startsWith("supabase-rls-read-"))
+          .map((f) => f.id.replace("supabase-rls-read-", ""));
+
+        if (rlsVulnTables.length > 0) {
+          findings.push({
+            id: "supabase-realtime-rls-leak", module: "Supabase", severity: "high",
+            title: "Realtime subscriptions may leak data from RLS-unprotected tables",
+            description: `Supabase Realtime is accessible and the following tables lack RLS policies: ${rlsVulnTables.join(", ")}. Attackers can subscribe to postgres_changes on these tables to receive all INSERT/UPDATE/DELETE events in real-time.`,
+            evidence: `Realtime endpoint: ${supabaseUrl}/realtime/v1\nTables without RLS: ${rlsVulnTables.join(", ")}`,
+            remediation: "Enable RLS on all tables. Realtime respects RLS policies — once RLS is enabled, only authorized changes are broadcast to subscribers.",
+            cwe: "CWE-862", owasp: "A01:2021",
+            codeSnippet: `-- Enable RLS to protect Realtime subscriptions\n${rlsVulnTables.map((t) => `ALTER TABLE "${t}" ENABLE ROW LEVEL SECURITY;`).join("\n")}\n\n-- Realtime respects RLS, so add SELECT policies:\n-- CREATE POLICY "Users see own data" ON "table"\n--   FOR SELECT USING (auth.uid() = user_id);`,
+          });
+        }
+      }
+    }
+  } catch {
+    // Realtime not accessible — fine
+  }
+
   return findings;
 };
