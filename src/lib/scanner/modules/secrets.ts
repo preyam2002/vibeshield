@@ -394,6 +394,38 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Vercel Blob read-write token exposed. Attackers can upload, read, and delete files in your blob store.",
     remediation: "Rotate in Vercel project settings. Use server-side upload handling.",
   },
+  // Gemini (Google AI)
+  {
+    name: "Gemini API Key",
+    pattern: /(?:GEMINI_API_KEY|GOOGLE_AI_KEY|google_ai_key)[\s"':=]+["']([a-zA-Z0-9_-]{39})["']/g,
+    severity: "critical",
+    description: "Google Gemini API key exposed. Attackers can make AI inference calls billed to your account.",
+    remediation: "Rotate in Google AI Studio. Proxy all AI calls through your backend.",
+  },
+  // xAI / Grok
+  {
+    name: "xAI API Key",
+    pattern: /xai-[a-zA-Z0-9]{48,}/g,
+    severity: "critical",
+    description: "xAI (Grok) API key exposed. Attackers can make inference calls on your account.",
+    remediation: "Rotate in xAI console. Proxy through your backend.",
+  },
+  // Trigger.dev
+  {
+    name: "Trigger.dev Secret Key",
+    pattern: /tr_dev_[a-zA-Z0-9]{30,}/g,
+    severity: "high",
+    description: "Trigger.dev secret key exposed. Attackers can trigger and manage your background jobs.",
+    remediation: "Rotate in Trigger.dev dashboard. Move to server-side.",
+  },
+  // Inngest
+  {
+    name: "Inngest Signing Key",
+    pattern: /signkey-[a-z]+-[a-zA-Z0-9]{30,}/g,
+    severity: "high",
+    description: "Inngest signing key exposed. Attackers can forge event payloads to your functions.",
+    remediation: "Rotate in Inngest dashboard. Never expose signing keys in client code.",
+  },
   // R2/S3 presigned URL patterns (not secret per se, but dangerous if long-lived)
   {
     name: "Long-lived Presigned S3/R2 URL",

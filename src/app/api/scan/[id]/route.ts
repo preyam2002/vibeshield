@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getScan, findPreviousScan, getPercentile, cancelScan } from "@/lib/scanner/store";
+import { getScan, findPreviousScan, getPercentile, cancelScan, getScanHistory } from "@/lib/scanner/store";
 
 export async function GET(
   _req: Request,
@@ -39,7 +39,13 @@ export async function GET(
   }
 
   const percentile = scan.status === "completed" ? getPercentile(scan.score) : undefined;
-  return NextResponse.json({ ...scan, comparison, ...(percentile !== undefined && percentile >= 0 ? { percentile } : {}) });
+  const history = scan.status === "completed" ? getScanHistory(scan.target) : undefined;
+  return NextResponse.json({
+    ...scan,
+    comparison,
+    ...(percentile !== undefined && percentile >= 0 ? { percentile } : {}),
+    ...(history && history.length > 1 ? { history } : {}),
+  });
 }
 
 export async function DELETE(

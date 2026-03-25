@@ -62,6 +62,14 @@ export const findPreviousScan = (target: string, excludeId: string): ScanResult 
     [0];
 };
 
+export const getScanHistory = (target: string): { id: string; score: number; grade: string; findings: number; date: string }[] => {
+  return Array.from(scans.values())
+    .filter((s) => s.target === target && s.status === "completed")
+    .sort((a, b) => (a.completedAt || a.startedAt).localeCompare(b.completedAt || b.startedAt))
+    .slice(-10)
+    .map((s) => ({ id: s.id, score: s.score, grade: s.grade, findings: s.summary.total, date: s.completedAt || s.startedAt }));
+};
+
 const STALE_SCAN_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 const cleanupStaleScans = () => {

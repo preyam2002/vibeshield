@@ -63,6 +63,7 @@ interface ScanResult {
     fixedFindings?: { title: string; severity: string; module: string }[];
   };
   percentile?: number;
+  history?: { id: string; score: number; grade: string; findings: number; date: string }[];
 }
 
 const SEVERITY_CONFIG = {
@@ -687,6 +688,52 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             </button>
           </div>
         )}
+
+        {/* Score history sparkline */}
+        {!isRunning && scan.history && scan.history.length > 1 && (() => {
+          const h = scan.history;
+          const minScore = Math.min(...h.map((s) => s.score));
+          const maxScore = Math.max(...h.map((s) => s.score));
+          const range = Math.max(maxScore - minScore, 10);
+          const height = 40;
+          const width = h.length * 32;
+          const points = h.map((s, i) => ({
+            x: (i / (h.length - 1)) * (width - 8) + 4,
+            y: height - ((s.score - minScore) / range) * (height - 8) - 4,
+            ...s,
+          }));
+          const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+          const trend = h[h.length - 1].score - h[0].score;
+          return (
+            <div className="mb-6 bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-3 flex items-center gap-4">
+              <div className="text-[10px] text-zinc-600 shrink-0">
+                <div className="font-medium text-zinc-500">Score History</div>
+                <div>{h.length} scans</div>
+                <div className={trend > 0 ? "text-green-500" : trend < 0 ? "text-red-400" : "text-zinc-500"}>
+                  {trend > 0 ? "+" : ""}{trend} pts overall
+                </div>
+              </div>
+              <svg viewBox={`0 0 ${width} ${height}`} className="flex-1 max-w-xs h-10" preserveAspectRatio="none">
+                <path d={pathD} fill="none" stroke={trend >= 0 ? "#22c55e" : "#ef4444"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                {points.map((p, i) => (
+                  <circle key={i} cx={p.x} cy={p.y} r={p.id === scan.id ? 4 : 2.5} fill={p.id === scan.id ? "#fff" : trend >= 0 ? "#22c55e" : "#ef4444"} stroke={p.id === scan.id ? (trend >= 0 ? "#22c55e" : "#ef4444") : "none"} strokeWidth="2" />
+                ))}
+              </svg>
+              <div className="flex gap-1.5 shrink-0">
+                {h.map((s) => (
+                  <a
+                    key={s.id}
+                    href={`/scan/${s.id}`}
+                    className={`text-[9px] px-1 py-0.5 rounded transition-colors ${s.id === scan.id ? "bg-zinc-700 text-zinc-200 font-bold" : "text-zinc-600 hover:text-zinc-400"}`}
+                    title={`${s.grade} (${s.score}) — ${new Date(s.date).toLocaleDateString()}`}
+                  >
+                    {s.grade}
+                  </a>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Progress bar */}
         {isRunning && (
