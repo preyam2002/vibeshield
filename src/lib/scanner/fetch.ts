@@ -7,6 +7,7 @@ const queue: (() => void)[] = [];
 const responseCache = new Map<string, { status: number; headers: Record<string, string>; body: string; timestamp: number }>();
 const CACHE_TTL = 30_000; // 30s — enough for a single scan run
 const MAX_CACHE_SIZE = 500;
+const MAX_ENTRY_SIZE = 1_048_576; // 1MB — skip caching large responses to prevent bloat
 
 const waitForSlot = (): Promise<void> => {
   if (active < MAX_CONCURRENT) {
@@ -88,9 +89,14 @@ export const scanFetch = async (
           continue;
         }
 
-        // Cache successful GET responses
+        // Cache successful GET responses (skip large bodies to prevent cache bloat)
         if (isCacheable && res.ok) {
           const body = await res.text();
+          if (body.length > MAX_ENTRY_SIZE) {
+            const headers: Record<string, string> = {};
+            res.headers.forEach((v, k) => { headers[k] = v; });
+            return new Response(body, { status: res.status, headers });
+          }
           const headers: Record<string, string> = {};
           res.headers.forEach((v, k) => { headers[k] = v; });
           responseCache.set(url, { status: res.status, headers, body, timestamp: Date.now() });

@@ -715,7 +715,13 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   return <span className="text-zinc-600">~{mins > 0 ? `${mins}m ${secs}s` : `${secs}s`} left</span>;
                 })()}
                 {scan.summary.total > 0 && (
-                  <span className="text-orange-500/70">{scan.summary.total} found</span>
+                  <span className="text-orange-500/70">
+                    {scan.summary.total} found
+                    {scan.summary.critical > 0 && <span className="text-red-400 ml-1">({scan.summary.critical}C</span>}
+                    {scan.summary.critical > 0 && scan.summary.high > 0 && <span className="text-orange-400"> {scan.summary.high}H</span>}
+                    {scan.summary.critical > 0 && <span className="text-red-400">)</span>}
+                    {scan.summary.critical === 0 && scan.summary.high > 0 && <span className="text-orange-400 ml-1">({scan.summary.high}H)</span>}
+                  </span>
                 )}
                 <button
                   onClick={handleCancel}
@@ -806,6 +812,37 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             })}
           </div>
         )}
+
+        {/* Module filter pills */}
+        {!isRunning && scan.findings.length > 0 && (() => {
+          const modules = [...new Set(scan.findings.map((f) => f.module))].sort();
+          if (modules.length <= 1) return null;
+          return (
+            <div className="mb-4 flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => setModuleFilter(null)}
+                className={`text-[10px] px-2.5 py-1 rounded-full transition-colors ${!moduleFilter ? "bg-zinc-700 text-zinc-200" : "bg-zinc-900/50 text-zinc-600 hover:text-zinc-400 border border-zinc-800/50"}`}
+              >
+                All modules
+              </button>
+              {modules.map((mod) => {
+                const count = scan.findings.filter((f) => f.module === mod).length;
+                const worst = (["critical", "high", "medium", "low", "info"] as const).find((s) => scan.findings.some((f) => f.module === mod && f.severity === s));
+                const dotColor = worst ? SEVERITY_CONFIG[worst].dot : "bg-zinc-600";
+                return (
+                  <button
+                    key={mod}
+                    onClick={() => setModuleFilter(moduleFilter === mod ? null : mod)}
+                    className={`text-[10px] px-2.5 py-1 rounded-full transition-colors flex items-center gap-1.5 ${moduleFilter === mod ? "bg-zinc-700 text-zinc-200" : "bg-zinc-900/50 text-zinc-600 hover:text-zinc-400 border border-zinc-800/50"}`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                    {mod} ({count})
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Security summary */}
         {!isRunning && scan.status === "completed" && scan.findings.length > 0 && (

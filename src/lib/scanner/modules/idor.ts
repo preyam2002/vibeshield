@@ -12,6 +12,16 @@ const ID_PATH_PATTERNS = [
   /\/api\/\w+\/\d+\/\w+\/(\d+)$/,
   // Short hash IDs: /api/user/abc123
   /\/api\/\w+\/([a-zA-Z0-9]{6,24})$/,
+  // ULID: 26 chars, starts with time component (Crockford base32)
+  /\/api\/\w+\/([0-9A-HJKMNP-TV-Z]{26})$/,
+  // Snowflake/Twitter-style IDs: large numeric strings (15-20 digits)
+  /\/api\/\w+\/(\d{15,20})$/,
+  // Base64-encoded IDs: alphanumeric + padding (common in GraphQL relay)
+  /\/api\/\w+\/([A-Za-z0-9+/]{16,}={0,2})$/,
+  // Nano ID: 21 chars, URL-safe alphabet
+  /\/api\/\w+\/([A-Za-z0-9_-]{21})$/,
+  // CUID/CUID2: starts with 'c', 24-25 chars
+  /\/api\/\w+\/(c[a-z0-9]{23,24})$/,
 ];
 
 // Endpoints that naturally serve public content by ID — not IDOR
@@ -32,7 +42,7 @@ export const idorModule: ScanModule = async (target) => {
   const idEndpoints: { base: string; currentId: number }[] = [];
   const seenBases = new Set<string>();
 
-  const stripId = (url: string) => url.replace(/\/(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-zA-Z0-9]{6,24})$/i, "");
+  const stripId = (url: string) => url.replace(/\/(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26}|[A-Za-z0-9+/]{16,}={0,2}|[A-Za-z0-9_-]{21}|c[a-z0-9]{23,24}|[a-zA-Z0-9]{6,24})$/i, "");
 
   for (const endpoint of target.apiEndpoints) {
     for (const pattern of ID_PATH_PATTERNS) {

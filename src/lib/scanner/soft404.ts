@@ -34,10 +34,24 @@ export const isSoft404 = (body: string, target: ScanTarget): boolean => {
   const lenRatio = canary.length > 0 ? body.length / canary.length : 0;
   if (lenRatio < 0.5 || lenRatio > 2.0) return false;
 
-  // Structural skeleton comparison — if tag structure matches, it's the same template
+  // Structural skeleton comparison — if tag structure is ~80% similar, it's the same template
   const bodySkeleton = extractSkeleton(body);
   const canarySkeleton = extractSkeleton(canary);
-  if (bodySkeleton.length > 20 && bodySkeleton === canarySkeleton) return true;
+  if (bodySkeleton.length > 20 && canarySkeleton.length > 20) {
+    if (bodySkeleton === canarySkeleton) return true;
+    // Fuzzy skeleton match: compare tag sequences with tolerance for minor differences
+    const bodyTags = bodySkeleton.split(",");
+    const canaryTags = canarySkeleton.split(",");
+    const minLen = Math.min(bodyTags.length, canaryTags.length);
+    const maxLen = Math.max(bodyTags.length, canaryTags.length);
+    if (minLen / maxLen > 0.7) {
+      let matched = 0;
+      for (let i = 0; i < minLen; i++) {
+        if (bodyTags[i] === canaryTags[i]) matched++;
+      }
+      if (matched / maxLen > 0.8) return true;
+    }
+  }
 
   // Normalized content similarity (strip scripts/styles/whitespace, compare character overlap)
   const normalize = (s: string) =>

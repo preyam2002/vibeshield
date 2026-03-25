@@ -12,11 +12,23 @@ const MAX_SCANS = 100;
 
 const evictOldScans = () => {
   if (scans.size <= MAX_SCANS) return;
-  const completed = Array.from(scans.entries())
+  // Evict completed/failed scans, but prioritize keeping scans with critical/high findings
+  const evictable = Array.from(scans.entries())
     .filter(([, s]) => s.status === "completed" || s.status === "failed")
-    .sort((a, b) => (a[1].completedAt || a[1].startedAt).localeCompare(b[1].completedAt || b[1].startedAt));
-  while (scans.size > MAX_SCANS && completed.length > 0) {
-    const [id] = completed.shift()!;
+    .sort((a, b) => {
+      // Failed scans evict first
+      if (a[1].status === "failed" && b[1].status !== "failed") return -1;
+      if (b[1].status === "failed" && a[1].status !== "failed") return 1;
+      // Scans with no critical/high findings evict before those with them
+      const aHasSevere = a[1].summary.critical > 0 || a[1].summary.high > 0;
+      const bHasSevere = b[1].summary.critical > 0 || b[1].summary.high > 0;
+      if (!aHasSevere && bHasSevere) return -1;
+      if (aHasSevere && !bHasSevere) return 1;
+      // Within same tier, evict oldest first
+      return (a[1].completedAt || a[1].startedAt).localeCompare(b[1].completedAt || b[1].startedAt);
+    });
+  while (scans.size > MAX_SCANS && evictable.length > 0) {
+    const [id] = evictable.shift()!;
     scans.delete(id);
   }
 };
