@@ -207,6 +207,164 @@ export const firebaseModule: ScanModule = async (target) => {
     }
   }
 
+  // Check Firebase Storage rules — test if unauthenticated reads/writes are allowed via storage.googleapis.com
+  if (projectId) {
+    const storageBuckets = [
+      `${projectId}.appspot.com`,
+      `${projectId}.firebasestorage.app`,
+    ];
+
+    const storageRuleResults = await Promise.allSettled(
+      storageBuckets.flatMap((bucket) => [
+        // Test unauthenticated read via storage.googleapis.com
+        scanFetch(`https://storage.googleapis.com/v0/b/${bucket}/o?maxResults=3`).then(async (res) => {
+          if (!res.ok) return null;
+          const data = await res.json() as { items?: { name: string }[] };
+          if (data.items && data.items.length > 0) return { bucket, type: "read" as const, files: data.items.map((i) => i.name) };
+          return null;
+        }).catch(() => null),
+        // Test unauthenticated write via storage.googleapis.com
+        scanFetch(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=_vibeshield_test.txt`, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: "vibeshield-test",
+          timeoutMs: 8000,
+        }).then(async (res) => {
+          if (res.ok) {
+            scanFetch(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/_vibeshield_test.txt`, { method: "DELETE" }).catch(() => {});
+            return { bucket, type: "write" as const };
+          }
+          return null;
+        }).catch(() => null),
+      ]),
+    );
+
+    for (const r of storageRuleResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      if (v.type === "read") {
+        findings.push({
+          id: `firebase-storage-rules-read-${v.bucket}`, module: "Firebase", severity: "high",
+          title: `Firebase Storage bucket "${v.bucket}" allows unauthenticated reads`,
+          description: `The storage.googleapis.com endpoint confirms unauthenticated read access to bucket "${v.bucket}". Found files: ${v.files.slice(0, 3).join(", ")}${v.files.length > 3 ? "..." : ""}`,
+          evidence: `GET storage.googleapis.com/v0/b/${v.bucket}/o → 200 OK\nFiles: ${v.files.join(", ")}`,
+          remediation: "Update Firebase Storage rules to require authentication for read access.",
+          cwe: "CWE-862", owasp: "A01:2021",
+          codeSnippet: `// storage.rules\nrules_version = '2';\nservice firebase.storage {\n  match /b/{bucket}/o {\n    match /{allPaths=**} {\n      allow read: if request.auth != null;\n    }\n  }\n}`,
+        });
+      }
+      if (v.type === "write") {
+        findings.push({
+          id: `firebase-storage-rules-write-${v.bucket}`, module: "Firebase", severity: "critical",
+          title: `Firebase Storage bucket "${v.bucket}" allows unauthenticated writes`,
+          description: `The storage.googleapis.com upload endpoint accepted an unauthenticated file upload to bucket "${v.bucket}". Attackers can upload arbitrary files.`,
+          evidence: `POST storage.googleapis.com/upload/storage/v1/b/${v.bucket}/o → 200 OK`,
+          remediation: "Update Firebase Storage rules to require authentication for write access.",
+          cwe: "CWE-862", owasp: "A01:2021",
+          codeSnippet: `// storage.rules\nrules_version = '2';\nservice firebase.storage {\n  match /b/{bucket}/o {\n    match /{allPaths=**} {\n      allow write: if request.auth != null\n        && request.resource.size < 5 * 1024 * 1024;\n    }\n  }\n}`,
+        });
+      }
+    }
+  }
+
+  // Check Firebase Auth email enumeration via fetchSignInMethodsForEmail
+  if (apiKey) {
+    const emailEnumResult = await scanFetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: ["nonexistent-vibeshield-test@example.com"] }),
+    }).then(async (res) => {
+      if (!res.ok) return null;
+      const data = await res.json() as { users?: unknown[] };
+      // If the endpoint responds with structured data (even empty users), it's accessible
+      if (typeof data === "object" && data !== null) return true;
+      return null;
+    }).catch(() => null);
+
+    if (emailEnumResult) {
+      findings.push({
+        id: "firebase-auth-lookup-exposed", module: "Firebase", severity: "medium",
+        title: "Firebase Auth accounts:lookup endpoint is accessible",
+        description: "The accounts:lookup endpoint is accessible with the API key, allowing attackers to check user details. Combined with createAuthUri, this enables full email enumeration.",
+        evidence: `POST identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey} → 200 OK`,
+        remediation: "Enable Email Enumeration Protection in Firebase Console → Authentication → Settings. Restrict API key usage to specific domains.",
+        cwe: "CWE-204", owasp: "A07:2021",
+        codeSnippet: `// Firebase Console → Authentication → Settings\n// Enable "Email Enumeration Protection"\n\n// Also restrict API key in GCP Console:\n// APIs & Services → Credentials → Edit API key\n// Add HTTP referrer restrictions`,
+      });
+    }
+  }
+
+  // Check Firebase Remote Config / init.json exposure
+  if (projectId) {
+    const remoteConfigPaths = [
+      `https://${projectId}.firebaseapp.com/__/firebase/init.json`,
+      `https://${projectId}.web.app/__/firebase/init.json`,
+      `https://${projectId}.firebaseapp.com/firebase-config.json`,
+      `https://${projectId}.web.app/firebase-config.json`,
+    ];
+
+    const remoteConfigResults = await Promise.allSettled(
+      remoteConfigPaths.map(async (url) => {
+        const res = await scanFetch(url, { timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text) as Record<string, unknown>;
+          if (data.projectId || data.apiKey || data.messagingSenderId) {
+            return { url, keys: Object.keys(data) };
+          }
+        } catch { /* not JSON */ }
+        return null;
+      }),
+    );
+
+    for (const r of remoteConfigResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: "firebase-remote-config-exposed", module: "Firebase", severity: "medium",
+        title: "Firebase configuration JSON is publicly accessible",
+        description: `The Firebase init/config JSON at ${v.url} exposes project configuration including: ${v.keys.join(", ")}. While Firebase API keys are designed to be public, this reveals the full project configuration that can be used to enumerate other attack surfaces.`,
+        evidence: `GET ${v.url} → 200 OK\nExposed keys: ${v.keys.join(", ")}`,
+        remediation: "Restrict API key usage in GCP Console. Apply domain restrictions. Ensure no sensitive configuration (server keys, secrets) is included in the config.",
+        cwe: "CWE-200", owasp: "A01:2021",
+        codeSnippet: `// Restrict API key in GCP Console:\n// APIs & Services → Credentials → Edit key\n// Application restrictions → HTTP referrers\n// API restrictions → Only allow required APIs`,
+      });
+      break;
+    }
+  }
+
+  // Check Firebase Cloud Messaging (FCM) server key exposure in client-side code
+  const fcmServerKeyPattern = /["'](?:key|serverKey|server_key|fcm_server_key|AAAA[A-Za-z0-9_-]{7,}:APA91b[A-Za-z0-9_-]+)["']/g;
+  const fcmKeyMatch = allJs.match(fcmServerKeyPattern);
+  const fcmLegacyKeyPattern = /AAAA[A-Za-z0-9_-]{7,}:APA91b[A-Za-z0-9_-]+/;
+  const fcmLegacyMatch = allJs.match(fcmLegacyKeyPattern);
+
+  if (fcmLegacyMatch) {
+    findings.push({
+      id: "firebase-fcm-server-key-exposed", module: "Firebase", severity: "high",
+      title: "Firebase Cloud Messaging server key exposed in client code",
+      description: "An FCM server key was found in client-side JavaScript. This key allows anyone to send push notifications to your app's users, potentially for phishing, spam, or social engineering attacks.",
+      evidence: `Found FCM server key pattern: ${fcmLegacyMatch[0].substring(0, 20)}...${fcmLegacyMatch[0].substring(fcmLegacyMatch[0].length - 10)}`,
+      remediation: "Remove the FCM server key from client code immediately. Use FCM HTTP v1 API with service account credentials on the server side instead of legacy server keys.",
+      cwe: "CWE-798", owasp: "A07:2021",
+      codeSnippet: `// NEVER embed FCM server key in client code\n// Migrate to FCM HTTP v1 API (server-side only):\nimport { getMessaging } from "firebase-admin/messaging";\n\nconst message = {\n  notification: { title: "Hello", body: "World" },\n  token: userFcmToken,\n};\nawait getMessaging().send(message);`,
+    });
+  } else if (fcmKeyMatch) {
+    const suspiciousKeys = fcmKeyMatch.filter((k) => k.includes("serverKey") || k.includes("server_key") || k.includes("fcm_server_key"));
+    if (suspiciousKeys.length > 0) {
+      findings.push({
+        id: "firebase-fcm-key-reference", module: "Firebase", severity: "medium",
+        title: "Possible FCM server key reference in client code",
+        description: `Found references to FCM server key variables in client-side JavaScript: ${suspiciousKeys.slice(0, 3).join(", ")}. If these contain actual server keys, attackers can send unauthorized push notifications.`,
+        evidence: `Found key references: ${suspiciousKeys.slice(0, 3).join(", ")}`,
+        remediation: "Verify these are not actual server keys. Move FCM server key handling to backend code.",
+        cwe: "CWE-798", owasp: "A07:2021",
+        codeSnippet: `// Use FCM HTTP v1 API on the server instead of legacy keys\nimport { getMessaging } from "firebase-admin/messaging";\nawait getMessaging().send({ token, notification });`,
+      });
+    }
+  }
+
   // Check for service account key exposure in JS bundles
   const saKeyPatterns = [
     { pattern: /["']type["']\s*:\s*["']service_account["']/i, desc: "service_account JSON type field" },

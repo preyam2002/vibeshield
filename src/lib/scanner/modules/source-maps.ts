@@ -162,6 +162,96 @@ export const sourceMapsModule: ScanModule = async (target) => {
     });
   }
 
+  // Webpack chunk source maps — probe well-known paths for bundler source maps
+  const chunkMapPaths = [
+    "/static/js/main.js.map",
+    "/static/js/bundle.js.map",
+    "/static/js/vendor.js.map",
+    "/static/js/runtime.js.map",
+    "/static/js/0.chunk.js.map",
+    "/static/js/1.chunk.js.map",
+    "/static/js/2.chunk.js.map",
+    "/_next/static/chunks/main.js.map",
+    "/_next/static/chunks/webpack.js.map",
+    "/_next/static/chunks/framework.js.map",
+    "/_next/static/chunks/pages/_app.js.map",
+    "/_next/static/chunks/pages/index.js.map",
+  ];
+
+  const chunkMapResults = await Promise.allSettled(
+    chunkMapPaths.map(async (path) => {
+      const url = `${new URL(target.url).origin}${path}`;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      try {
+        const json = JSON.parse(text) as { version?: number; sources?: string[]; mappings?: string };
+        if (json.version && json.sources && json.mappings) {
+          return { path, sourceCount: json.sources.length };
+        }
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
+  const foundChunkMaps = chunkMapResults
+    .filter((r) => r.status === "fulfilled" && r.value)
+    .map((r) => (r as PromiseFulfilledResult<{ path: string; sourceCount: number }>).value);
+
+  if (foundChunkMaps.length > 0) {
+    const totalSrc = foundChunkMaps.reduce((sum, m) => sum + m.sourceCount, 0);
+    findings.push({
+      id: "sourcemaps-chunk-maps",
+      module: "Source Maps",
+      severity: "high",
+      title: `${foundChunkMaps.length} webpack/Next.js chunk source map${foundChunkMaps.length > 1 ? "s" : ""} exposed`,
+      description: `Source map files for bundled chunks are accessible at well-known paths, exposing ${totalSrc} source files. Attackers can reconstruct your full application source code.`,
+      evidence: `Accessible chunk source maps:\n${foundChunkMaps.map((m) => `${m.path} (${m.sourceCount} sources)`).join("\n")}`,
+      remediation: "Disable source map generation in production builds. For Next.js: productionBrowserSourceMaps: false. For CRA: set GENERATE_SOURCEMAP=false. For webpack: devtool: false.",
+      cwe: "CWE-540",
+      owasp: "A05:2021",
+      confidence: 90,
+      codeSnippet: `// .env (Create React App)\nGENERATE_SOURCEMAP=false\n\n// next.config.ts\nexport default {\n  productionBrowserSourceMaps: false,\n};\n\n// webpack.config.js\nmodule.exports = {\n  mode: "production",\n  devtool: false,\n};`,
+    });
+  }
+
+  // Hidden directory source maps & webpack internals
+  const hiddenMapPaths = [
+    { path: "/__webpack_hmr", title: "Webpack HMR endpoint exposed", description: "Webpack Hot Module Replacement endpoint is accessible in production — indicates a development server is running publicly, exposing module update streams and internal build details." },
+    { path: "/.webpack/", title: "Webpack internal directory exposed", description: "The .webpack directory is accessible, potentially exposing compiled bundles, module manifests, and build configuration." },
+    { path: "/webpack-stats.json", title: "Webpack stats file exposed", description: "Webpack stats.json contains the full module dependency tree, chunk mappings, asset sizes, and internal file paths — a complete blueprint of your application architecture." },
+  ];
+
+  const hiddenMapResults = await Promise.allSettled(
+    hiddenMapPaths.map(async (check) => {
+      const url = `${new URL(target.url).origin}${check.path}`;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (text.length < 2) return null;
+      if (/not found|404|page doesn't exist/i.test(text) && text.length < 5000) return null;
+      return { ...check, url, size: text.length };
+    }),
+  );
+
+  for (const r of hiddenMapResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { path, title, description, url, size } = r.value;
+    findings.push({
+      id: `sourcemaps-hidden-${path.replace(/[^a-z0-9]/gi, "-")}`,
+      module: "Source Maps",
+      severity: path.includes("stats") ? "high" : "medium",
+      title,
+      description,
+      evidence: `GET ${url}\nStatus: 200\nSize: ${size} bytes`,
+      remediation: "Remove webpack development artifacts from production. Ensure __webpack_hmr and .webpack/ are not publicly accessible. Never deploy stats.json to production.",
+      cwe: "CWE-540",
+      owasp: "A05:2021",
+      confidence: 85,
+      codeSnippet: `// webpack.config.js — don't generate stats in production\nmodule.exports = {\n  mode: "production",\n  devtool: false,\n  // Don't use webpack-dev-server in production\n};`,
+    });
+  }
+
   // Build manifest / chunk map discovery — exposes internal module structure
   const origin = new URL(target.url).origin;
   const manifestPaths = [
@@ -172,6 +262,10 @@ export const sourceMapsModule: ScanModule = async (target) => {
     "/stats.json",                                // Webpack stats
     "/webpack-manifest.json",                     // Webpack
     "/build/asset-manifest.json",                 // CRA alt
+    "/build-manifest.json",                       // Next.js at root
+    "/react-loadable.json",                       // React Loadable manifest
+    "/.next/build-manifest.json",                 // Next.js .next dir
+    "/.next/react-loadable-manifest.json",        // Next.js .next dir
   ];
 
   const manifestResults = await Promise.allSettled(
