@@ -399,6 +399,120 @@ export const sslModule: ScanModule = async (target) => {
     }
   }
 
+  // Mixed content detection — check HTML for http:// URLs in src, href, action attributes
+  if (url.protocol === "https:") {
+    try {
+      const res = await scanFetch(target.url, { timeoutMs: 8000 });
+      if (res.ok) {
+        const html = await res.text();
+        const mixedContentUrls: { type: string; url: string }[] = [];
+        const mixedPatterns = [
+          { regex: /<script[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "script" },
+          { regex: /<link[^>]+href=["'](http:\/\/[^"']+)["']/gi, type: "stylesheet" },
+          { regex: /<img[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "image" },
+          { regex: /<form[^>]+action=["'](http:\/\/[^"']+)["']/gi, type: "form-action" },
+          { regex: /<iframe[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "iframe" },
+          { regex: /<video[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "video" },
+          { regex: /<audio[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "audio" },
+          { regex: /<source[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "media-source" },
+          { regex: /<embed[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "embed" },
+          { regex: /<object[^>]+data=["'](http:\/\/[^"']+)["']/gi, type: "object" },
+        ];
+        for (const { regex, type } of mixedPatterns) {
+          let m: RegExpExecArray | null;
+          while ((m = regex.exec(html)) !== null) {
+            mixedContentUrls.push({ type, url: m[1] });
+          }
+        }
+        if (mixedContentUrls.length > 0) {
+          const hasFormAction = mixedContentUrls.some((r) => r.type === "form-action");
+          const hasActiveContent = mixedContentUrls.some((r) => r.type === "script" || r.type === "stylesheet" || r.type === "iframe");
+          findings.push({
+            id: "ssl-html-mixed-content",
+            module: "SSL/TLS",
+            severity: hasActiveContent || hasFormAction ? "high" : "medium",
+            title: `Mixed content: ${mixedContentUrls.length} HTTP URL(s) in HTML attributes`,
+            description: `The HTTPS page contains ${mixedContentUrls.length} HTTP URL(s) in src, href, or action attributes.${hasFormAction ? " Form actions over HTTP will submit user data unencrypted." : ""}${hasActiveContent ? " Active content (scripts/stylesheets) loaded over HTTP can be tampered with by network attackers." : ""}`,
+            evidence: mixedContentUrls.slice(0, 5).map((r) => `[${r.type}] ${r.url}`).join("\n"),
+            remediation: "Update all URLs to use HTTPS. Add Content-Security-Policy: upgrade-insecure-requests to auto-upgrade remaining HTTP resources.",
+            cwe: "CWE-319",
+            owasp: "A02:2021",
+            codeSnippet: `// Fix form actions and resource URLs\n// Before: <form action="http://example.com/submit">\n// After:  <form action="https://example.com/submit">\n\n// Auto-upgrade via CSP header in next.config.ts\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Content-Security-Policy",\n        value: "upgrade-insecure-requests" }\n    ]}];\n  },\n};`,
+          });
+        }
+      }
+    } catch {
+      // skip if page fetch fails
+    }
+  }
+
+  // Certificate Transparency header check
+  if (url.protocol === "https:") {
+    const expectCtHeader = target.headers["expect-ct"];
+    const ctHeader = target.headers["certificate-transparency"] || target.headers["signed-certificate-timestamp"];
+    if (!expectCtHeader && !ctHeader) {
+      // Check if the Expect-CT header is enforced or just reporting
+      findings.push({
+        id: "ssl-no-ct-header",
+        module: "SSL/TLS",
+        severity: "info",
+        title: "No Certificate Transparency headers present",
+        description: "Neither Expect-CT nor Certificate-Transparency headers were found in the response. While Expect-CT is being deprecated as CT becomes universally required, having it in enforce mode provides an additional layer of protection against misissued certificates.",
+        remediation: "Add Expect-CT header with enforce and report-uri directives. Note: Chrome requires CT for all public certificates since 2018, so this is primarily useful for reporting.",
+        cwe: "CWE-295",
+        codeSnippet: `// next.config.ts headers()\n{ key: "Expect-CT", value: "max-age=86400, enforce, report-uri=\\"https://your-domain.report-uri.com/r/d/ct/enforce\\"" }`,
+      });
+    } else if (expectCtHeader && !expectCtHeader.includes("enforce")) {
+      findings.push({
+        id: "ssl-ct-not-enforced",
+        module: "SSL/TLS",
+        severity: "info",
+        title: "Expect-CT header present but not enforcing",
+        description: "The Expect-CT header is set but does not include the enforce directive. Without enforce, the browser will only report CT failures but not block connections with non-CT-compliant certificates.",
+        evidence: `Expect-CT: ${expectCtHeader}`,
+        remediation: "Add the enforce directive to your Expect-CT header.",
+        cwe: "CWE-295",
+        codeSnippet: `// Add enforce to Expect-CT\n{ key: "Expect-CT", value: "max-age=86400, enforce" }`,
+      });
+    }
+  }
+
+  // HTTP-only on HTTPS site — check if http:// redirects to https://
+  if (url.protocol === "https:") {
+    try {
+      const httpUrl = target.url.replace("https://", "http://");
+      const res = await scanFetch(httpUrl, { redirect: "manual", timeoutMs: 8000 });
+      const location = res.headers.get("location") || "";
+      if (res.status >= 200 && res.status < 300) {
+        findings.push({
+          id: "ssl-http-serves-content",
+          module: "SSL/TLS",
+          severity: "high",
+          title: "HTTP version serves content without redirecting to HTTPS",
+          description: "The HTTP version of the site serves content with a 200 status instead of redirecting to HTTPS. Users who visit the HTTP URL will receive an unencrypted page, exposing their data to network attackers. This also allows cookie theft and session hijacking on the insecure connection.",
+          evidence: `GET ${httpUrl} → HTTP ${res.status} (no redirect)`,
+          remediation: "Configure a 301 redirect from HTTP to HTTPS for all routes. Ensure HSTS is also set to prevent future HTTP connections.",
+          cwe: "CWE-319",
+          owasp: "A02:2021",
+          codeSnippet: `// middleware.ts — force HTTPS redirect\nimport { NextResponse } from "next/server";\nexport function middleware(req: Request) {\n  if (new URL(req.url).protocol === "http:") {\n    return NextResponse.redirect(\n      req.url.replace("http://", "https://"), 301\n    );\n  }\n}\n\n// Nginx\nserver {\n  listen 80;\n  return 301 https://$host$request_uri;\n}`,
+        });
+      } else if (res.status >= 300 && res.status < 400 && location && !location.startsWith("https://")) {
+        findings.push({
+          id: "ssl-http-redirect-not-https",
+          module: "SSL/TLS",
+          severity: "medium",
+          title: "HTTP redirects but not to HTTPS",
+          description: `The HTTP version redirects to "${location}" which is not an HTTPS URL. The redirect should point to the HTTPS version of the site.`,
+          evidence: `GET ${httpUrl} → ${res.status} → ${location}`,
+          remediation: "Update the HTTP redirect to point to the HTTPS version of the URL.",
+          cwe: "CWE-319",
+        });
+      }
+    } catch {
+      // HTTP not reachable, which is acceptable
+    }
+  }
+
   // HPKP detection (deprecated and dangerous)
   const hpkp = target.headers["public-key-pins"] || target.headers["public-key-pins-report-only"];
   if (hpkp) {

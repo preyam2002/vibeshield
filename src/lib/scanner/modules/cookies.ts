@@ -225,6 +225,68 @@ export const cookiesModule: ScanModule = async (target) => {
     });
   }
 
+  // Cookie entropy check — low entropy on session cookies suggests weak random generation
+  for (const cookie of sessionCookies) {
+    if (cookie.value.length < 8) continue; // skip very short values
+    const value = cookie.value;
+    const charFreq = new Map<string, number>();
+    for (const ch of value) {
+      charFreq.set(ch, (charFreq.get(ch) || 0) + 1);
+    }
+    let entropy = 0;
+    for (const count of charFreq.values()) {
+      const p = count / value.length;
+      entropy -= p * Math.log2(p);
+    }
+    // Low entropy threshold: less than 3.0 bits per character suggests predictable values
+    if (entropy < 3.0 && value.length >= 8) {
+      findings.push({
+        id: `cookies-low-entropy-${cookie.name}`,
+        module: "Cookies",
+        severity: "high",
+        title: `Session cookie "${cookie.name}" has low entropy`,
+        description: `The session cookie value has only ${entropy.toFixed(2)} bits of entropy per character. Low entropy suggests the value may be generated using a weak or predictable random number generator, making session tokens guessable.`,
+        evidence: `Cookie: ${cookie.name}\nValue length: ${value.length} chars\nEntropy: ${entropy.toFixed(2)} bits/char\nSample: ${value.substring(0, 16)}...`,
+        remediation: "Use a cryptographically secure random number generator (CSPRNG) to generate session tokens. In Node.js, use crypto.randomBytes() or crypto.randomUUID().",
+        cwe: "CWE-330",
+        owasp: "A02:2021",
+        codeSnippet: `// Generate secure session tokens\nimport { randomBytes } from "crypto";\nconst sessionToken = randomBytes(32).toString("hex"); // 256-bit token\n\n// Or use crypto.randomUUID()\nconst sessionId = crypto.randomUUID();`,
+      });
+    }
+  }
+
+  // Third-party cookie tracking — check for cookies from known tracking domains
+  const TRACKING_DOMAINS = [
+    "doubleclick.net", "google-analytics.com", "googleadservices.com",
+    "facebook.com", "facebook.net", "fbcdn.net",
+    "twitter.com", "t.co",
+    "linkedin.com", "ads-twitter.com",
+    "criteo.com", "outbrain.com", "taboola.com",
+    "hotjar.com", "mouseflow.com", "fullstory.com",
+    "mixpanel.com", "segment.com", "amplitude.com",
+    "quantserve.com", "scorecardresearch.com",
+    "adnxs.com", "adsrvr.org", "demdex.net",
+    "amazon-adsystem.com", "rubiconproject.com",
+  ];
+  const trackingCookies = target.cookies.filter((c) => {
+    const domain = (c.domain || "").replace(/^\./, "").toLowerCase();
+    return TRACKING_DOMAINS.some((td) => domain === td || domain.endsWith(`.${td}`));
+  });
+  if (trackingCookies.length > 0) {
+    const uniqueDomains = [...new Set(trackingCookies.map((c) => c.domain.replace(/^\./, "")))];
+    findings.push({
+      id: "cookies-third-party-tracking",
+      module: "Cookies",
+      severity: "low",
+      title: `${trackingCookies.length} third-party tracking cookie${trackingCookies.length > 1 ? "s" : ""} detected`,
+      description: `Found ${trackingCookies.length} cookies from ${uniqueDomains.length} known tracking domain(s). Third-party tracking cookies monitor users across websites and may violate privacy regulations (GDPR, CCPA) if set without explicit consent.`,
+      evidence: `Tracking domains: ${uniqueDomains.slice(0, 5).join(", ")}${uniqueDomains.length > 5 ? ` ...and ${uniqueDomains.length - 5} more` : ""}\nCookies: ${trackingCookies.slice(0, 5).map((c) => `${c.name} (${c.domain})`).join(", ")}`,
+      remediation: "Ensure tracking cookies are only set after obtaining user consent. Implement a cookie consent banner that blocks tracking scripts until the user opts in. Consider privacy-friendly analytics alternatives (Plausible, Fathom).",
+      cwe: "CWE-359",
+      codeSnippet: `// Load tracking scripts only after consent\nconst consent = getCookieConsent();\nif (consent.analytics) {\n  // Load analytics script\n  const script = document.createElement("script");\n  script.src = "https://www.googletagmanager.com/gtag/js?id=GA_ID";\n  document.head.appendChild(script);\n}`,
+    });
+  }
+
   // Check for auth tokens stored in localStorage (XSS-vulnerable)
   const allJs = Array.from(target.jsContents.values()).join("\n");
   const localStoragePatterns = [
