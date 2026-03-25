@@ -192,5 +192,118 @@ export const sessionModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 7: Session entropy analysis — check cookies for weak randomness
+  for (const cookie of sessionCookies) {
+    const val = cookie.value;
+    const isUuidV1 = /^[0-9a-f]{8}-[0-9a-f]{4}-1[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+    const isTimestamp = /^1[6-9]\d{8}(\d{3})?$/.test(val);
+    let weakReason = "";
+    let desc = "";
+    if (val.length < 16) {
+      weakReason = `short value (${val.length} chars)`;
+      desc = `Session cookie is only ${val.length} chars. Short IDs have low entropy and can be brute-forced. OWASP recommends at least 128 bits.`;
+    } else if (/^\d+$/.test(val) && !isTimestamp) {
+      weakReason = "purely numeric";
+      desc = "A purely numeric session ID has drastically reduced keyspace, suggesting an auto-incrementing DB ID rather than cryptographic randomness.";
+    } else if (isTimestamp) {
+      weakReason = "timestamp-based";
+      desc = "The session ID looks like a Unix timestamp. Timestamp-based IDs are fully predictable if an attacker knows the approximate login time.";
+    } else if (isUuidV1) {
+      weakReason = "UUID v1 (time-based)";
+      desc = "UUID v1 is derived from timestamp and MAC address, making it predictable. An attacker who knows the approximate creation time can enumerate valid session IDs.";
+    }
+    if (weakReason) {
+      findings.push({
+        id: `session-weak-entropy-${findings.length}`,
+        module: "Session Management",
+        severity: "low",
+        title: `Session cookie "${cookie.name}" has weak randomness: ${weakReason}`,
+        description: desc,
+        evidence: `Cookie: ${cookie.name}=${val.substring(0, 16)}${val.length > 16 ? "…" : ""}`,
+        remediation: "Generate session IDs with at least 128 bits of cryptographic randomness using crypto.randomBytes or crypto.randomUUID.",
+        cwe: "CWE-330",
+        owasp: "A07:2021",
+        codeSnippet: `import { randomBytes, randomUUID } from "crypto";\n// Option A: hex string with 256 bits of entropy\nconst sid = randomBytes(32).toString("hex");\n// Option B: UUID v4 (122 bits of randomness)\nconst sid2 = randomUUID();`,
+      });
+      break;
+    }
+  }
+
+  // Phase 8: Cross-tab session leakage via BroadcastChannel/postMessage
+  const crossTabChecks: { re: RegExp; id: string; title: string; desc: string; evidence: string; snippet: string }[] = [
+    {
+      re: /new\s+BroadcastChannel\s*\(\s*["'][^"']*(?:session|token|auth)[^"']*["']\s*\)/i,
+      id: "broadcastchannel", title: "Session/auth data shared via BroadcastChannel",
+      desc: "A BroadcastChannel with a session/token/auth channel name lets any XSS on the domain eavesdrop on tokens broadcast across tabs.",
+      evidence: "Found BroadcastChannel with session/token/auth context in JS bundle",
+      snippet: `// Bad: broadcasting tokens\nconst ch = new BroadcastChannel("auth");\nch.postMessage({ token: jwt });\n\n// Good: signal without the token\nconst ch = new BroadcastChannel("auth-sync");\nch.postMessage({ event: "login" }); // tabs re-read via /api/me`,
+    },
+    {
+      re: /\.postMessage\s*\(\s*(?:JSON\.stringify\s*\()?\s*\{[^}]*(?:token|session|jwt|access_token|auth)[^}]*\}/i,
+      id: "postmessage", title: "Session token sent via postMessage",
+      desc: "A postMessage call sends token/session/auth data. If the target origin is \"*\" or unvalidated, any embedding page can intercept the token.",
+      evidence: "Found postMessage sending token/session/auth data in JS bundle",
+      snippet: `// Bad\nwindow.opener.postMessage({ token }, "*");\n// Good: use HttpOnly cookies, no postMessage needed`,
+    },
+    {
+      re: /window\.addEventListener\s*\(\s*["']message["']\s*,\s*(?:function\s*\([^)]*\)|(?:\([^)]*\)|[a-zA-Z_$]\w*)\s*=>)\s*\{[^}]*\}/,
+      id: "no-origin-check", title: "postMessage listener without origin validation",
+      desc: "A message event listener processes messages without checking event.origin. Attacker-controlled iframes or popups can inject malicious session data.",
+      evidence: "Found window.addEventListener(\"message\", ...) without origin check in JS bundle",
+      snippet: `// Bad: no origin check\nwindow.addEventListener("message", (e) => { setToken(e.data.token); });\n\n// Good: validate origin\nwindow.addEventListener("message", (e) => {\n  if (e.origin !== "https://myapp.com") return;\n});`,
+    },
+  ];
+  for (const check of crossTabChecks) {
+    if (check.re.test(allJs)) {
+      findings.push({
+        id: `session-crosstab-${check.id}-${findings.length}`,
+        module: "Session Management",
+        severity: "medium",
+        title: check.title,
+        description: check.desc,
+        evidence: check.evidence,
+        remediation: "Avoid sending tokens via BroadcastChannel or postMessage. Use HttpOnly cookies for auth state. Always validate event.origin in message listeners.",
+        cwe: "CWE-346",
+        owasp: "A07:2021",
+        codeSnippet: check.snippet,
+      });
+    }
+  }
+
+  // Phase 9: Session cookie with predictable name — framework fingerprinting
+  const frameworkCookieNames: Record<string, string> = {
+    PHPSESSID: "PHP",
+    JSESSIONID: "Java (Tomcat/Spring)",
+    "ASP.NET_SessionId": "ASP.NET",
+    "connect.sid": "Express/Connect (Node.js)",
+    laravel_session: "Laravel (PHP)",
+    PLAY_SESSION: "Play Framework (Scala/Java)",
+  };
+
+  for (const cookie of target.cookies) {
+    const framework = frameworkCookieNames[cookie.name];
+    if (framework) {
+      findings.push({
+        id: `session-framework-fingerprint-${findings.length}`,
+        module: "Session Management",
+        severity: "info",
+        title: `Default session cookie name "${cookie.name}" reveals ${framework}`,
+        description: `The session cookie uses the default name for ${framework}. This leaks the backend technology stack, allowing attackers to target known vulnerabilities specific to ${framework}.`,
+        evidence: `Cookie: ${cookie.name}`,
+        remediation: `Rename the session cookie to a generic name like "sid" or "__session" that doesn't reveal the framework.`,
+        cwe: "CWE-200",
+        owasp: "A05:2021",
+        codeSnippet: framework.includes("Express")
+          ? `// Express: rename the default session cookie\napp.use(session({\n  name: "__session", // instead of "connect.sid"\n  secret: process.env.SESSION_SECRET,\n  cookie: { httpOnly: true, secure: true, sameSite: "lax" },\n}));`
+          : framework.includes("PHP")
+            ? `; php.ini — rename the default session cookie\nsession.name = __session ; instead of PHPSESSID`
+            : framework.includes("Laravel")
+              ? `// config/session.php — rename the default cookie\n'cookie' => '__session', // instead of 'laravel_session'`
+              : `// Rename the default session cookie in your ${framework} configuration\n// Use a generic name like "__session" or "sid"`,
+      });
+      break; // one finding is enough
+    }
+  }
+
   return findings;
 };
