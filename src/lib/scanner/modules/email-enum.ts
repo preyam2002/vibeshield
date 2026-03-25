@@ -311,5 +311,405 @@ app.post("/api/auth/login", async (req, res) => {
     }
   }
 
+  // Phase 6: Password reset enumeration — dedicated deep check on reset endpoints
+  if (findings.length < 5) {
+    const resetDeepPaths = validPaths.filter((p) => /forgot|reset|recover|password/i.test(p));
+    const resetDeepResults = await Promise.allSettled(
+      resetDeepPaths.map(async (path) => {
+        const url = target.baseUrl + path;
+        const payloads = [
+          { email: "nonexistent-deep-reset-abc@test.com" },
+          { email: testEmails[1] },
+          { email: "" },
+          { email: "invalid-email-format" },
+        ];
+        const responses = await Promise.allSettled(
+          payloads.map((body) =>
+            scanFetch(url, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body), timeoutMs: 5000,
+            }).then(async (res) => ({ status: res.status, body: await res.text() })),
+          ),
+        );
+        const settled = responses
+          .filter((r): r is PromiseFulfilledResult<{ status: number; body: string }> => r.status === "fulfilled")
+          .map((r) => r.value);
+        if (settled.length < 2) return null;
+
+        const nonexistent = settled[0];
+        const existing = settled[1];
+
+        // Check for different success/failure messaging
+        const resetRevealPhrases = [
+          /email (has been|was) sent/i, /check your (email|inbox)/i, /reset link/i, /instructions sent/i,
+        ];
+        const resetDenyPhrases = [
+          /no account/i, /not found/i, /doesn't exist/i, /does not exist/i, /not registered/i,
+          /unknown email/i, /invalid email/i, /no user/i,
+        ];
+
+        const existingGetsSuccess = resetRevealPhrases.some((p) => p.test(existing.body));
+        const nonexistentGetsDenied = resetDenyPhrases.some((p) => p.test(nonexistent.body));
+
+        if (existingGetsSuccess && nonexistentGetsDenied) {
+          return { path, type: "message-divergence" as const, nonexistentStatus: nonexistent.status, existingStatus: existing.status };
+        }
+
+        // Check if status codes diverge (e.g. 200 vs 404, 200 vs 400)
+        if (nonexistent.status !== existing.status && Math.abs(nonexistent.status - existing.status) >= 100) {
+          return { path, type: "status-divergence" as const, nonexistentStatus: nonexistent.status, existingStatus: existing.status };
+        }
+
+        // Check JSON error field differences
+        try {
+          const j1 = JSON.parse(nonexistent.body);
+          const j2 = JSON.parse(existing.body);
+          const errField1 = j1.error || j1.message || j1.msg || "";
+          const errField2 = j2.error || j2.message || j2.msg || "";
+          if (errField1 !== errField2 && errField1.length > 0 && errField2.length > 0) {
+            return { path, type: "json-error-diff" as const, nonexistentStatus: nonexistent.status, existingStatus: existing.status };
+          }
+        } catch { /* not JSON */ }
+
+        return null;
+      }),
+    );
+    for (const r of resetDeepResults) {
+      if (findings.length >= 5) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `email-enum-reset-deep-${findings.length}`, module: "email-enum", severity: "medium",
+        title: `Password reset endpoint leaks account existence on ${v.path}`,
+        description: `The password reset endpoint at ${v.path} returns distinguishable responses for registered vs unregistered emails (${v.type}). Non-existent email returned status ${v.nonexistentStatus}, existing email returned status ${v.existingStatus}. Attackers can use this to enumerate valid accounts.`,
+        evidence: `Non-existent email → status ${v.nonexistentStatus}\nExisting email → status ${v.existingStatus}\nDetection method: ${v.type}`,
+        remediation: 'Always return the same HTTP status and response body: "If an account exists, a password reset link has been sent to your email." Never vary the response based on account existence.',
+        cwe: "CWE-204",
+        owasp: "A07:2021",
+        codeSnippet: `// Secure password reset — identical response regardless of account existence
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const user = await db.users.findByEmail(req.body.email);
+  if (user) await sendResetEmail(user); // silently skip if not found
+  res.status(200).json({ message: "If an account exists, a reset link has been sent." });
+});`,
+      });
+    }
+  }
+
+  // Phase 7: Registration enumeration — deep signup endpoint analysis
+  if (findings.length < 5) {
+    const signupDeepPaths = validPaths.filter((p) => /signup|register|create|join/i.test(p));
+    const signupDeepResults = await Promise.allSettled(
+      signupDeepPaths.map(async (path) => {
+        const url = target.baseUrl + path;
+        const fakeEmail = `nonexist-reg-probe-${Date.now()}@test.com`;
+        const [newRes, existingRes] = await Promise.all([
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: fakeEmail, password: "SecurePass123!!", name: "Probe User", username: "probeuser999" }),
+            timeoutMs: 5000,
+          }),
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: testEmails[1], password: "SecurePass123!!", name: "Probe User", username: "probeuser999" }),
+            timeoutMs: 5000,
+          }),
+        ]);
+        const newText = await newRes.text();
+        const existingText = await existingRes.text();
+
+        const registrationRevealPhrases = [
+          /already (exists|registered|in use|taken|has an account)/i,
+          /email.*(in use|taken|exists|registered)/i,
+          /duplicate.*(email|account|user)/i,
+          /account.*already/i,
+          /user.*already/i,
+          /try (logging in|signing in|another email)/i,
+        ];
+
+        if (registrationRevealPhrases.some((p) => p.test(existingText) && !p.test(newText))) {
+          return { path, type: "explicit-message" as const, newStatus: newRes.status, existingStatus: existingRes.status };
+        }
+
+        // HTTP 409 Conflict or 422 for existing accounts
+        if (existingRes.status === 409 || (existingRes.status === 422 && newRes.status !== 422)) {
+          return { path, type: "status-code" as const, newStatus: newRes.status, existingStatus: existingRes.status };
+        }
+
+        // Check if response body structure differs (different JSON keys present)
+        try {
+          const j1 = JSON.parse(newText);
+          const j2 = JSON.parse(existingText);
+          const keys1 = Object.keys(j1).sort().join(",");
+          const keys2 = Object.keys(j2).sort().join(",");
+          if (keys1 !== keys2 && keys1.length > 0 && keys2.length > 0) {
+            return { path, type: "json-structure" as const, newStatus: newRes.status, existingStatus: existingRes.status };
+          }
+        } catch { /* not JSON */ }
+
+        return null;
+      }),
+    );
+    for (const r of signupDeepResults) {
+      if (findings.length >= 5) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `email-enum-reg-${findings.length}`, module: "email-enum", severity: "medium",
+        title: `Registration endpoint reveals existing accounts on ${v.path}`,
+        description: `The registration endpoint at ${v.path} returns different responses for new vs existing emails (${v.type}). New email → status ${v.newStatus}, existing email → status ${v.existingStatus}. Attackers can enumerate registered accounts by attempting to register with target emails.`,
+        evidence: `New email → status ${v.newStatus}\nExisting email → status ${v.existingStatus}\nDetection: ${v.type}`,
+        remediation: 'Use a two-step registration flow: always accept the email, then send a verification link. If the email is already registered, send an "account already exists" notification to that email instead of showing an error to the requester.',
+        cwe: "CWE-204",
+        owasp: "A07:2021",
+        codeSnippet: `// Two-step registration prevents enumeration
+app.post("/api/auth/register", async (req, res) => {
+  const { email, password } = req.body;
+  const existing = await db.users.findByEmail(email);
+  if (existing) {
+    await sendAlreadyRegisteredNotification(email);
+  } else {
+    const user = await db.users.create({ email, password });
+    await sendVerificationEmail(user);
+  }
+  res.status(200).json({ message: "Check your email to continue registration." });
+});`,
+      });
+    }
+  }
+
+  // Phase 8: Timing-based enumeration — dedicated timing analysis across auth endpoints
+  if (findings.length < 5) {
+    const authTimingPaths = validPaths.filter((p) => /login|signin|auth/i.test(p));
+    const timingResults = await Promise.allSettled(
+      authTimingPaths.slice(0, 3).map(async (path) => {
+        const url = target.baseUrl + path;
+        const SAMPLES = 5;
+
+        const measure = async (email: string): Promise<number[]> => {
+          const times: number[] = [];
+          for (let i = 0; i < SAMPLES; i++) {
+            const start = Date.now();
+            try {
+              await scanFetch(url, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email, password: "TimingProbe123!" }), timeoutMs: 5000,
+              });
+            } catch { /* skip */ }
+            times.push(Date.now() - start);
+          }
+          return times;
+        };
+
+        const [fakeTimes, realTimes] = await Promise.all([
+          measure(`timing-probe-fake-${Date.now()}@test.com`),
+          measure(testEmails[1]),
+        ]);
+
+        const median = (arr: number[]) => {
+          const s = [...arr].sort((a, b) => a - b);
+          return s[Math.floor(s.length / 2)] || 0;
+        };
+        const fakeMedian = median(fakeTimes);
+        const realMedian = median(realTimes);
+        const fakeVariance = Math.max(...fakeTimes) - Math.min(...fakeTimes);
+        const diff = Math.abs(realMedian - fakeMedian);
+
+        // Significant timing difference: > 200ms, > 2x variance, > 40% of baseline
+        if (diff > 200 && diff > fakeVariance * 2 && diff > fakeMedian * 0.4) {
+          return { path, fakeMedian, realMedian, diff, fakeVariance, samples: SAMPLES };
+        }
+        return null;
+      }),
+    );
+    for (const r of timingResults) {
+      if (findings.length >= 5) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `email-enum-timing-deep-${findings.length}`, module: "email-enum", severity: "low",
+        title: `Timing-based email enumeration detected on ${v.path}`,
+        description: `Auth endpoint at ${v.path} shows statistically significant response time differences between existing and non-existing emails. Non-existing median: ${v.fakeMedian}ms, existing median: ${v.realMedian}ms (${v.diff}ms difference over ${v.samples} samples). This typically occurs when password hashing is only performed for existing accounts.`,
+        evidence: `Non-existing email median: ${v.fakeMedian}ms (variance: ${v.fakeVariance}ms)\nExisting email median: ${v.realMedian}ms\nDifference: ${v.diff}ms (${v.samples} samples per email)`,
+        remediation: "Normalize auth response times by always performing a password hash comparison, even for non-existent accounts. Use a pre-computed dummy hash for missing users.",
+        cwe: "CWE-208",
+        owasp: "A07:2021",
+        codeSnippet: `// Constant-time auth prevents timing enumeration
+const DUMMY_HASH = await bcrypt.hash("dummy", 12); // pre-compute at startup
+app.post("/api/auth/login", async (req, res) => {
+  const start = Date.now();
+  const MIN_MS = 500;
+  const user = await db.users.findByEmail(req.body.email);
+  // Always compare against a hash — dummy if user not found
+  const valid = await bcrypt.compare(req.body.password, user?.passwordHash ?? DUMMY_HASH);
+  if (!user || !valid) {
+    const elapsed = Date.now() - start;
+    await new Promise((r) => setTimeout(r, Math.max(0, MIN_MS - elapsed)));
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+  res.json({ token: signJwt(user) });
+});`,
+      });
+    }
+  }
+
+  // Phase 9: OAuth provider enumeration — detect which social auth providers are configured
+  if (findings.length < 5) {
+    const oauthDiscoveryPaths = [
+      "/api/auth/providers", "/api/auth/signin", "/.auth/login",
+      "/api/auth/csrf", "/api/auth/session",
+      "/auth/providers", "/oauth/providers", "/api/oauth/providers",
+      "/.well-known/openid-configuration",
+    ];
+    const oauthResults = await Promise.allSettled(
+      oauthDiscoveryPaths.map(async (path) => {
+        const url = target.baseUrl + path;
+        const res = await scanFetch(url, { method: "GET", timeoutMs: 5000 });
+        if (res.status !== 200) return null;
+        const text = await res.text();
+        if (text.includes("<!DOCTYPE") && !text.includes('"providers"')) return null;
+
+        const providerPatterns = [
+          { name: "Google", pattern: /google|googleapis\.com|accounts\.google/i },
+          { name: "GitHub", pattern: /github|github\.com\/login\/oauth/i },
+          { name: "Facebook", pattern: /facebook|fb\.com|graph\.facebook/i },
+          { name: "Twitter/X", pattern: /twitter|x\.com\/i\/oauth/i },
+          { name: "Apple", pattern: /apple|appleid\.apple\.com/i },
+          { name: "Microsoft", pattern: /microsoft|login\.microsoftonline|azure/i },
+          { name: "Discord", pattern: /discord|discord\.com\/api\/oauth/i },
+          { name: "LinkedIn", pattern: /linkedin|linkedin\.com\/oauth/i },
+          { name: "Auth0", pattern: /auth0|\.auth0\.com/i },
+          { name: "Okta", pattern: /okta|\.okta\.com/i },
+        ];
+        const detected = providerPatterns.filter((p) => p.pattern.test(text)).map((p) => p.name);
+        if (detected.length === 0) return null;
+
+        // Check if provider config details are exposed (client IDs, callback URLs)
+        const leaksClientId = /client_?id["'\s:=]+[a-zA-Z0-9\-_.]{10,}/i.test(text);
+        const leaksCallbackUrl = /callback_?url|redirect_?uri/i.test(text);
+
+        return { path, providers: detected, leaksClientId, leaksCallbackUrl };
+      }),
+    );
+    for (const r of oauthResults) {
+      if (findings.length >= 5) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      const severity = v.leaksClientId ? "medium" as const : "low" as const;
+      findings.push({
+        id: `email-enum-oauth-${findings.length}`, module: "email-enum", severity,
+        title: `OAuth provider configuration exposed on ${v.path}`,
+        description: `The endpoint ${v.path} reveals configured authentication providers: ${v.providers.join(", ")}. ${v.leaksClientId ? "OAuth client IDs are also exposed. " : ""}${v.leaksCallbackUrl ? "Callback URLs are visible. " : ""}This information helps attackers understand the authentication surface and craft targeted phishing or social engineering attacks.`,
+        evidence: `Providers detected: ${v.providers.join(", ")}\nClient ID leaked: ${v.leaksClientId}\nCallback URL leaked: ${v.leaksCallbackUrl}\nEndpoint: ${v.path}`,
+        remediation: "Restrict the auth providers endpoint to authenticated sessions only. Never expose OAuth client IDs or callback URLs in unauthenticated API responses. Use server-side rendering for login buttons rather than a public API.",
+        cwe: "CWE-200",
+        owasp: "A01:2021",
+        codeSnippet: `// Restrict provider info to authenticated users
+app.get("/api/auth/providers", requireAuth, (req, res) => {
+  // Only return provider names, not client IDs or config
+  res.json({ providers: ["google", "github"] });
+});
+// For login page, render buttons server-side
+// <SignInButton provider="google" /> — no client-side API call needed`,
+      });
+    }
+  }
+
+  // Phase 10: Username vs email confusion — test if login accepts both formats
+  if (findings.length < 5) {
+    const loginPaths = validPaths.filter((p) => /login|signin|auth/i.test(p));
+    const usernameResults = await Promise.allSettled(
+      loginPaths.slice(0, 3).map(async (path) => {
+        const url = target.baseUrl + path;
+        const hostname = new URL(target.url).hostname;
+
+        // Send requests with different identifier formats
+        const [emailRes, usernameRes, bothRes] = await Promise.allSettled([
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: `admin@${hostname}`, password: "TestProbe123!" }), timeoutMs: 5000,
+          }),
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: "admin", password: "TestProbe123!" }), timeoutMs: 5000,
+          }),
+          scanFetch(url, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ identifier: "admin", password: "TestProbe123!" }), timeoutMs: 5000,
+          }),
+        ]);
+
+        const getText = async (r: PromiseSettledResult<Response>): Promise<{ status: number; body: string } | null> => {
+          if (r.status !== "fulfilled") return null;
+          return { status: r.value.status, body: await r.value.text() };
+        };
+
+        const [emailData, usernameData, bothData] = await Promise.all([
+          getText(emailRes), getText(usernameRes), getText(bothRes),
+        ]);
+
+        const detections: string[] = [];
+
+        // Check if username field is accepted (not rejected as unknown field)
+        if (usernameData && usernameData.status !== 400) {
+          const usernameAccepted = !/unknown.*(field|param)|unexpected.*(field|key)|invalid.*field/i.test(usernameData.body);
+          if (usernameAccepted) detections.push("username-field-accepted");
+        }
+
+        // Check if "identifier" field works (generic login field)
+        if (bothData && bothData.status !== 400) {
+          const identifierAccepted = !/unknown.*(field|param)|unexpected.*(field|key)|invalid.*field/i.test(bothData.body);
+          if (identifierAccepted) detections.push("identifier-field-accepted");
+        }
+
+        // Check if error messages differ between email and username login
+        if (emailData && usernameData) {
+          const emailErrors = /invalid email|email.*required|must be.*email/i.test(emailData.body);
+          const usernameHints = /user.*not found|username.*not found|invalid username/i.test(usernameData.body);
+          if (usernameHints && !emailErrors) detections.push("username-existence-leak");
+          if (emailData.body !== usernameData.body && emailData.status === usernameData.status) {
+            detections.push("response-divergence");
+          }
+        }
+
+        if (detections.length === 0) return null;
+        return {
+          path,
+          detections,
+          emailStatus: emailData?.status ?? 0,
+          usernameStatus: usernameData?.status ?? 0,
+          identifierStatus: bothData?.status ?? 0,
+        };
+      }),
+    );
+    for (const r of usernameResults) {
+      if (findings.length >= 5) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      const hasLeak = v.detections.includes("username-existence-leak") || v.detections.includes("response-divergence");
+      findings.push({
+        id: `email-enum-username-${findings.length}`, module: "email-enum", severity: hasLeak ? "medium" : "low",
+        title: `Username/email login confusion on ${v.path}`,
+        description: `The login endpoint at ${v.path} accepts multiple identifier formats (${v.detections.join(", ")}). ${hasLeak ? "Error messages differ between username and email login, potentially revealing valid usernames." : "Accepting both usernames and emails increases the attack surface for enumeration."} Email → ${v.emailStatus}, username → ${v.usernameStatus}, identifier → ${v.identifierStatus}.`,
+        evidence: `Detections: ${v.detections.join(", ")}\nEmail login → status ${v.emailStatus}\nUsername login → status ${v.usernameStatus}\nIdentifier login → status ${v.identifierStatus}`,
+        remediation: "Use a single identifier field and return identical error messages regardless of whether the input is an email or username. Never reveal whether a username exists separately from email existence.",
+        cwe: "CWE-204",
+        owasp: "A07:2021",
+        codeSnippet: `// Unified login — same response for all identifier types
+app.post("/api/auth/login", async (req, res) => {
+  const { identifier, password } = req.body; // accept email OR username
+  const user = identifier.includes("@")
+    ? await db.users.findByEmail(identifier)
+    : await db.users.findByUsername(identifier);
+  const valid = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
+  if (!user || !valid) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+  res.json({ token: signJwt(user) });
+});`,
+      });
+    }
+  }
+
   return findings;
 };
