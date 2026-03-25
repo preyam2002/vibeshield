@@ -1105,6 +1105,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
               if (techs.some((t) => t.includes("inngest"))) tips.push({ tech: "Inngest", tip: "Set signing key in production, validate event payloads, use background functions for sensitive ops" });
               if (techs.some((t) => t.includes("uploadthing") || t.includes("upload"))) tips.push({ tech: "File Uploads", tip: "Validate file types server-side, limit file size, scan for malware, store outside web root" });
               if (techs.some((t) => t.includes("resend") || t.includes("sendgrid") || t.includes("postmark"))) tips.push({ tech: "Email Service", tip: "Protect API key, rate-limit email sends, validate recipient addresses to prevent abuse" });
+              if (techs.some((t) => t.includes("s3") || t.includes("r2") || t.includes("blob"))) tips.push({ tech: "Cloud Storage", tip: "Block public listing, use short-lived presigned URLs, never expose storage credentials client-side" });
               if (tips.length === 0) return null;
               return (
                 <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">

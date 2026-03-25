@@ -316,6 +316,34 @@ const TOOL_CHECKS: ToolCheck[] = [
     description: "Webpack Bundle Analyzer report is publicly accessible, revealing all bundled modules and their sizes.",
     remediation: "Remove bundle analysis reports from production builds.",
   },
+  // Trigger.dev dashboard
+  {
+    path: "/api/trigger",
+    name: "Trigger.dev Endpoint",
+    contentPatterns: [/trigger/i, /job/i, /event/i, /run/i],
+    severity: "medium",
+    description: "Trigger.dev endpoint is publicly accessible. Without signing key validation, attackers can invoke background jobs.",
+    remediation: "Set TRIGGER_SECRET_KEY and verify signatures on incoming requests.",
+    requireJson: true,
+  },
+  // Expo DevTools
+  {
+    path: "/_expo/plugins",
+    name: "Expo Dev Plugins",
+    contentPatterns: [/expo/i, /plugin/i, /devtools/i],
+    severity: "medium",
+    description: "Expo development plugins endpoint is accessible, indicating a development build may be deployed.",
+    remediation: "Deploy production builds (expo build / eas build) instead of development server.",
+  },
+  // Supabase Studio via proxy
+  {
+    path: "/supabase",
+    name: "Supabase Studio",
+    contentPatterns: [/supabase/i, /studio/i, /table/i, /editor/i],
+    severity: "critical",
+    description: "Supabase Studio is accessible from the app, providing direct database access including table editing and SQL execution.",
+    remediation: "Remove Supabase Studio access from production. Access it via the Supabase dashboard instead.",
+  },
   // LocalStack / mock AWS
   {
     path: "/_localstack/health",
