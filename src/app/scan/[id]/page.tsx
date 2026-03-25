@@ -167,7 +167,7 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                const prompt = `Fix this security vulnerability in my app:\n\n**${finding.title}**\n\nSeverity: ${finding.severity.toUpperCase()}\n\n${finding.description}\n\n${finding.evidence ? `Evidence:\n${finding.evidence}\n\n` : ""}Recommended fix:\n${finding.remediation}`;
+                const prompt = `Fix this security vulnerability in my app:\n\n**${finding.title}**\n\nSeverity: ${finding.severity.toUpperCase()}\n\n${finding.description}\n\n${finding.evidence ? `Evidence:\n${finding.evidence}\n\n` : ""}Recommended fix:\n${finding.remediation}${finding.codeSnippet ? `\n\nExample code fix:\n\`\`\`\n${finding.codeSnippet}\n\`\`\`` : ""}`;
                 navigator.clipboard.writeText(prompt);
                 const btn = e.currentTarget;
                 btn.textContent = "Copied!";
