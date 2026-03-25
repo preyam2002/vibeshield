@@ -63,7 +63,44 @@ export const websocketModule: ScanModule = async (target) => {
       description: "Pusher key is in client code (this is expected). Ensure private channels require authentication.",
       evidence: `Key: ${pusherMatch[1].substring(0, 8)}...`,
       remediation: "Use private/presence channels for sensitive data. Implement server-side auth for channel subscriptions.",
+      codeSnippet: `// Server-side Pusher auth endpoint\napp.post("/pusher/auth", async (req, res) => {\n  const user = await getAuthUser(req);\n  if (!user) return res.status(403).send("Forbidden");\n  const auth = pusher.authorizeChannel(req.body.socket_id, req.body.channel_name);\n  res.send(auth);\n});`,
     });
+  }
+
+  // Test WebSocket upgrade without auth on discovered WS URLs
+  if (wsMatches) {
+    const wsUrls = [...new Set(wsMatches)].slice(0, 3);
+    const upgradeResults = await Promise.allSettled(
+      wsUrls.map(async (wsUrl) => {
+        const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://");
+        const res = await scanFetch(httpUrl, {
+          headers: {
+            Upgrade: "websocket",
+            Connection: "Upgrade",
+            "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version": "13",
+          },
+          timeoutMs: 5000,
+        });
+        return { wsUrl, status: res.status, upgrade: res.headers.get("upgrade") };
+      }),
+    );
+    for (const r of upgradeResults) {
+      if (r.status !== "fulfilled") continue;
+      const v = r.value;
+      if (v.status === 101 || v.upgrade?.toLowerCase() === "websocket") {
+        findings.push({
+          id: `websocket-no-auth-${findings.length}`, module: "WebSocket", severity: "high",
+          title: `WebSocket accepts unauthenticated connections`,
+          description: `The WebSocket endpoint ${v.wsUrl} accepts upgrade requests without authentication tokens. Anyone can connect and receive real-time data.`,
+          evidence: `Upgrade request to ${v.wsUrl}\nStatus: ${v.status}\nUpgrade header: ${v.upgrade}`,
+          remediation: "Require authentication tokens in the WebSocket handshake (query param or cookie).",
+          cwe: "CWE-306", owasp: "A07:2021",
+          codeSnippet: `// Verify auth during WebSocket upgrade\nconst wss = new WebSocketServer({ noServer: true });\nserver.on("upgrade", (req, socket, head) => {\n  const token = new URL(req.url, "http://x").searchParams.get("token");\n  if (!verifyJWT(token)) { socket.destroy(); return; }\n  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));\n});`,
+        });
+        break;
+      }
+    }
   }
 
   return findings;

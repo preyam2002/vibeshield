@@ -44,12 +44,21 @@ export const csrfModule: ScanModule = async (target) => {
       if (!res.ok) return null;
       const acao = res.headers.get("access-control-allow-origin");
       if (acao !== "*" && acao !== "https://evil.com") return null;
-      const simpleRes = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { Origin: "https://evil.com", "Content-Type": "application/x-www-form-urlencoded" },
-        body: "test=true",
-      });
-      if (simpleRes.ok && !hasSameSiteCookie) {
+      // Test both simple request types that bypass CORS preflight
+      const [formRes, textRes] = await Promise.all([
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { Origin: "https://evil.com", "Content-Type": "application/x-www-form-urlencoded" },
+          body: "test=true",
+        }),
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { Origin: "https://evil.com", "Content-Type": "text/plain" },
+          body: JSON.stringify({ test: true }),
+        }),
+      ]);
+      const simpleRes = formRes.ok ? formRes : textRes.ok ? textRes : null;
+      if (simpleRes?.ok && !hasSameSiteCookie) {
         return { endpoint, pathname: new URL(endpoint).pathname, status: simpleRes.status, acao };
       }
       return null;

@@ -22,7 +22,7 @@ export const firebaseModule: ScanModule = async (target) => {
   const rtdbUrl = projectId ? `https://${projectId}-default-rtdb.firebaseio.com` : null;
 
   // Run all Firebase tests in parallel
-  const [rtdbReadResult, rtdbWriteResult, firestoreResults, firestoreWriteResult, storageResult] = await Promise.all([
+  const [rtdbReadResult, rtdbWriteResult, firestoreResults, firestoreWriteResult, storageResult, authConfigResult] = await Promise.all([
     // RTDB read
     rtdbUrl ? scanFetch(`${rtdbUrl}/.json?shallow=true`).then(async (res) => {
       if (!res.ok) return null;
@@ -61,6 +61,33 @@ export const firebaseModule: ScanModule = async (target) => {
       if (data.items && data.items.length > 0) return data.items;
       return null;
     }).catch(() => null) : Promise.resolve(null),
+
+    // Firebase Auth — check if email/password signup is open and if email enumeration is possible
+    apiKey ? (async () => {
+      const result: { signupOpen?: boolean; emailEnumerable?: boolean; providers?: string[] } = {};
+      const [signupRes, lookupRes] = await Promise.allSettled([
+        scanFetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ returnSecureToken: true }),
+        }),
+        scanFetch(`https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${apiKey}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ identifier: "test@example.com", continueUri: "http://localhost" }),
+        }),
+      ]);
+      if (signupRes.status === "fulfilled") {
+        const data = await signupRes.value.json() as { localId?: string; error?: { message?: string } };
+        if (data.localId) result.signupOpen = true;
+      }
+      if (lookupRes.status === "fulfilled" && lookupRes.value.ok) {
+        const data = await lookupRes.value.json() as { registered?: boolean; allProviders?: string[] };
+        if (typeof data.registered === "boolean") {
+          result.emailEnumerable = true;
+          if (data.allProviders) result.providers = data.allProviders;
+        }
+      }
+      return result;
+    })() : Promise.resolve(null),
   ]);
 
   // Collect findings
@@ -121,6 +148,31 @@ export const firebaseModule: ScanModule = async (target) => {
       cwe: "CWE-862",
       codeSnippet: `// storage.rules\nrules_version = '2';\nservice firebase.storage {\n  match /b/{bucket}/o {\n    match /{allPaths=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}`,
     });
+  }
+
+  if (authConfigResult) {
+    if (authConfigResult.signupOpen) {
+      findings.push({
+        id: "firebase-auth-anonymous-signup", module: "Firebase", severity: "high",
+        title: "Firebase Auth allows anonymous account creation",
+        description: "Anyone can create new user accounts via the Firebase Auth API without any restrictions. This can be used to create spam accounts or enumerate internal features.",
+        evidence: `POST identitytoolkit.googleapis.com/v1/accounts:signUp → created anonymous user`,
+        remediation: "Disable anonymous auth if not needed. Add email domain restrictions or CAPTCHA to signup flows.",
+        cwe: "CWE-287", owasp: "A07:2021",
+        codeSnippet: `// Firebase Console → Authentication → Sign-in method\n// Disable "Anonymous" provider if not needed\n\n// For email signup, add domain restrictions:\nconst allowedDomains = ["yourcompany.com"];\nif (!allowedDomains.some(d => email.endsWith("@" + d))) {\n  throw new Error("Signup restricted to company emails");\n}`,
+      });
+    }
+    if (authConfigResult.emailEnumerable) {
+      findings.push({
+        id: "firebase-auth-email-enum", module: "Firebase", severity: "medium",
+        title: "Firebase Auth leaks email registration status",
+        description: `The createAuthUri endpoint reveals whether an email is registered. ${authConfigResult.providers?.length ? `Enabled providers: ${authConfigResult.providers.join(", ")}` : ""} Attackers can enumerate valid accounts.`,
+        evidence: `POST identitytoolkit.googleapis.com/v1/accounts:createAuthUri\nReturns "registered" boolean for any email`,
+        remediation: "Enable Email Enumeration Protection in Firebase Console → Authentication → Settings.",
+        cwe: "CWE-204", owasp: "A07:2021",
+        codeSnippet: `// Firebase Console → Authentication → Settings\n// Enable "Email Enumeration Protection"\n// This makes signIn/signUp/resetPassword return\n// the same response regardless of email existence`,
+      });
+    }
   }
 
   return findings;
