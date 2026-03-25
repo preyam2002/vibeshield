@@ -307,5 +307,292 @@ export const httpMethodsModule: ScanModule = async (target) => {
     });
   }
 
+  // ── Phase: HTTP Method Override via POST body (_method in form data) ──
+  const bodyOverrideResults = await Promise.allSettled(
+    endpoints.map(async (endpoint) => {
+      const pathname = new URL(endpoint).pathname;
+      try {
+        const baseRes = await scanFetch(endpoint, { timeoutMs: 3000 });
+        const baseStatus = baseRes.status;
+        const baseText = await baseRes.text();
+
+        for (const overrideMethod of ["DELETE", "PUT"]) {
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: `_method=${overrideMethod}`,
+            timeoutMs: 3000,
+          });
+
+          if (res.ok && res.status !== baseStatus) {
+            const text = await res.text();
+            if (text.length < baseText.length * 0.5 || res.status === 204) {
+              return {
+                endpoint,
+                pathname,
+                overrideMethod,
+                baseStatus,
+                overrideStatus: res.status,
+              };
+            }
+          }
+        }
+      } catch {
+        // skip
+      }
+      return null;
+    }),
+  );
+
+  for (const r of bodyOverrideResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `http-methods-body-override-${v.overrideMethod.toLowerCase()}-${findings.length}`,
+      module: "HTTP Methods",
+      severity: "medium",
+      title: `HTTP method override via _method POST body on ${v.pathname}`,
+      description: `The server accepts _method=${v.overrideMethod} in the POST body (form-encoded) to override the HTTP method. Frameworks like Rails and Laravel support this by default, allowing attackers to perform destructive operations through form submissions that bypass method-based access controls.`,
+      evidence: `POST ${v.endpoint}\nContent-Type: application/x-www-form-urlencoded\nBody: _method=${v.overrideMethod}\nBaseline status: ${v.baseStatus}\nOverride status: ${v.overrideStatus}`,
+      remediation: "Disable _method body parameter override in production or restrict it to authenticated sessions with CSRF protection.",
+      cwe: "CWE-749",
+      owasp: "A01:2021",
+      codeSnippet: `// middleware.ts — reject _method in POST body\nexport async function middleware(req: NextRequest) {\n  if (req.method === "POST") {\n    const body = await req.text();\n    if (body.includes("_method=")) {\n      return new Response("Method override not allowed", { status: 400 });\n    }\n  }\n  return NextResponse.next();\n}`,
+    });
+  }
+
+  // ── Phase: TRACK method enabled (XST variant) ──
+  const trackResults = await Promise.allSettled(
+    endpoints.map(async (endpoint) => {
+      try {
+        const probe = `TRACK-Probe-${Date.now()}`;
+        const res = await scanFetch(endpoint, {
+          method: "TRACK",
+          headers: {
+            "Cookie": `track_test=${probe}`,
+            "Authorization": `Bearer ${probe}`,
+          },
+          timeoutMs: 3000,
+        });
+        if (res.ok) {
+          const body = await res.text();
+          const echoes = body.includes(probe) || body.includes("Cookie:") || body.includes("Authorization:");
+          return { endpoint, pathname: new URL(endpoint).pathname, status: res.status, echoes, body: body.substring(0, 300) };
+        }
+      } catch {
+        // skip
+      }
+      return null;
+    }),
+  );
+
+  for (const r of trackResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `http-methods-track-${v.echoes ? "xst" : "active"}-${findings.length}`,
+      module: "HTTP Methods",
+      severity: v.echoes ? "high" : "medium",
+      title: v.echoes
+        ? `Cross-Site Tracing via TRACK method on ${v.pathname}`
+        : `TRACK method active on ${v.pathname}`,
+      description: v.echoes
+        ? "The TRACK method echoes back request headers including cookies and authorization tokens. This is a variant of Cross-Site Tracing (XST) that can be exploited via XSS to steal HttpOnly cookies."
+        : "The TRACK method (Microsoft IIS variant of TRACE) is enabled. This can be used for Cross-Site Tracing attacks to steal credentials.",
+      evidence: `TRACK ${v.endpoint} → ${v.status}\nEchoes sensitive headers: ${v.echoes}\nResponse (truncated): ${v.body}`,
+      remediation: "Disable the TRACK method in your web server configuration. On IIS, disable TRACK via request filtering.",
+      cwe: v.echoes ? "CWE-693" : "CWE-749",
+      owasp: "A05:2021",
+      codeSnippet: `// middleware.ts — block TRACK requests\nif (req.method === "TRACK") return new Response(null, { status: 405 });`,
+    });
+  }
+
+  // ── Phase: Arbitrary/WebDAV method handling ──
+  const ARBITRARY_METHODS = ["PROPFIND", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK", "SEARCH"] as const;
+  const arbitraryResults = await Promise.allSettled(
+    endpoints.slice(0, 2).flatMap((endpoint) =>
+      ARBITRARY_METHODS.map(async (method) => {
+        try {
+          const res = await scanFetch(endpoint, {
+            method,
+            headers: method === "PROPFIND" ? { Depth: "1", "Content-Type": "application/xml" } : {},
+            timeoutMs: 3000,
+          });
+          // WebDAV methods returning 2xx or 207 Multi-Status indicate an enabled WebDAV surface
+          if ((res.ok || res.status === 207) && res.status !== 404) {
+            const text = await res.text();
+            // Filter out generic error pages / frameworks that return 200 for everything
+            if (text.length > 5 && !/not.?found|cannot|error|<!DOCTYPE/i.test(text.substring(0, 200))) {
+              return { endpoint, pathname: new URL(endpoint).pathname, method, status: res.status, text: text.substring(0, 300) };
+            }
+          }
+        } catch {
+          // skip
+        }
+        return null;
+      }),
+    ),
+  );
+
+  const arbitrarySeen = new Set<string>();
+  for (const r of arbitraryResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const key = `${v.pathname}:${v.method}`;
+    if (arbitrarySeen.has(key)) continue;
+    arbitrarySeen.add(key);
+    const isWebDav = ["PROPFIND", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK"].includes(v.method);
+    findings.push({
+      id: `http-methods-arbitrary-${v.method.toLowerCase()}-${findings.length}`,
+      module: "HTTP Methods",
+      severity: isWebDav ? "medium" : "low",
+      title: `${v.method} method returns data on ${v.pathname}`,
+      description: isWebDav
+        ? `The WebDAV method ${v.method} is accepted and returns a valid response. WebDAV exposes file management operations (create, move, copy, lock) that can be abused to enumerate directories, upload files, or modify server content.`
+        : `The non-standard method ${v.method} returns a valid response. This may indicate misconfigured routing or an unintended attack surface that reveals server internals.`,
+      evidence: `${v.method} ${v.endpoint} → ${v.status}\nResponse (truncated): ${v.text}`,
+      remediation: isWebDav
+        ? "Disable WebDAV if not needed. If required, restrict WebDAV methods to authenticated users and specific paths."
+        : `Reject unknown HTTP methods with a 405 response. Only allow methods your application explicitly handles.`,
+      cwe: isWebDav ? "CWE-749" : "CWE-200",
+      owasp: "A05:2021",
+      codeSnippet: `// middleware.ts — allowlist HTTP methods\nconst ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];\nexport function middleware(req: NextRequest) {\n  if (!ALLOWED_METHODS.includes(req.method)) {\n    return new Response(null, { status: 405, headers: { Allow: ALLOWED_METHODS.join(", ") } });\n  }\n  return NextResponse.next();\n}`,
+    });
+  }
+
+  // ── Phase: HEAD vs GET information disclosure ──
+  const headDisclosureResults = await Promise.allSettled(
+    endpoints.map(async (endpoint) => {
+      const pathname = new URL(endpoint).pathname;
+      try {
+        const [getRes, headRes] = await Promise.all([
+          scanFetch(endpoint, { timeoutMs: 3000 }),
+          scanFetch(endpoint, { method: "HEAD", timeoutMs: 3000 }),
+        ]);
+
+        const discrepancies: string[] = [];
+
+        // Check for headers present in HEAD but absent in GET (or vice versa)
+        const headHeaders = new Map<string, string>();
+        const getHeaders = new Map<string, string>();
+        headRes.headers.forEach((v, k) => headHeaders.set(k.toLowerCase(), v));
+        getRes.headers.forEach((v, k) => getHeaders.set(k.toLowerCase(), v));
+
+        // Sensitive headers that differ between HEAD and GET
+        const sensitiveHeaders = ["server", "x-powered-by", "x-aspnet-version", "x-debug", "x-runtime", "x-request-id", "x-backend", "x-served-by", "x-cache"];
+        for (const h of sensitiveHeaders) {
+          const headVal = headHeaders.get(h);
+          const getVal = getHeaders.get(h);
+          if (headVal && !getVal) {
+            discrepancies.push(`HEAD exposes "${h}: ${headVal}" not present in GET`);
+          }
+        }
+
+        // Status code mismatch can reveal different handling logic
+        if (getRes.status !== headRes.status && headRes.status !== 405) {
+          discrepancies.push(`Status mismatch: GET=${getRes.status}, HEAD=${headRes.status}`);
+        }
+
+        // Content-Length mismatch can reveal a different resource being served
+        const getCL = getHeaders.get("content-length");
+        const headCL = headHeaders.get("content-length");
+        const getBody = await getRes.text();
+        if (headCL && getCL && headCL !== getCL && Math.abs(parseInt(headCL) - parseInt(getCL)) > 100) {
+          discrepancies.push(`Content-Length mismatch: GET=${getCL}, HEAD=${headCL} (actual body: ${getBody.length})`);
+        }
+
+        if (discrepancies.length > 0) {
+          return { endpoint, pathname, discrepancies };
+        }
+      } catch {
+        // skip
+      }
+      return null;
+    }),
+  );
+
+  for (const r of headDisclosureResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `http-methods-head-disclosure-${findings.length}`,
+      module: "HTTP Methods",
+      severity: "low",
+      title: `HEAD vs GET response inconsistency on ${v.pathname}`,
+      description: "The server returns different headers or status codes for HEAD and GET requests to the same endpoint. This inconsistency may reveal server internals, backend architecture, or caching behavior that is stripped from normal GET responses.",
+      evidence: `Endpoint: ${v.endpoint}\nDiscrepancies:\n${v.discrepancies.map((d) => `  - ${d}`).join("\n")}`,
+      remediation: "Ensure HEAD responses mirror GET responses (same status code and headers, without the body). Review middleware and reverse proxy configuration for inconsistent header stripping.",
+      cwe: "CWE-200",
+      owasp: "A05:2021",
+    });
+  }
+
+  // ── Phase: Method-based access control bypass ──
+  const acBypassResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
+      const pathname = new URL(endpoint).pathname;
+      try {
+        // Step 1: Identify a protected endpoint (GET returns 401/403)
+        const getRes = await scanFetch(endpoint, { timeoutMs: 3000 });
+        const isProtected = getRes.status === 401 || getRes.status === 403;
+        if (!isProtected) return null;
+
+        const bypassMethods = ["POST", "PUT", "PATCH", "HEAD", "OPTIONS"] as const;
+        const bypasses: { method: string; status: number; text: string }[] = [];
+
+        const methodResults = await Promise.allSettled(
+          bypassMethods.map(async (method) => {
+            const res = await scanFetch(endpoint, {
+              method,
+              headers: method !== "HEAD" && method !== "OPTIONS" ? { "Content-Type": "application/json" } : {},
+              body: ["POST", "PUT", "PATCH"].includes(method) ? JSON.stringify({}) : undefined,
+              timeoutMs: 3000,
+            });
+            return { method, status: res.status, text: (await res.text()).substring(0, 200) };
+          }),
+        );
+
+        for (const mr of methodResults) {
+          if (mr.status !== "fulfilled") continue;
+          const m = mr.value;
+          // If a different method bypasses the auth check (returns 2xx instead of 401/403)
+          if (m.status >= 200 && m.status < 300 && m.text.length > 5) {
+            // Filter out generic OPTIONS responses and empty HEAD responses
+            if (m.method === "OPTIONS" || (m.method === "HEAD" && m.text.length === 0)) continue;
+            if (!/unauthorized|unauthenticated|forbidden|login|sign.?in/i.test(m.text)) {
+              bypasses.push(m);
+            }
+          }
+        }
+
+        if (bypasses.length > 0) {
+          return { endpoint, pathname, getStatus: getRes.status, bypasses };
+        }
+      } catch {
+        // skip
+      }
+      return null;
+    }),
+  );
+
+  for (const r of acBypassResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    for (const bypass of v.bypasses) {
+      findings.push({
+        id: `http-methods-ac-bypass-${bypass.method.toLowerCase()}-${findings.length}`,
+        module: "HTTP Methods",
+        severity: "high",
+        title: `Access control bypass via ${bypass.method} on ${v.pathname}`,
+        description: `The endpoint returns ${v.getStatus} (protected) for GET requests but ${bypass.status} (success) for ${bypass.method}. This indicates that authentication or authorization is only enforced for certain HTTP methods, allowing attackers to bypass access controls by switching the request method.`,
+        evidence: `GET ${v.endpoint} → ${v.getStatus} (blocked)\n${bypass.method} ${v.endpoint} → ${bypass.status} (allowed)\nResponse: ${bypass.text}`,
+        remediation: `Enforce authentication and authorization checks consistently across all HTTP methods. Apply auth middleware before routing to method-specific handlers.`,
+        cwe: "CWE-287",
+        owasp: "A01:2021",
+        codeSnippet: `// Apply auth BEFORE method routing\nexport async function middleware(req: NextRequest) {\n  // Auth check runs for ALL methods\n  const session = await getSession(req);\n  if (!session && isProtectedRoute(req.nextUrl.pathname)) {\n    return Response.json({ error: "Unauthorized" }, { status: 401 });\n  }\n  return NextResponse.next();\n}`,
+      });
+    }
+  }
+
   return findings;
 };
