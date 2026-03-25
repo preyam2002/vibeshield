@@ -224,5 +224,112 @@ export const dnsSecurityModule: ScanModule = async (target) => {
     }
   } catch { /* skip */ }
 
+  // Phase 7: DKIM selector probing — check common DKIM selectors
+  const dkimSelectors = ["default", "google", "selector1", "selector2", "k1", "s1", "s2", "mail", "dkim", "mandrill", "ses"];
+  try {
+    const dkimResults = await Promise.allSettled(
+      dkimSelectors.map(async (sel) => {
+        const records = await dns.resolveTxt(`${sel}._domainkey.${baseDomain}`);
+        return { selector: sel, records: records.flat() };
+      }),
+    );
+    const foundSelectors = dkimResults
+      .filter((r): r is PromiseFulfilledResult<{ selector: string; records: string[] }> => r.status === "fulfilled")
+      .map((r) => r.value);
+
+    if (foundSelectors.length === 0) {
+      findings.push({
+        id: "dns-no-dkim",
+        module: "DNS & Email Security",
+        severity: "medium",
+        title: "No DKIM records found for common selectors",
+        description: `No DKIM (DomainKeys Identified Mail) records were found for ${baseDomain}. Without DKIM, recipients cannot verify that emails from your domain haven't been tampered with in transit. This weakens your email authentication posture.`,
+        evidence: `Checked selectors: ${dkimSelectors.join(", ")}`,
+        remediation: "Configure DKIM signing with your email provider and publish the public key as a DNS TXT record at <selector>._domainkey.yourdomain.com.",
+        cwe: "CWE-290",
+        confidence: 70,
+      });
+    } else {
+      // Check for weak DKIM key sizes
+      for (const { selector, records } of foundSelectors) {
+        const dkimRecord = records.join("");
+        if (dkimRecord.includes("k=rsa") && dkimRecord.includes("p=")) {
+          const pubKey = dkimRecord.split("p=")[1]?.split(";")[0]?.trim() || "";
+          // Base64-encoded 1024-bit RSA key is ~172 chars, 2048-bit is ~392 chars
+          if (pubKey.length > 0 && pubKey.length < 200) {
+            findings.push({
+              id: `dns-dkim-weak-key-${selector}`,
+              module: "DNS & Email Security",
+              severity: "low",
+              title: `DKIM key for selector "${selector}" may be weak (< 2048-bit)`,
+              description: `The DKIM public key for selector "${selector}" appears to be shorter than 2048 bits. NIST recommends at least 2048-bit RSA keys. A weak key could be factored, allowing attackers to forge DKIM signatures.`,
+              evidence: `Selector: ${selector}._domainkey.${baseDomain}, key length: ~${pubKey.length * 6} bits (estimated from base64)`,
+              remediation: "Rotate to a 2048-bit or longer RSA key, or switch to Ed25519 DKIM signing.",
+              cwe: "CWE-326",
+              confidence: 60,
+            });
+          }
+        }
+      }
+    }
+  } catch { /* DKIM resolution failed */ }
+
+  // Phase 8: DNSSEC check — look for RRSIG/DNSKEY records
+  try {
+    // We can't directly check DNSSEC with Node DNS, but we can check for DS records on the parent
+    // and look for NSEC/NSEC3 responses. As a proxy, check if the domain has a DS record.
+    const dsRecords = await dns.resolve(baseDomain, "DS" as "A").catch(() => []);
+    if (!dsRecords || (Array.isArray(dsRecords) && dsRecords.length === 0)) {
+      findings.push({
+        id: "dns-no-dnssec",
+        module: "DNS & Email Security",
+        severity: "info",
+        title: "DNSSEC not detected",
+        description: `No DNSSEC validation chain was detected for ${baseDomain}. DNSSEC prevents DNS spoofing and cache poisoning by cryptographically signing DNS records. While not all registrars support it, enabling DNSSEC adds an important layer of DNS integrity protection.`,
+        evidence: `No DS records found for ${baseDomain}`,
+        remediation: "Enable DNSSEC through your domain registrar and DNS hosting provider. Most major providers (Cloudflare, Route53, Google Cloud DNS) support automated DNSSEC signing.",
+        cwe: "CWE-350",
+        confidence: 50,
+      });
+    }
+  } catch { /* DS resolution failed, common for non-DNSSEC domains */ }
+
+  // Phase 9: Check for wildcard DNS (security risk — can mask subdomain takeover)
+  try {
+    const randomSub = `vibeshield-probe-${Math.random().toString(36).slice(2, 10)}.${baseDomain}`;
+    const wildcardResults = await dns.resolve4(randomSub).catch(() => null);
+    if (wildcardResults && wildcardResults.length > 0) {
+      findings.push({
+        id: "dns-wildcard-detected",
+        module: "DNS & Email Security",
+        severity: "low",
+        title: "Wildcard DNS record detected",
+        description: `A wildcard DNS record (*.${baseDomain}) was detected — random subdomains resolve to ${wildcardResults[0]}. While sometimes intentional, wildcard DNS can mask subdomain takeover vulnerabilities by hiding dangling records behind a catch-all response.`,
+        evidence: `${randomSub} → ${wildcardResults.join(", ")}`,
+        remediation: "Remove the wildcard DNS record unless specifically required. Use explicit DNS entries for each subdomain to make takeover detection easier.",
+        cwe: "CWE-350",
+        confidence: 85,
+      });
+    }
+  } catch { /* expected for non-wildcard domains */ }
+
+  // Phase 10: Nameserver security — check for single NS / common misconfigs
+  try {
+    const nsRecords = await dns.resolveNs(baseDomain);
+    if (nsRecords.length === 1) {
+      findings.push({
+        id: "dns-single-ns",
+        module: "DNS & Email Security",
+        severity: "low",
+        title: "Single nameserver detected — no DNS redundancy",
+        description: `The domain ${baseDomain} has only one nameserver (${nsRecords[0]}). If this nameserver goes down, your entire domain becomes unreachable. RFC 2182 recommends at least two nameservers for redundancy.`,
+        evidence: `NS records: ${nsRecords.join(", ")}`,
+        remediation: "Add at least one secondary nameserver from a different network for DNS redundancy.",
+        cwe: "CWE-693",
+        confidence: 90,
+      });
+    }
+  } catch { /* NS resolution failed */ }
+
   return findings;
 };
