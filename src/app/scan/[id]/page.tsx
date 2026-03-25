@@ -1228,13 +1228,18 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   {filteredFindings.length > 0 && ` (${filteredFindings.length})`}
                 </h3>
                 {scan.findings.length > 3 && (
-                  <input
-                    type="text"
-                    placeholder="Search findings..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="text-xs bg-zinc-900/50 border border-zinc-800/50 rounded-lg px-3 py-1.5 text-zinc-300 placeholder:text-zinc-700 focus:outline-none focus:border-zinc-700 w-full max-w-[200px]"
-                  />
+                  <div className="relative w-full max-w-[200px]">
+                    <input
+                      type="text"
+                      placeholder="Search findings..."
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="text-xs bg-zinc-900/50 border border-zinc-800/50 rounded-lg px-3 py-1.5 pr-8 text-zinc-300 placeholder:text-zinc-700 focus:outline-none focus:border-zinc-700 w-full"
+                    />
+                    {!search && (
+                      <kbd className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-zinc-700 bg-zinc-800/80 border border-zinc-700/50 rounded px-1 py-0.5">/</kbd>
+                    )}
+                  </div>
                 )}
               </div>
               <div className="flex items-center gap-3">
@@ -1274,10 +1279,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             {sortedFindings.length === 0 && !isRunning && (
               <div className="text-center py-20 bg-zinc-900/20 border border-zinc-800/30 rounded-xl">
                 {scan.summary.total === 0 ? (
-                  <div className="space-y-2">
-                    <div className="text-4xl">&#x1f389;</div>
-                    <p className="text-zinc-400 font-medium">No vulnerabilities found</p>
-                    <p className="text-xs text-zinc-600">Your app passed all {totalModules} security checks</p>
+                  <div className="space-y-3">
+                    <div className="text-5xl">&#x1f389;</div>
+                    <p className="text-lg text-zinc-300 font-semibold">Clean bill of health</p>
+                    <p className="text-sm text-zinc-500">Your app passed all {totalModules} security modules with zero findings</p>
+                    <p className="text-xs text-zinc-600 max-w-md mx-auto">This is a point-in-time assessment. Keep scanning regularly as you add features and update dependencies.</p>
                   </div>
                 ) : (
                   <p className="text-zinc-600">No findings match this filter.</p>
