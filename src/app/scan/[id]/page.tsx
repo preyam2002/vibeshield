@@ -708,10 +708,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             </div>
             {!isRunning && scan.status === "completed" && scan.summary.total > 0 && (
               <div className="mt-2 text-[10px] text-zinc-600 space-y-0.5">
-                {scan.summary.critical > 0 && <div className="text-red-400/70">-{Math.round(25 * (1 - Math.pow(0.7, scan.summary.critical)) / (1 - 0.7))} critical</div>}
-                {scan.summary.high > 0 && <div className="text-orange-400/70">-{Math.round(10 * (1 - Math.pow(0.75, scan.summary.high)) / (1 - 0.75))} high</div>}
+                {scan.summary.critical > 0 && <div className="text-red-400/70">-{Math.round(30 * (1 - Math.pow(0.6, scan.summary.critical)) / (1 - 0.6))} critical</div>}
+                {scan.summary.high > 0 && <div className="text-orange-400/70">-{Math.round(12 * (1 - Math.pow(0.7, scan.summary.high)) / (1 - 0.7))} high</div>}
                 {scan.summary.medium > 0 && <div className="text-yellow-400/70">-{Math.round(4 * (1 - Math.pow(0.8, scan.summary.medium)) / (1 - 0.8))} medium</div>}
                 {scan.summary.low > 0 && <div className="text-blue-400/70">-{Math.round(1 * (1 - Math.pow(0.85, scan.summary.low)) / (1 - 0.85))} low</div>}
+                {scan.summary.critical >= 1 && scan.summary.high >= 2 && <div className="text-red-400/70">-10 combo</div>}
               </div>
             )}
           </div>
@@ -949,7 +950,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             {!isRunning && scan.status === "completed" && scan.findings.length > 0 && scan.score < 95 && (() => {
               const penalty = (count: number, weight: number, decay: number) =>
                 Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
-              const weights = { critical: { w: 25, d: 0.7 }, high: { w: 10, d: 0.75 }, medium: { w: 4, d: 0.8 }, low: { w: 1, d: 0.85 } } as const;
+              const weights = { critical: { w: 30, d: 0.6 }, high: { w: 12, d: 0.7 }, medium: { w: 4, d: 0.8 }, low: { w: 1, d: 0.85 } } as const;
               type Sev = keyof typeof weights;
               const effortForModule = (mod: string): "quick" | "medium" | "complex" => {
                 const quickModules = /headers|cookies|clickjacking|ssl|cors|source.maps|dependencies|http.methods|environment/i;

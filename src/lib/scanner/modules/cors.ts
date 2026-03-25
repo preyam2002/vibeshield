@@ -1,14 +1,20 @@
 import type { ScanModule, Finding } from "../types";
 import { scanFetch } from "../fetch";
 
-const makeEvilOrigins = (targetHost: string) => [
-  "https://evil.com",
-  "https://attacker.com",
-  "null",
-  `https://${targetHost}.evil.com`,
-  `https://evil${targetHost}`,
-  `https://${targetHost.replace(".", "")}.com`,
-];
+const makeEvilOrigins = (targetHost: string) => {
+  const parts = targetHost.split(".");
+  const baseDomain = parts.length >= 2 ? parts.slice(-2).join(".") : targetHost;
+  return [
+    "https://evil.com",
+    "https://attacker.com",
+    "null",
+    `https://${targetHost}.evil.com`,       // subdomain of attacker (endsWith bypass)
+    `https://evil${targetHost}`,            // prefix bypass (includes bypass)
+    `https://${targetHost.replace(".", "")}.com`, // dot-stripping bypass
+    `https://not${baseDomain}`,             // domain suffix bypass
+    `http://${targetHost}`,                 // protocol downgrade
+  ];
+};
 
 export const corsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
@@ -141,6 +147,7 @@ export const corsModule: ScanModule = async (target) => {
         evidence: `Access-Control-Allow-Origin: ${acao}\nVary: ${vary || "(not set)"}`,
         remediation: "Add Vary: Origin to responses with dynamic ACAO headers.",
         cwe: "CWE-942",
+        codeSnippet: `// Always include Vary: Origin when ACAO is dynamic\nres.headers.set("Vary", "Origin");`,
       });
     }
   }
@@ -172,6 +179,36 @@ export const corsModule: ScanModule = async (target) => {
         remediation: "Restrict to specific required headers.",
         cwe: "CWE-942",
         codeSnippet: `// Only allow specific headers\nres.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");`,
+      });
+    }
+  }
+
+  // Phase 4: Check for overly permissive Access-Control-Expose-Headers
+  const exposeTests = await Promise.allSettled(
+    endpoints.slice(0, 3).map(async (endpoint) => {
+      const res = await scanFetch(endpoint, { headers: { Origin: `https://${targetHost}` } });
+      return {
+        endpoint,
+        expose: res.headers.get("access-control-expose-headers") || "",
+      };
+    }),
+  );
+  let exposeFlagged = false;
+  for (const r of exposeTests) {
+    if (r.status !== "fulfilled" || exposeFlagged) continue;
+    const { endpoint, expose } = r.value;
+    if (expose === "*") {
+      exposeFlagged = true;
+      findings.push({
+        id: `cors-expose-wildcard-${findings.length}`,
+        module: "CORS",
+        severity: "low",
+        title: `CORS exposes all response headers on ${new URL(endpoint).pathname}`,
+        description: "Access-Control-Expose-Headers: * allows cross-origin JavaScript to read any response header, potentially leaking internal headers like X-Request-Id, X-RateLimit-Remaining, or custom auth headers.",
+        evidence: `Access-Control-Expose-Headers: *`,
+        remediation: "Only expose the specific response headers that cross-origin clients need.",
+        cwe: "CWE-942",
+        codeSnippet: `// Only expose specific headers\nres.headers.set("Access-Control-Expose-Headers", "Content-Length, X-Request-Id");`,
       });
     }
   }

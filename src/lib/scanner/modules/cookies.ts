@@ -42,6 +42,7 @@ export const cookiesModule: ScanModule = async (target) => {
         remediation: "Set the Secure flag on this cookie to ensure it's only sent over HTTPS.",
         cwe: "CWE-614",
         owasp: "A05:2021",
+        codeSnippet: `// Set-Cookie with Secure flag\nres.cookies.set("${cookie.name}", value, {\n  secure: true,\n  httpOnly: true,\n  sameSite: "lax",\n});`,
       });
     }
 
@@ -57,6 +58,7 @@ export const cookiesModule: ScanModule = async (target) => {
         remediation: "Set SameSite=Lax or SameSite=Strict on this cookie.",
         cwe: "CWE-1275",
         owasp: "A05:2021",
+        codeSnippet: `// Set SameSite to Lax or Strict\nres.cookies.set("${cookie.name}", value, {\n  sameSite: "lax", // or "strict"\n  httpOnly: true,\n  secure: true,\n});`,
       });
     }
 
