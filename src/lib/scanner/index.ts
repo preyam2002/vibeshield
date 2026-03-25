@@ -53,6 +53,7 @@ import { dependenciesModule } from "./modules/dependencies";
 import { pathTraversalModule } from "./modules/path-traversal";
 import { commandInjectionModule } from "./modules/command-injection";
 import { nosqlInjectionModule } from "./modules/nosql-injection";
+import { cachePoisoningModule } from "./modules/cache-poisoning";
 
 const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
@@ -91,6 +92,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "Path Traversal", description: "Test for directory traversal and file inclusion", category: "security", run: pathTraversalModule },
   { name: "Command Injection", description: "Test for OS command injection vulnerabilities", category: "security", run: commandInjectionModule },
   { name: "NoSQL Injection", description: "Test for MongoDB/NoSQL operator injection and auth bypass", category: "security", run: nosqlInjectionModule },
+  { name: "Cache Poisoning", description: "Test for CDN/proxy cache poisoning via header injection", category: "security", run: cachePoisoningModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [
