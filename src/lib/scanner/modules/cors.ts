@@ -55,41 +55,44 @@ export const corsModule: ScanModule = async (target) => {
 
   // Phase 2: Test origin reflection with evil origins (only if no wildcard found)
   if (!wildcardFound) {
-    // Test first 5 endpoints in parallel, each with all evil origins
-    const reflectTests = endpoints.slice(0, 5).map(async (endpoint) => {
-      if (reflectFound) return;
-      for (const origin of evilOrigins) {
-        if (reflectFound) break;
-        try {
-          const res = await scanFetch(endpoint, { headers: { Origin: origin } });
+    // Test all endpoint+origin combos in parallel, take first match
+    const reflectTests = await Promise.allSettled(
+      endpoints.slice(0, 3).flatMap((endpoint) =>
+        evilOrigins.map(async (origin) => {
+          const res = await scanFetch(endpoint, { headers: { Origin: origin }, timeoutMs: 5000 });
           const acao = res.headers.get("access-control-allow-origin");
-          if (acao === origin) {
-            reflectFound = true;
-            const acac = res.headers.get("access-control-allow-credentials");
-            const withCreds = acac === "true";
-            const isSubdomainBypass = origin.includes(targetHost) && origin !== `https://${targetHost}`;
-            findings.push({
-              id: `cors-reflect-${findings.length}`,
-              module: "CORS",
-              severity: withCreds ? "critical" : "high",
-              title: `CORS reflects ${isSubdomainBypass ? "subdomain-spoofed " : ""}Origin${withCreds ? " with credentials" : ""} on ${new URL(endpoint).pathname}`,
-              description: withCreds
-                ? `This endpoint echoes back any Origin AND allows credentials. Any website can make fully authenticated requests and steal user data.`
-                : isSubdomainBypass
-                  ? `This endpoint trusts origins containing "${targetHost}" (like ${origin}). An attacker can register a domain matching this pattern.`
-                  : `This endpoint echoes back whatever Origin is sent, including "${origin}". Any website can read responses.`,
-              evidence: `Origin: ${origin}\nAccess-Control-Allow-Origin: ${acao}${withCreds ? "\nAccess-Control-Allow-Credentials: true" : ""}`,
-              remediation: "Validate the Origin header against an exact whitelist of allowed domains.",
-              cwe: "CWE-942",
-              owasp: "A05:2021",
-              codeSnippet: `// middleware.ts\nconst ALLOWED_ORIGINS = ["https://yourdomain.com"];\nconst origin = req.headers.get("origin") || "";\nif (ALLOWED_ORIGINS.includes(origin)) {\n  res.headers.set("Access-Control-Allow-Origin", origin);\n  res.headers.set("Vary", "Origin");\n}`,
-            });
-            break;
-          }
-        } catch { /* skip */ }
-      }
-    });
-    await Promise.allSettled(reflectTests);
+          if (acao !== origin) return null;
+          return {
+            endpoint,
+            origin,
+            acac: res.headers.get("access-control-allow-credentials"),
+          };
+        }),
+      ),
+    );
+    for (const r of reflectTests) {
+      if (r.status !== "fulfilled" || !r.value || reflectFound) continue;
+      reflectFound = true;
+      const { endpoint, origin, acac } = r.value;
+      const withCreds = acac === "true";
+      const isSubdomainBypass = origin.includes(targetHost) && origin !== `https://${targetHost}`;
+      findings.push({
+        id: `cors-reflect-${findings.length}`,
+        module: "CORS",
+        severity: withCreds ? "critical" : "high",
+        title: `CORS reflects ${isSubdomainBypass ? "subdomain-spoofed " : ""}Origin${withCreds ? " with credentials" : ""} on ${new URL(endpoint).pathname}`,
+        description: withCreds
+          ? `This endpoint echoes back any Origin AND allows credentials. Any website can make fully authenticated requests and steal user data.`
+          : isSubdomainBypass
+            ? `This endpoint trusts origins containing "${targetHost}" (like ${origin}). An attacker can register a domain matching this pattern.`
+            : `This endpoint echoes back whatever Origin is sent, including "${origin}". Any website can read responses.`,
+        evidence: `Origin: ${origin}\nAccess-Control-Allow-Origin: ${origin}${withCreds ? "\nAccess-Control-Allow-Credentials: true" : ""}`,
+        remediation: "Validate the Origin header against an exact whitelist of allowed domains.",
+        cwe: "CWE-942",
+        owasp: "A05:2021",
+        codeSnippet: `// middleware.ts\nconst ALLOWED_ORIGINS = ["https://yourdomain.com"];\nconst origin = req.headers.get("origin") || "";\nif (ALLOWED_ORIGINS.includes(origin)) {\n  res.headers.set("Access-Control-Allow-Origin", origin);\n  res.headers.set("Vary", "Origin");\n}`,
+      });
+    }
   }
 
   // Phase 3: Vary: Origin check + preflight (parallel)
