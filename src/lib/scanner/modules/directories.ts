@@ -21,6 +21,7 @@ const CHECKS: DirCheck[] = [
   // Git
   { path: "/.git/config", severity: "critical", title: "Exposed .git directory", description: "Your .git directory is accessible. Attackers can download your entire repository including commit history and potentially secrets.", remediation: "Block access to .git/ in your web server.", contentCheck: /\[core\]|\[remote/ },
   { path: "/.git/HEAD", severity: "critical", title: "Exposed .git/HEAD", description: "Git HEAD file accessible — full repo can likely be reconstructed.", remediation: "Block access to .git/.", contentCheck: /ref:/ },
+  { path: "/.git/refs/heads/main", severity: "critical", title: "Exposed .git refs", description: "Git refs are accessible — attackers can enumerate branches and reconstruct the full repository with tools like git-dumper.", remediation: "Block access to .git/ directory.", contentCheck: /^[0-9a-f]{40}/ },
 
   // Config files
   { path: "/wp-config.php", severity: "critical", title: "Exposed wp-config.php", description: "WordPress config file accessible.", remediation: "Block direct access to wp-config.php." },
@@ -35,6 +36,9 @@ const CHECKS: DirCheck[] = [
   { path: "/playground", severity: "high", title: "API Playground exposed", description: "An API playground/explorer is publicly accessible.", remediation: "Disable API playgrounds in production." },
 
   // Backup files
+  { path: "/index.php.bak", severity: "high", title: "PHP backup file exposed", description: "A backup of index.php is accessible — may contain database credentials, API keys, or application logic.", remediation: "Remove .bak files from web root.", contentCheck: /php|<\?/i },
+  { path: "/app.js.old", severity: "high", title: "Old JS file exposed", description: "An old copy of app.js is accessible — may reveal application logic or embedded secrets.", remediation: "Remove .old files from web root." },
+  { path: "/config.yml.bak", severity: "high", title: "Config backup file exposed", description: "A backup of config.yml is accessible — likely contains sensitive configuration values.", remediation: "Remove .bak files from web root." },
   { path: "/backup.sql", severity: "critical", title: "SQL backup file exposed", description: "A database backup file is publicly downloadable.", remediation: "Remove backup files from web-accessible directories.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
   { path: "/dump.sql", severity: "critical", title: "SQL dump file exposed", description: "A database dump is publicly accessible.", remediation: "Remove from web root.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
   { path: "/database.sql", severity: "critical", title: "Database file exposed", description: "Database file publicly accessible.", remediation: "Remove from web root.", contentCheck: /CREATE|INSERT|TABLE|DROP/i },
@@ -56,9 +60,12 @@ const CHECKS: DirCheck[] = [
   { path: "/_next/static/chunks/app", severity: "info", title: "Next.js chunk directory listable", description: "Next.js static chunks directory may be listable.", remediation: "Ensure directory listing is disabled." },
 
   // Docker/CI
-  { path: "/Dockerfile", severity: "medium", title: "Dockerfile exposed", description: "Dockerfile is accessible, revealing your build configuration and potentially base images with known vulnerabilities.", remediation: "Block access to Dockerfile." },
-  { path: "/docker-compose.yml", severity: "high", title: "docker-compose.yml exposed", description: "Docker Compose config may contain service passwords and internal network details.", remediation: "Block access." },
+  { path: "/Dockerfile", severity: "medium", title: "Dockerfile exposed", description: "Dockerfile is accessible, revealing your build configuration and potentially base images with known vulnerabilities.", remediation: "Block access to Dockerfile.", contentCheck: /FROM|RUN|COPY|EXPOSE/i },
+  { path: "/docker-compose.yml", severity: "high", title: "docker-compose.yml exposed", description: "Docker Compose config may contain service passwords and internal network details.", remediation: "Block access.", contentCheck: /services|version|volumes/i },
   { path: "/.github/workflows", severity: "low", title: "GitHub Actions workflows exposed", description: "CI/CD configuration is accessible.", remediation: "Block access to .github directory." },
+  { path: "/Jenkinsfile", severity: "medium", title: "Jenkinsfile exposed", description: "Jenkins pipeline config is accessible — reveals build steps, deployment targets, and potentially credential IDs.", remediation: "Block access to Jenkinsfile.", contentCheck: /pipeline|node|stage/i },
+  { path: "/.gitlab-ci.yml", severity: "medium", title: "GitLab CI config exposed", description: "GitLab CI/CD configuration reveals build pipeline, deployment targets, and environment variables.", remediation: "Block access to .gitlab-ci.yml.", contentCheck: /stages|script|image/i },
+  { path: "/.circleci/config.yml", severity: "medium", title: "CircleCI config exposed", description: "CircleCI configuration reveals build pipeline, orbs, and deployment workflow.", remediation: "Block access to .circleci/ directory.", contentCheck: /version|jobs|workflows/i },
 
   // Logs
   { path: "/error.log", severity: "high", title: "Error log exposed", description: "Application error log is accessible. May contain stack traces, file paths, and sensitive data.", remediation: "Move logs outside web root." },
@@ -97,6 +104,8 @@ const CHECKS: DirCheck[] = [
   // IDE/editor config
   { path: "/.vscode/settings.json", severity: "low", title: "VS Code settings exposed", description: "IDE configuration may reveal project structure and development tools.", remediation: "Block access to .vscode/ directory.", contentCheck: /\{/ },
   { path: "/.idea/workspace.xml", severity: "low", title: "JetBrains workspace exposed", description: "IDE workspace config may contain file paths and project settings.", remediation: "Block access to .idea/ directory." },
+  { path: "/.editorconfig", severity: "info", title: "EditorConfig file exposed", description: "EditorConfig reveals coding style preferences and project structure.", remediation: "Block access to dotfiles in production.", contentCheck: /root|indent_style|charset/i },
+  { path: "/.sublime-project", severity: "low", title: "Sublime Text project exposed", description: "Sublime Text project file may reveal folder structure and build system configuration.", remediation: "Block access to dotfiles in production.", contentCheck: /folders|settings/i },
 
   // Additional .env variants
   { path: "/.env.production.local", severity: "critical", title: "Exposed .env.production.local", description: "Production local override env file is accessible — likely contains real secrets.", remediation: "Block access to .env files.", contentCheck: /[A-Z_]+=/ },

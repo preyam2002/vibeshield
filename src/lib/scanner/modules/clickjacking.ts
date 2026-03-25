@@ -214,5 +214,112 @@ export const clickjackingModule: ScanModule = async (target) => {
     }
   }
 
+  // --- Phase: frame-ancestors CSP deep inspection ---
+  if (hasFrameAncestors) {
+    const ancestorsMatch = csp!.match(/frame-ancestors\s+([^;]+)/i);
+    const ancestorsValue = ancestorsMatch?.[1]?.trim() || "";
+    const origins = ancestorsValue.split(/\s+/);
+
+    // Check for unsafe origins (http://, IP addresses, broad wildcards like *.com)
+    const unsafeOrigins = origins.filter((o) =>
+      /^http:\/\//i.test(o) ||
+      /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/i.test(o) ||
+      /^\*\.[a-z]{2,4}$/i.test(o),
+    );
+    if (unsafeOrigins.length > 0) {
+      findings.push({
+        id: "clickjacking-csp-unsafe-origins",
+        module: "Clickjacking",
+        severity: "medium",
+        title: "CSP frame-ancestors contains unsafe origins",
+        description: `The frame-ancestors directive includes origins that weaken clickjacking protection: ${unsafeOrigins.join(", ")}. HTTP origins can be MITM'd, IP addresses are easily spoofed in DNS, and broad wildcards (e.g. *.com) allow too many domains.`,
+        evidence: `Content-Security-Policy: frame-ancestors ${ancestorsValue}`,
+        remediation: "Only allow specific HTTPS origins in frame-ancestors. Remove HTTP origins, IP addresses, and overly broad wildcards.",
+        cwe: "CWE-1021",
+      });
+    }
+  }
+
+  // --- Phase: Double-framing bypass detection ---
+  if (xfo && !hasFrameAncestors) {
+    findings.push({
+      id: "clickjacking-double-framing",
+      module: "Clickjacking",
+      severity: "medium",
+      title: "X-Frame-Options without CSP frame-ancestors (double-framing bypass)",
+      description: "The site relies on X-Frame-Options without CSP frame-ancestors. Modern browsers prioritize CSP over XFO when both are present, but when only XFO is set, some older implementations are vulnerable to double-framing attacks (nesting iframes: attacker -> intermediate -> target). Additionally, XFO SAMEORIGIN checks vary across browsers — some only check the immediate parent, not the top-level frame.",
+      evidence: `X-Frame-Options: ${xfo}\nCSP frame-ancestors: (not set)`,
+      remediation: "Always set CSP frame-ancestors alongside X-Frame-Options. CSP frame-ancestors is the modern standard and is immune to double-framing bypasses because it checks the entire ancestor chain.",
+      cwe: "CWE-1021",
+      codeSnippet: `// Add CSP frame-ancestors to complement X-Frame-Options\n{ key: "Content-Security-Policy", value: "frame-ancestors 'self'" },\n{ key: "X-Frame-Options", value: "SAMEORIGIN" }`,
+    });
+  }
+
+  // --- Phase: Form action hijacking via base tag injection ---
+  const formsWithoutAction = target.forms.filter((f) =>
+    !f.action || f.action === "" || f.action === "#" ||
+    (!/^https?:\/\//i.test(f.action) && !f.action.startsWith("/")),
+  );
+  if (formsWithoutAction.length > 0 && (!xfo || !hasFrameAncestors)) {
+    findings.push({
+      id: "clickjacking-form-action-hijack",
+      module: "Clickjacking",
+      severity: "medium",
+      title: `${formsWithoutAction.length} form(s) vulnerable to base tag hijacking in framing context`,
+      description: `Found ${formsWithoutAction.length} form(s) with missing or relative action URLs. In a framing attack combined with HTML injection, an attacker can inject a <base href="https://evil.com"> tag to redirect form submissions. Forms without explicit absolute action URLs inherit the base URL, sending user data to the attacker's server.`,
+      evidence: `Forms with missing/relative action:\n${formsWithoutAction.slice(0, 5).map((f) => `  ${f.method} action="${f.action || "(empty)"}" — fields: ${f.inputs.map((i) => i.name).join(", ")}`).join("\n")}`,
+      remediation: "Set explicit absolute URLs in form action attributes. Add CSP base-uri 'self' to prevent <base> tag injection. Ensure clickjacking headers (frame-ancestors) are set to prevent framing.",
+      cwe: "CWE-1021",
+      codeSnippet: `// Prevent base tag injection via CSP\n{ key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'" }\n\n// Use absolute action URLs in forms\n<form action="https://yoursite.com/api/submit" method="POST">`,
+    });
+  }
+
+  // --- Phase: Permission-Policy / Feature-Policy abuse in framing context ---
+  const permPolicy = target.headers["permissions-policy"];
+  const featPolicy = target.headers["feature-policy"];
+  const policyHeader = permPolicy || featPolicy;
+  const policyName = permPolicy ? "Permissions-Policy" : "Feature-Policy";
+
+  const sensitivePPermissions = ["camera", "microphone", "geolocation", "payment", "usb", "bluetooth", "midi"];
+
+  if (!policyHeader) {
+    // No policy at all — all permissions available to framed content
+    if (!xfo && !hasFrameAncestors) {
+      findings.push({
+        id: "clickjacking-no-permissions-policy",
+        module: "Clickjacking",
+        severity: "medium",
+        title: "No Permissions-Policy header — sensitive APIs accessible in frames",
+        description: "Neither Permissions-Policy nor Feature-Policy is set, and the page lacks framing protection. An attacker can iframe your site and abuse browser APIs (camera, microphone, geolocation, payment) through the framed context, potentially tricking users into granting permissions to the attacker's origin.",
+        evidence: "Permissions-Policy: (not set)\nFeature-Policy: (not set)",
+        remediation: "Add a Permissions-Policy header to restrict sensitive APIs. At minimum, deny camera, microphone, and geolocation to cross-origin frames.",
+        cwe: "CWE-1021",
+        codeSnippet: `// Restrict sensitive permissions\n{ key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" }`,
+      });
+    }
+  } else {
+    // Policy exists — check for overly permissive values on sensitive features
+    const permissiveFeatures = sensitivePPermissions.filter((feat) => {
+      // Permissions-Policy format: camera=*, camera=(self "https://example.com")
+      // Feature-Policy format: camera *; microphone 'self'
+      const permPolicyPattern = new RegExp(`${feat}\\s*=\\s*\\*`, "i");
+      const featPolicyPattern = new RegExp(`${feat}\\s+\\*`, "i");
+      return permPolicyPattern.test(policyHeader) || featPolicyPattern.test(policyHeader);
+    });
+    if (permissiveFeatures.length > 0) {
+      findings.push({
+        id: "clickjacking-permissive-permissions",
+        module: "Clickjacking",
+        severity: "medium",
+        title: `${policyName} allows wildcard access to sensitive features`,
+        description: `The ${policyName} header grants wildcard (*) access to sensitive features: ${permissiveFeatures.join(", ")}. In a framing context, any embedding page can access these APIs through your framed content, enabling permission-prompt phishing (tricking users into granting camera/microphone access to the attacker).`,
+        evidence: `${policyName}: ${policyHeader.substring(0, 200)}${policyHeader.length > 200 ? "..." : ""}\nWildcard features: ${permissiveFeatures.join(", ")}`,
+        remediation: `Set ${policyName} to restrict sensitive features to self or specific trusted origins. Use camera=(), microphone=(), geolocation=() to deny access entirely, or camera=(self) to allow only same-origin.`,
+        cwe: "CWE-1021",
+        codeSnippet: `// Restrict sensitive features to same-origin only\n{ key: "Permissions-Policy", value: "${permissiveFeatures.map((f) => `${f}=(self)`).join(", ")}" }`,
+      });
+    }
+  }
+
   return findings;
 };
