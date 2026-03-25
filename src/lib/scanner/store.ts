@@ -286,23 +286,48 @@ const recalcSummary = (scan: ScanResult) => {
     s.total++;
   }
   scan.summary = s;
-  const { grade, score } = calcGrade(s);
+  const { grade, score } = calcGrade(s, scan.findings);
   scan.grade = grade;
   scan.score = score;
 };
 
-const calcGrade = (s: ScanResult["summary"]): { grade: string; score: number } => {
-  // Weighted penalty with diminishing returns per severity
-  // First findings of each severity hit harder; subsequent ones have less impact
-  const penalty = (count: number, weight: number, decay: number) =>
-    Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
-
+const calcGrade = (s: ScanResult["summary"], findings?: Finding[]): { grade: string; score: number } => {
+  // Confidence-weighted penalty: findings with higher confidence count more
+  // If individual findings are provided, use their confidence; otherwise fall back to count-based
   let score = 100;
-  score -= penalty(s.critical, 30, 0.6);  // 30, 18, 10.8, ...
-  score -= penalty(s.high, 12, 0.7);      // 12, 8.4, 5.9, ...
-  score -= penalty(s.medium, 4, 0.8);     // 4, 3.2, 2.56, ...
-  score -= penalty(s.low, 1, 0.85);       // 1, 0.85, 0.72, ...
-  if (s.critical >= 1 && s.high >= 2) score -= 10;
+
+  if (findings && findings.length > 0) {
+    const SEVERITY_BASE: Record<string, number> = { critical: 30, high: 12, medium: 4, low: 1, info: 0 };
+    const SEVERITY_DECAY: Record<string, number> = { critical: 0.6, high: 0.7, medium: 0.8, low: 0.85, info: 1 };
+
+    // Group by severity, sort by confidence desc within each group
+    const bySeverity: Record<string, Finding[]> = { critical: [], high: [], medium: [], low: [], info: [] };
+    for (const f of findings) bySeverity[f.severity]?.push(f);
+
+    for (const [sev, group] of Object.entries(bySeverity)) {
+      const base = SEVERITY_BASE[sev] || 0;
+      const decay = SEVERITY_DECAY[sev] || 1;
+      // Sort by confidence descending — high-confidence findings penalize more
+      const sorted = [...group].sort((a, b) => (b.confidence ?? 75) - (a.confidence ?? 75));
+      for (let i = 0; i < sorted.length; i++) {
+        const conf = (sorted[i].confidence ?? 75) / 100;
+        score -= base * Math.pow(decay, i) * conf;
+      }
+    }
+
+    if (s.critical >= 1 && s.high >= 2) score -= 10;
+  } else {
+    // Fallback: count-based scoring (used when findings aren't available)
+    const penalty = (count: number, weight: number, decay: number) =>
+      Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
+
+    score -= penalty(s.critical, 30, 0.6);
+    score -= penalty(s.high, 12, 0.7);
+    score -= penalty(s.medium, 4, 0.8);
+    score -= penalty(s.low, 1, 0.85);
+    if (s.critical >= 1 && s.high >= 2) score -= 10;
+  }
+
   score = Math.max(0, Math.min(100, Math.round(score)));
 
   let grade: string;
