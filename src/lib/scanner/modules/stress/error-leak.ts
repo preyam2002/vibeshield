@@ -117,6 +117,46 @@ function sanitizeError(err: unknown): string {
     }
   }
 
+  // Phase 2: ReDoS detection — send payloads that trigger catastrophic backtracking
+  const REDOS_PAYLOADS = [
+    { input: "a".repeat(30) + "!", desc: "repeated 'a' + mismatch", param: "search" },
+    { input: "0".repeat(30) + "x", desc: "repeated '0' + mismatch", param: "email" },
+    { input: "@".repeat(20) + "a".repeat(20), desc: "repeated '@' + 'a'", param: "email" },
+    { input: " ".repeat(50) + "x", desc: "spaces + mismatch", param: "query" },
+    { input: "a]" + "[a".repeat(25), desc: "bracket nesting", param: "search" },
+  ];
+
+  for (const endpoint of target.apiEndpoints.slice(0, 5)) {
+    const url = new URL(endpoint);
+    for (const { input, desc, param } of REDOS_PAYLOADS) {
+      try {
+        // Send both as query param and POST body
+        const testUrl = new URL(endpoint);
+        testUrl.searchParams.set(param, input);
+        const start = Date.now();
+        const res = await scanFetch(testUrl.href, { timeoutMs: 8000 });
+        const elapsed = Date.now() - start;
+
+        // If response took >5s, it might be ReDoS
+        if (elapsed > 5000) {
+          findings.push({
+            id: `errorleak-redos-${findings.length}`,
+            module: "Error Leakage Under Stress",
+            severity: "high",
+            title: `Potential ReDoS on ${url.pathname} via ${param} parameter`,
+            description: `Sending a crafted input (${desc}) caused the server to respond in ${(elapsed / 1000).toFixed(1)}s instead of the normal <1s. This suggests a vulnerable regular expression that exhibits catastrophic backtracking.`,
+            evidence: `GET ${testUrl.pathname}?${param}=${input.substring(0, 40)}...\nResponse time: ${elapsed}ms (normal: <1000ms)`,
+            remediation: "Audit regex patterns for catastrophic backtracking. Use linear-time regex engines (RE2) or add input length limits before regex matching.",
+            cwe: "CWE-1333",
+            owasp: "A06:2021",
+            codeSnippet: `// Use RE2 for user-controlled regex matching\nimport RE2 from "re2";\nconst pattern = new RE2("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\\\.[a-zA-Z]{2,}$");\n\n// Or limit input length before regex\nif (input.length > 200) {\n  return Response.json({ error: "Input too long" }, { status: 400 });\n}\nif (pattern.test(input)) { /* ... */ }`,
+          });
+          break; // One ReDoS finding per endpoint is enough
+        }
+      } catch { /* timeout = also potentially ReDoS */ }
+    }
+  }
+
   // Test with malformed payloads under concurrency
   for (const endpoint of target.apiEndpoints.slice(0, 3)) {
     const payloads = [
