@@ -55,6 +55,9 @@ export const createScan = (id: string, target: string, mode: "full" | "security"
 
 export const getScan = (id: string): ScanResult | undefined => scans.get(id);
 
+export const getActiveScansCount = (): number =>
+  Array.from(scans.values()).filter((s) => s.status === "scanning" || s.status === "queued").length;
+
 export const findPreviousScan = (target: string, excludeId: string): ScanResult | undefined => {
   return Array.from(scans.values())
     .filter((s) => s.target === target && s.id !== excludeId && s.status === "completed")

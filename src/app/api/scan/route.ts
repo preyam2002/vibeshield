@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { startScan } from "@/lib/scanner";
+import { getActiveScansCount } from "@/lib/scanner/store";
+
+const MAX_CONCURRENT_SCANS = 10;
 
 // Rate limiting: per-target + global per-IP
 const recentScans = new Map<string, number[]>();
@@ -116,6 +119,14 @@ export async function POST(req: Request) {
   recentScans.set(targetHost, timestamps);
   ipTimestamps.push(now);
   globalScans.set(clientIp, ipTimestamps);
+
+  // Concurrency limit
+  if (getActiveScansCount() >= MAX_CONCURRENT_SCANS) {
+    return NextResponse.json(
+      { error: `Server busy: ${MAX_CONCURRENT_SCANS} scans are already running. Try again in a minute.` },
+      { status: 503 },
+    );
+  }
 
   // CI/CD gating parameters
   const minScore = typeof body.minScore === "number" && body.minScore >= 0 && body.minScore <= 100 ? Math.round(body.minScore) : undefined;
