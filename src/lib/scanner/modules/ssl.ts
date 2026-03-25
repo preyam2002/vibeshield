@@ -43,7 +43,7 @@ export const sslModule: ScanModule = async (target) => {
     }
   }
 
-  // Check HSTS preload readiness
+  // Check HSTS configuration
   const hsts = target.headers["strict-transport-security"];
   if (hsts) {
     const maxAgeMatch = hsts.match(/max-age=(\d+)/);
@@ -62,6 +62,33 @@ export const sslModule: ScanModule = async (target) => {
           codeSnippet: `// next.config.ts\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Strict-Transport-Security",\n        value: "max-age=31536000; includeSubDomains; preload" }\n    ]}];\n  },\n};`,
         });
       }
+    }
+    // Check for missing preload directive (only if max-age is sufficient)
+    if (!hsts.includes("preload") && maxAgeMatch && parseInt(maxAgeMatch[1], 10) >= 31536000) {
+      findings.push({
+        id: "ssl-hsts-no-preload",
+        module: "SSL/TLS",
+        severity: "info",
+        title: "HSTS missing preload directive",
+        description: "HSTS is configured with a long max-age but lacks the preload directive. Adding preload and submitting to hstspreload.org ensures browsers always use HTTPS, even on first visit.",
+        evidence: `Strict-Transport-Security: ${hsts}`,
+        remediation: "Add preload and includeSubDomains to your HSTS header, then submit to hstspreload.org.",
+        cwe: "CWE-319",
+      });
+    }
+    // Check for missing includeSubDomains
+    if (!hsts.includes("includeSubDomains")) {
+      findings.push({
+        id: "ssl-hsts-no-subdomains",
+        module: "SSL/TLS",
+        severity: "low",
+        title: "HSTS missing includeSubDomains",
+        description: "HSTS is configured but without includeSubDomains. Subdomains are not protected by HSTS and can still be accessed over HTTP.",
+        evidence: `Strict-Transport-Security: ${hsts}`,
+        remediation: "Add includeSubDomains to your HSTS header.",
+        cwe: "CWE-319",
+        codeSnippet: `// next.config.ts headers()\n{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" }`,
+      });
     }
   }
 
