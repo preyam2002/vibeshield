@@ -39,7 +39,7 @@ const ATTACK_MODULES = [
   { name: "API Security", desc: "Prototype pollution, over-fetching, mass assignment", icon: "🧬" },
   { name: "Env Variable Leak", desc: "Exposed env vars, dev configs, localhost URLs", icon: "🔐" },
   { name: "AI/LLM Security", desc: "Prompt injection, system prompt leak, tool abuse, unauthed AI", icon: "🤖" },
-  { name: "SSRF", desc: "Cloud metadata, Redis, file://, filter bypasses, internal enum", icon: "🌀" },
+  { name: "SSRF", desc: "Cloud metadata, IAM creds, blind timing, Redis, file://, filter bypasses", icon: "🌀" },
   { name: "File Upload", desc: "HTML/SVG XSS, polyglot bypass, null byte, double extension, dir listing", icon: "📤" },
   { name: "CRLF Injection", desc: "Header/cookie injection, response splitting, POST body CRLF", icon: "↵" },
   { name: "Host Header", desc: "Host injection, IP spoofing bypass, password reset poisoning", icon: "🏠" },

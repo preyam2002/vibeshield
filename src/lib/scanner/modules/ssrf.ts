@@ -144,6 +144,87 @@ export const ssrfModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 2: Redirect-based SSRF — server may follow redirects to internal targets
+  if (findings.length < MAX_FINDINGS && testedEndpoints.length > 0) {
+    // Check if any endpoint follows redirects by testing with a URL that redirects
+    const redirectResults = await Promise.allSettled(
+      testedEndpoints.slice(0, 5).map(async (endpoint) => {
+        const pathname = new URL(endpoint).pathname;
+        // Use httpbin-style redirect to check if the server follows redirects
+        for (const param of SSRF_PARAMS.slice(0, 4)) {
+          // Test with a URL that would redirect to the cloud metadata endpoint
+          const testUrl = new URL(endpoint);
+          testUrl.searchParams.set(param, "http://169.254.169.254/latest/meta-data/iam/security-credentials/");
+          const res = await scanFetch(testUrl.href, { timeoutMs: 8000 });
+          if (!res.ok) continue;
+          const text = await res.text();
+          // Check if response contains IAM credential fields
+          if (/AccessKeyId|SecretAccessKey|Token|Expiration/i.test(text)) {
+            return { param, pathname, text: text.substring(0, 300) };
+          }
+        }
+        return null;
+      }),
+    );
+    for (const r of redirectResults) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      findings.push({
+        id: `ssrf-iam-creds-${ssrfCount++}`, module: "SSRF", severity: "critical",
+        title: `AWS IAM credentials accessible via SSRF on ${r.value.pathname}`,
+        description: "The server-side fetch followed a redirect to the AWS metadata service and returned IAM security credentials. An attacker can use these credentials to access AWS services.",
+        evidence: `Param: ${r.value.param}\nResponse contains IAM credentials: ${r.value.text}`,
+        remediation: "Block requests to 169.254.169.254 and link-local addresses. Use IMDSv2 (requires PUT token request). Disable redirect following in server-side fetch.",
+        cwe: "CWE-918", owasp: "A10:2021",
+        codeSnippet: `// Disable redirect following in fetch\nconst res = await fetch(url, { redirect: "error" });\n\n// Block metadata IPs\nconst blocked = ["169.254.169.254", "fd00:ec2::254"];\nconst resolved = await dns.resolve(new URL(url).hostname);\nif (blocked.some(ip => resolved.includes(ip))) throw new Error("Blocked");`,
+        confidence: 95,
+      });
+    }
+  }
+
+  // Phase 3: Check for blind SSRF via error timing difference
+  if (findings.length === 0 && testedEndpoints.length > 0) {
+    const timingResults = await Promise.allSettled(
+      testedEndpoints.slice(0, 3).map(async (endpoint) => {
+        const pathname = new URL(endpoint).pathname;
+        for (const param of SSRF_PARAMS.slice(0, 3)) {
+          // Baseline with valid external URL
+          const baseStart = Date.now();
+          const baseUrl = new URL(endpoint);
+          baseUrl.searchParams.set(param, "https://example.com");
+          try { await scanFetch(baseUrl.href, { timeoutMs: 8000 }); } catch { /* skip */ }
+          const baseTime = Date.now() - baseStart;
+
+          // Test with internal port that should timeout differently
+          const testStart = Date.now();
+          const testEndpoint = new URL(endpoint);
+          testEndpoint.searchParams.set(param, "http://127.0.0.1:1");
+          try { await scanFetch(testEndpoint.href, { timeoutMs: 8000 }); } catch { /* skip */ }
+          const testTime = Date.now() - testStart;
+
+          // If test took significantly longer (connection timeout vs immediate response), server is connecting
+          if (testTime > baseTime + 2000 && testTime > 3000) {
+            return { param, pathname, baseTime, testTime };
+          }
+        }
+        return null;
+      }),
+    );
+    for (const r of timingResults) {
+      if (findings.length >= MAX_FINDINGS) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      findings.push({
+        id: `ssrf-blind-${ssrfCount++}`, module: "SSRF", severity: "medium",
+        title: `Possible blind SSRF (timing-based) on ${r.value.pathname}`,
+        description: `The server takes ${r.value.testTime}ms to respond when given an internal URL (vs ${r.value.baseTime}ms baseline). This timing difference suggests the server attempts to connect to user-supplied URLs.`,
+        evidence: `Param: ${r.value.param}\nBaseline (example.com): ${r.value.baseTime}ms\nInternal (127.0.0.1:1): ${r.value.testTime}ms`,
+        remediation: "Validate and restrict URL targets. Block internal IP ranges. Use a URL allowlist.",
+        cwe: "CWE-918", owasp: "A10:2021",
+        confidence: 60,
+      });
+    }
+  }
+
   return findings;
 };
 
