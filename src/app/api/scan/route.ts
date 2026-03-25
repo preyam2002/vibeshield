@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
 import { startScan } from "@/lib/scanner";
 import { getActiveScansCount, findActiveScan } from "@/lib/scanner/store";
-
-const MAX_CONCURRENT_SCANS = 10;
+import {
+  MAX_CONCURRENT_SCANS,
+  RATE_LIMIT_PER_TARGET,
+  RATE_LIMIT_PER_IP,
+  RATE_LIMIT_WINDOW_MS,
+} from "@/lib/scanner/config";
 
 // Rate limiting: per-target + global per-IP
 const recentScans = new Map<string, number[]>();
 const globalScans = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW = 5 * 60 * 1000;
-const RATE_LIMIT_MAX = 3; // per target per 5 min
-const GLOBAL_RATE_LIMIT_MAX = 20; // per IP per 5 min
 let lastCleanup = Date.now();
 
 // Hostnames that should never be scanned (cloud metadata, internal services)
@@ -87,10 +88,10 @@ export async function POST(req: Request) {
   const targetHost = parsed.hostname;
   const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown";
   const now = Date.now();
-  if (now - lastCleanup > RATE_LIMIT_WINDOW) {
+  if (now - lastCleanup > RATE_LIMIT_WINDOW_MS) {
     for (const map of [recentScans, globalScans]) {
       for (const [key, ts] of map) {
-        const fresh = ts.filter((t) => now - t < RATE_LIMIT_WINDOW);
+        const fresh = ts.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
         if (fresh.length === 0) map.delete(key);
         else map.set(key, fresh);
       }
@@ -99,19 +100,19 @@ export async function POST(req: Request) {
   }
 
   // Global per-IP rate limit
-  const ipTimestamps = (globalScans.get(clientIp) || []).filter((t) => now - t < RATE_LIMIT_WINDOW);
-  if (ipTimestamps.length >= GLOBAL_RATE_LIMIT_MAX) {
+  const ipTimestamps = (globalScans.get(clientIp) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (ipTimestamps.length >= RATE_LIMIT_PER_IP) {
     return NextResponse.json(
-      { error: `Rate limited: max ${GLOBAL_RATE_LIMIT_MAX} scans per 5 minutes. Try again later.` },
+      { error: `Rate limited: max ${RATE_LIMIT_PER_IP} scans per 5 minutes. Try again later.` },
       { status: 429 },
     );
   }
 
   // Per-target rate limit
-  const timestamps = (recentScans.get(targetHost) || []).filter((t) => now - t < RATE_LIMIT_WINDOW);
-  if (timestamps.length >= RATE_LIMIT_MAX) {
+  const timestamps = (recentScans.get(targetHost) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (timestamps.length >= RATE_LIMIT_PER_TARGET) {
     return NextResponse.json(
-      { error: `Rate limited: max ${RATE_LIMIT_MAX} scans per target every 5 minutes. Try again later.` },
+      { error: `Rate limited: max ${RATE_LIMIT_PER_TARGET} scans per target every 5 minutes. Try again later.` },
       { status: 429 },
     );
   }

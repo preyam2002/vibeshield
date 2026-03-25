@@ -61,6 +61,12 @@ import { oauthModule } from "./modules/oauth";
 import { apiVersioningModule } from "./modules/api-versioning";
 import { cspModule } from "./modules/csp";
 import { storageModule } from "./modules/storage";
+import {
+  MODULE_TIMEOUT_MS,
+  MAX_FINDINGS_PER_MODULE,
+  SECURITY_BATCH_SIZE,
+  CIRCUIT_BREAKER_THRESHOLD,
+} from "./config";
 
 // Ordered by signal-to-time ratio: fastest/highest-signal modules first
 const SECURITY_MODULES: ScanModuleDefinition[] = [
@@ -189,11 +195,8 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
     return;
   }
 
-  const MODULE_TIMEOUT = 120_000; // 2 minutes per module max
-
   // Circuit breaker: if too many modules fail with the same error class, abort early
   let consecutiveFailures = 0;
-  const CIRCUIT_BREAKER_THRESHOLD = 4;
 
   const runModule = async (mod: ScanModuleDefinition) => {
     if (abortSignal?.aborted || consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
@@ -203,17 +206,16 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
     updateModule(scanId, mod.name, { status: "running" });
     const start = Date.now();
     try {
-      const MAX_PER_MODULE = 8;
       const findings = await Promise.race([
         mod.run(target),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Module timed out after ${MODULE_TIMEOUT / 1000}s`)), MODULE_TIMEOUT),
+          setTimeout(() => reject(new Error(`Module timed out after ${MODULE_TIMEOUT_MS / 1000}s`)), MODULE_TIMEOUT_MS),
         ),
         ...(abortSignal ? [new Promise<never>((_, reject) => {
           abortSignal.addEventListener("abort", () => reject(new Error("Scan cancelled")), { once: true });
         })] : []),
       ]);
-      addFindings(scanId, findings.slice(0, MAX_PER_MODULE));
+      addFindings(scanId, findings.slice(0, MAX_FINDINGS_PER_MODULE));
       updateModule(scanId, mod.name, {
         status: "completed",
         findingsCount: findings.length,
@@ -241,10 +243,9 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   if (mode === "quick") {
     await Promise.all(QUICK_MODULES.map(runModule));
   } else {
-    const BATCH_SIZE = 21;
-    for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
+    for (let i = 0; i < SECURITY_MODULES.length; i += SECURITY_BATCH_SIZE) {
       if (abortSignal?.aborted) break;
-      const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
+      const batch = SECURITY_MODULES.slice(i, i + SECURITY_BATCH_SIZE);
       await Promise.all(batch.map(runModule));
     }
     if (mode === "full" && !abortSignal?.aborted) {

@@ -1,4 +1,5 @@
 import type { ScanResult, Finding, ModuleStatus } from "./types";
+import { MAX_STORED_SCANS, STALE_SCAN_TIMEOUT_MS } from "./config";
 
 const globalForStore = globalThis as unknown as {
   __vibeshieldScans?: Map<string, ScanResult>;
@@ -8,10 +9,9 @@ if (!globalForStore.__vibeshieldScans) globalForStore.__vibeshieldScans = new Ma
 if (!globalForStore.__vibeshieldAbort) globalForStore.__vibeshieldAbort = new Map();
 const scans = globalForStore.__vibeshieldScans;
 const abortControllers = globalForStore.__vibeshieldAbort;
-const MAX_SCANS = 100;
 
 const evictOldScans = () => {
-  if (scans.size <= MAX_SCANS) return;
+  if (scans.size <= MAX_STORED_SCANS) return;
   // Evict completed/failed scans, but prioritize keeping scans with critical/high findings
   const evictable = Array.from(scans.entries())
     .filter(([, s]) => s.status === "completed" || s.status === "failed")
@@ -27,7 +27,7 @@ const evictOldScans = () => {
       // Within same tier, evict oldest first
       return (a[1].completedAt || a[1].startedAt).localeCompare(b[1].completedAt || b[1].startedAt);
     });
-  while (scans.size > MAX_SCANS && evictable.length > 0) {
+  while (scans.size > MAX_STORED_SCANS && evictable.length > 0) {
     const [id] = evictable.shift()!;
     scans.delete(id);
   }
@@ -76,14 +76,14 @@ export const getScanHistory = (target: string): { id: string; score: number; gra
     .map((s) => ({ id: s.id, score: s.score, grade: s.grade, findings: s.summary.total, date: s.completedAt || s.startedAt }));
 };
 
-const STALE_SCAN_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+// Use configured stale timeout
 
 const cleanupStaleScans = () => {
   const now = Date.now();
   for (const scan of scans.values()) {
     if (
       (scan.status === "scanning" || scan.status === "queued") &&
-      now - new Date(scan.startedAt).getTime() > STALE_SCAN_TIMEOUT
+      now - new Date(scan.startedAt).getTime() > STALE_SCAN_TIMEOUT_MS
     ) {
       scan.status = "failed";
       scan.completedAt = new Date().toISOString();

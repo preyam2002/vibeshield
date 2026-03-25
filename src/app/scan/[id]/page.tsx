@@ -14,6 +14,8 @@ interface Finding {
   cwe?: string;
   owasp?: string;
   codeSnippet?: string;
+  endpoint?: string;
+  confidence?: number;
 }
 
 interface ModuleStatus {
@@ -161,7 +163,17 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
               </div>
             </div>
           )}
+          {finding.endpoint && (
+            <p className="text-[11px] text-zinc-500 font-mono truncate">Endpoint: {finding.endpoint}</p>
+          )}
           <div className="flex items-center gap-2 pt-1 flex-wrap">
+            {finding.confidence !== undefined && (
+              <span className={`text-[10px] border rounded px-2 py-0.5 ${
+                finding.confidence >= 90 ? "bg-emerald-950/30 border-emerald-800/30 text-emerald-500" :
+                finding.confidence >= 70 ? "bg-yellow-950/30 border-yellow-800/30 text-yellow-500" :
+                "bg-zinc-900 border-zinc-800 text-zinc-500"
+              }`}>{finding.confidence}% confidence</span>
+            )}
             {finding.cwe && (
               <span className="text-[10px] bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5 text-zinc-500">{finding.cwe}</span>
             )}

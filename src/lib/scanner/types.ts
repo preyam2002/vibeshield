@@ -11,6 +11,10 @@ export interface Finding {
   cwe?: string;
   owasp?: string;
   codeSnippet?: string;
+  /** The specific URL/endpoint where the issue was found */
+  endpoint?: string;
+  /** Confidence in the finding (0-100). Header checks = 100, heuristic = 60-80 */
+  confidence?: number;
 }
 
 export interface FormField {
