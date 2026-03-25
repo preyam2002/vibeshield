@@ -244,6 +244,161 @@ export const sslModule: ScanModule = async (target) => {
     });
   }
 
+  // Certificate chain validation — check if intermediate certs are properly included
+  if (url.protocol === "https:") {
+    const chainResult = await new Promise<{ valid: boolean; depth: number; error?: string } | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 8000);
+      try {
+        const socket = tls.connect(443, url.hostname, { rejectUnauthorized: true, servername: url.hostname }, () => {
+          clearTimeout(timer);
+          const cert = socket.getPeerCertificate(true);
+          socket.destroy();
+          if (!cert) { resolve(null); return; }
+          // Walk the certificate chain
+          let depth = 0;
+          let current = cert as tls.DetailedPeerCertificate;
+          while (current) {
+            depth++;
+            const issuerCert = (current as tls.DetailedPeerCertificate).issuerCertificate;
+            // Self-signed root: issuerCertificate points to itself
+            if (!issuerCert || issuerCert === current || issuerCert.fingerprint256 === current.fingerprint256) break;
+            current = issuerCert;
+            if (depth > 10) break; // safety limit
+          }
+          resolve({ valid: true, depth });
+        });
+        socket.on("error", (err) => {
+          clearTimeout(timer);
+          const msg = err.message || "";
+          if (msg.includes("unable to get local issuer certificate") || msg.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE") || msg.includes("unable to verify the first certificate")) {
+            resolve({ valid: false, depth: 0, error: msg });
+          } else {
+            resolve(null);
+          }
+        });
+      } catch { clearTimeout(timer); resolve(null); }
+    });
+
+    if (chainResult && !chainResult.valid) {
+      findings.push({
+        id: "ssl-incomplete-chain",
+        module: "SSL/TLS",
+        severity: "high",
+        title: "Incomplete SSL certificate chain",
+        description: "The server does not include all required intermediate certificates in its TLS handshake. Some clients and browsers may fail to validate the certificate, causing connection errors or security warnings.",
+        evidence: `Chain validation error: ${chainResult.error || "missing intermediate certificate(s)"}`,
+        remediation: "Configure your server to send the full certificate chain including all intermediate certificates. Use tools like SSL Labs or `openssl s_client -showcerts` to verify the chain. Most CAs provide a bundle file with intermediates.",
+        cwe: "CWE-295",
+        owasp: "A02:2021",
+        codeSnippet: `// Node.js HTTPS server with full chain\nconst https = require("https");\nhttps.createServer({\n  key: fs.readFileSync("server.key"),\n  cert: fs.readFileSync("server.crt"),\n  // Include intermediate certs — concatenate them in order\n  ca: [fs.readFileSync("intermediate.crt"), fs.readFileSync("root.crt")],\n}, app).listen(443);`,
+      });
+    } else if (chainResult && chainResult.valid && chainResult.depth < 2) {
+      findings.push({
+        id: "ssl-short-chain",
+        module: "SSL/TLS",
+        severity: "low",
+        title: "SSL certificate chain has only one certificate",
+        description: "The server presented only a single certificate (no intermediates). While it may validate in some environments, missing intermediates can cause failures on older clients or mobile devices.",
+        evidence: `Chain depth: ${chainResult.depth}`,
+        remediation: "Include the full certificate chain in your server configuration to ensure compatibility across all clients.",
+        cwe: "CWE-295",
+      });
+    }
+  }
+
+  // Mixed content on subresources — check if page loads HTTP resources (scripts, styles, iframes)
+  if (url.protocol === "https:") {
+    try {
+      const res = await scanFetch(target.url, { timeoutMs: 8000 });
+      if (res.ok) {
+        const html = await res.text();
+        const httpSubresources: { type: string; url: string }[] = [];
+        // Match src= and href= attributes pointing to http:// URLs
+        const attrPatterns = [
+          { regex: /<script[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "script" },
+          { regex: /<link[^>]+href=["'](http:\/\/[^"']+)["']/gi, type: "stylesheet" },
+          { regex: /<iframe[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "iframe" },
+          { regex: /<img[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "image" },
+          { regex: /<source[^>]+src=["'](http:\/\/[^"']+)["']/gi, type: "media" },
+          { regex: /<object[^>]+data=["'](http:\/\/[^"']+)["']/gi, type: "object" },
+        ];
+        for (const { regex, type } of attrPatterns) {
+          let m: RegExpExecArray | null;
+          while ((m = regex.exec(html)) !== null) {
+            httpSubresources.push({ type, url: m[1] });
+          }
+        }
+        // Also check for @import with http URLs in inline styles
+        const importRegex = /@import\s+(?:url\()?["']?(http:\/\/[^"');\s]+)/gi;
+        let im: RegExpExecArray | null;
+        while ((im = importRegex.exec(html)) !== null) {
+          httpSubresources.push({ type: "css-import", url: im[1] });
+        }
+
+        if (httpSubresources.length > 0) {
+          const hasActiveContent = httpSubresources.some((r) => r.type === "script" || r.type === "stylesheet" || r.type === "iframe");
+          findings.push({
+            id: "ssl-mixed-subresources",
+            module: "SSL/TLS",
+            severity: hasActiveContent ? "high" : "medium",
+            title: `Mixed content: ${httpSubresources.length} HTTP subresource(s) on HTTPS page`,
+            description: `The HTTPS page loads ${httpSubresources.length} resource(s) over plain HTTP.${hasActiveContent ? " This includes active content (scripts/stylesheets/iframes) which browsers will block and which can enable man-in-the-middle attacks." : " Passive mixed content (images/media) may be loaded but triggers browser warnings."}`,
+            evidence: httpSubresources.slice(0, 5).map((r) => `[${r.type}] ${r.url}`).join("\n"),
+            remediation: "Update all subresource URLs to use HTTPS. Add a Content-Security-Policy header with upgrade-insecure-requests to automatically upgrade HTTP resources.",
+            cwe: "CWE-319",
+            owasp: "A02:2021",
+            codeSnippet: `// Add CSP header to auto-upgrade mixed content\n// next.config.ts\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Content-Security-Policy",\n        value: "upgrade-insecure-requests" }\n    ]}];\n  },\n};`,
+          });
+        }
+      }
+    } catch {
+      // skip if page fetch fails
+    }
+  }
+
+  // OCSP stapling check — look for Expect-CT header and test OCSP stapling via TLS
+  if (url.protocol === "https:") {
+    const [ocspStapled, expectCtHeader] = await Promise.allSettled([
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 8000);
+        try {
+          const socket = tls.connect(443, url.hostname, {
+            rejectUnauthorized: false, servername: url.hostname,
+            ...({ requestOCSP: true } as Record<string, unknown>),
+          }, () => {
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(false); // connected but no OCSP response in callback
+          });
+          socket.on("OCSPResponse", (response: Buffer) => {
+            clearTimeout(timer);
+            socket.destroy();
+            // If response is non-empty, OCSP stapling is configured
+            resolve(response && response.length > 0);
+          });
+          socket.on("error", () => { clearTimeout(timer); resolve(false); });
+        } catch { clearTimeout(timer); resolve(false); }
+      }),
+      Promise.resolve(target.headers["expect-ct"] || null),
+    ]);
+
+    const hasOcspStapling = ocspStapled.status === "fulfilled" && ocspStapled.value;
+    const hasExpectCt = expectCtHeader.status === "fulfilled" && expectCtHeader.value;
+
+    if (!hasOcspStapling && !hasExpectCt) {
+      findings.push({
+        id: "ssl-no-ocsp-stapling",
+        module: "SSL/TLS",
+        severity: "info",
+        title: "OCSP stapling not detected",
+        description: "The server does not appear to have OCSP stapling configured. Without OCSP stapling, browsers must contact the CA's OCSP responder directly to check certificate revocation status, which adds latency and creates a privacy concern (the CA learns which sites users visit). If the OCSP responder is down, browsers may soft-fail and skip the check entirely.",
+        remediation: "Enable OCSP stapling on your web server. In Nginx: `ssl_stapling on; ssl_stapling_verify on;`. In Apache: `SSLUseStapling On`. Most managed platforms (Cloudflare, Vercel) enable this by default.",
+        cwe: "CWE-299",
+        codeSnippet: `# Nginx — enable OCSP stapling\nssl_stapling on;\nssl_stapling_verify on;\nssl_trusted_certificate /path/to/chain.pem;\nresolver 8.8.8.8 8.8.4.4 valid=300s;\nresolver_timeout 5s;\n\n# Apache — enable OCSP stapling\nSSLUseStapling On\nSSLStaplingCache shmcb:/tmp/stapling_cache(128000)`,
+      });
+    }
+  }
+
   // HPKP detection (deprecated and dangerous)
   const hpkp = target.headers["public-key-pins"] || target.headers["public-key-pins-report-only"];
   if (hpkp) {

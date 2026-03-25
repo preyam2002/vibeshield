@@ -483,6 +483,30 @@ export default nextConfig;`;
     setTimeout(() => setConfigCopied(false), 2000);
   };
 
+  const [vercelCopied, setVercelCopied] = useState(false);
+  const copyVercelHeaders = () => {
+    if (!scan) return;
+    const headerFindings = scan.findings.filter((f) =>
+      f.module === "Security Headers" || f.module === "CSP Analysis" || f.module === "Clickjacking" || f.module === "CORS" || f.module === "SSL/TLS"
+    );
+    const hdrs: Record<string, string> = {};
+    if (headerFindings.some((f) => f.title.toLowerCase().includes("strict-transport"))) hdrs["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload";
+    if (headerFindings.some((f) => f.title.toLowerCase().includes("frame") || f.module === "Clickjacking")) hdrs["X-Frame-Options"] = "DENY";
+    if (headerFindings.some((f) => f.title.toLowerCase().includes("content-type-options"))) hdrs["X-Content-Type-Options"] = "nosniff";
+    if (headerFindings.some((f) => f.title.toLowerCase().includes("referrer"))) hdrs["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    if (headerFindings.some((f) => f.title.toLowerCase().includes("permissions"))) hdrs["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+    if (headerFindings.some((f) => f.title.toLowerCase().includes("content-security-policy"))) hdrs["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'";
+    hdrs["X-DNS-Prefetch-Control"] = "on";
+
+    const vercelJson = JSON.stringify({
+      headers: [{ source: "/(.*)", headers: Object.entries(hdrs).map(([key, value]) => ({ key, value })) }],
+    }, null, 2);
+
+    navigator.clipboard.writeText(vercelJson);
+    setVercelCopied(true);
+    setTimeout(() => setVercelCopied(false), 2000);
+  };
+
   const handleCancel = async () => {
     setCancelling(true);
     try {
@@ -622,6 +646,11 @@ export default nextConfig;`;
                     {scan.technologies.some((t) => t.toLowerCase().includes("next")) && (
                       <button onClick={copyNextConfig} className="w-full text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">
                         {configCopied ? "Copied!" : "Next.js Security Config"}
+                      </button>
+                    )}
+                    {scan.technologies.some((t) => t.toLowerCase().includes("vercel")) && (
+                      <button onClick={copyVercelHeaders} className="w-full text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">
+                        {vercelCopied ? "Copied!" : "Vercel Headers (vercel.json)"}
                       </button>
                     )}
                   </div>

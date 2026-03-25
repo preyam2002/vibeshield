@@ -170,7 +170,7 @@ export const idorModule: ScanModule = async (target) => {
     });
   }
 
-  // Phase 3: HTTP method-based IDOR — test if changing GET to PUT/DELETE works without auth
+  // Phase 3: HTTP method-based IDOR — test if changing GET to PUT/DELETE bypasses access controls
   const methodTestEndpoints = idEndpoints.slice(0, 5).filter((ep) => ep.currentId > 0 && !PUBLIC_RESOURCE_PATTERNS.test(ep.base));
   const methodResults = await Promise.allSettled(
     methodTestEndpoints.map(async (ep) => {
