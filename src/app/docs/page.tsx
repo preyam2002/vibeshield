@@ -339,6 +339,9 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
               { method: "GET", path: "/api/scan/:id/github-action", desc: "Download pre-configured GitHub Actions workflow with quality gates" },
               { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
               { method: "GET", path: "/api/scans", desc: "List recent scans. Filter: ?target=domain&status=completed" },
+              { method: "POST", path: "/api/scan/schedule", desc: "Create recurring scan schedule (1h-168h interval)", body: '{"url": "...", "mode?": "...", "intervalHours?": 24, "callbackUrl?": "..."}' },
+              { method: "GET", path: "/api/scan/schedule", desc: "List all scheduled scans" },
+              { method: "DELETE", path: "/api/scan/schedule?id=:id", desc: "Delete a scheduled scan" },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
             ].map((ep) => (
               <div key={ep.path + ep.method} className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4">
