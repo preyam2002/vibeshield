@@ -1,8 +1,21 @@
 import type { ScanResult, Finding, ModuleStatus } from "./types";
 
 const scans = new Map<string, ScanResult>();
+const MAX_SCANS = 100;
+
+const evictOldScans = () => {
+  if (scans.size <= MAX_SCANS) return;
+  const completed = Array.from(scans.entries())
+    .filter(([, s]) => s.status === "completed" || s.status === "failed")
+    .sort((a, b) => (a[1].completedAt || a[1].startedAt).localeCompare(b[1].completedAt || b[1].startedAt));
+  while (scans.size > MAX_SCANS && completed.length > 0) {
+    const [id] = completed.shift()!;
+    scans.delete(id);
+  }
+};
 
 export const createScan = (id: string, target: string, mode: "full" | "security" = "full"): ScanResult => {
+  evictOldScans();
   const result: ScanResult = {
     id,
     target,
@@ -148,12 +161,17 @@ const recalcSummary = (scan: ScanResult) => {
 };
 
 const calcGrade = (s: ScanResult["summary"]): { grade: string; score: number } => {
+  // Weighted penalty with diminishing returns per severity
+  // First findings of each severity hit harder; subsequent ones have less impact
+  const penalty = (count: number, weight: number, decay: number) =>
+    Array.from({ length: count }, (_, i) => weight * Math.pow(decay, i)).reduce((a, b) => a + b, 0);
+
   let score = 100;
-  score -= s.critical * 25;
-  score -= s.high * 10;
-  score -= s.medium * 4;
-  score -= s.low * 1;
-  score = Math.max(0, Math.min(100, score));
+  score -= penalty(s.critical, 25, 0.7);  // 25, 17.5, 12.25, ...
+  score -= penalty(s.high, 10, 0.75);     // 10, 7.5, 5.6, ...
+  score -= penalty(s.medium, 4, 0.8);     // 4, 3.2, 2.56, ...
+  score -= penalty(s.low, 1, 0.85);       // 1, 0.85, 0.72, ...
+  score = Math.max(0, Math.min(100, Math.round(score)));
 
   let grade: string;
   if (score >= 95) grade = "A";

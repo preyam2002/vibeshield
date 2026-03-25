@@ -187,7 +187,7 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
   };
 
   // Run security modules in batches for speed, stress modules sequentially
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 15;
   for (let i = 0; i < SECURITY_MODULES.length; i += BATCH_SIZE) {
     const batch = SECURITY_MODULES.slice(i, i + BATCH_SIZE);
     await Promise.all(batch.map(runModule));
