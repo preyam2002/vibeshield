@@ -52,6 +52,7 @@ export const jwtModule: ScanModule = async (target) => {
         remediation: "Reject JWTs with alg:none. Explicitly require a specific algorithm (e.g., RS256 or HS256).",
         cwe: "CWE-347",
         owasp: "A02:2021",
+        codeSnippet: `// Fix: Explicitly set allowed algorithms\nimport jwt from "jsonwebtoken";\nconst payload = jwt.verify(token, secret, {\n  algorithms: ["HS256"], // NEVER allow "none"\n});`,
       });
     }
 
@@ -114,6 +115,7 @@ export const jwtModule: ScanModule = async (target) => {
         evidence: `Source: ${source}\nNo 'exp' claim in payload`,
         remediation: "Always set an expiration (exp) claim on JWTs.",
         cwe: "CWE-613",
+        codeSnippet: `// Use short-lived tokens with refresh pattern\nconst accessToken = jwt.sign(\n  { sub: userId },\n  secret,\n  { expiresIn: "15m", algorithm: "HS256" }\n);\nconst refreshToken = jwt.sign(\n  { sub: userId },\n  refreshSecret,\n  { expiresIn: "7d", algorithm: "HS256" }\n);`,
       });
     }
   }

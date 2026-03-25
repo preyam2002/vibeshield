@@ -143,6 +143,7 @@ export const businessLogicModule: ScanModule = async (target) => {
       evidence: `POST ${v.endpoint} with price:0, amount:0\nResponse: ${v.text}`,
       remediation: "Always calculate prices server-side from your database. Never accept client-submitted prices. Validate minimum amounts before creating payment sessions.",
       cwe: "CWE-472", owasp: "A04:2021",
+      codeSnippet: `// Never trust client-submitted prices\nexport async function POST(req: Request) {\n  const { productId, quantity } = await req.json();\n  const product = await db.products.findById(productId);\n  const total = product.priceCents * quantity;\n  if (total < 50) throw new Error("Amount too low");\n  const session = await stripe.checkout.sessions.create({\n    line_items: [{ price: product.stripePriceId, quantity }],\n  });\n}`,
     });
     break;
   }
@@ -157,6 +158,7 @@ export const businessLogicModule: ScanModule = async (target) => {
       evidence: `Two simultaneous POST requests to ${v.endpoint} created different records`,
       remediation: "Implement idempotency keys. Require a unique request ID and reject duplicates. Use database constraints to prevent double-processing.",
       cwe: "CWE-799", owasp: "A04:2021",
+      codeSnippet: `// Idempotency key pattern\nexport async function POST(req: Request) {\n  const key = req.headers.get("idempotency-key");\n  if (!key) return Response.json({ error: "Idempotency-Key required" }, { status: 400 });\n  const existing = await db.idempotencyKeys.findOne({ key });\n  if (existing) return Response.json(existing.response);\n  // ... process request, then store result\n  await db.idempotencyKeys.create({ key, response: result });\n}`,
     });
     break;
   }

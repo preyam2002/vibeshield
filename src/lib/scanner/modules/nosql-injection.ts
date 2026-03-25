@@ -193,6 +193,7 @@ export const nosqlInjectionModule: ScanModule = async (target) => {
         evidence: `URL: ${v.injectedUrl}\nError pattern: ${v.pattern}\nResponse excerpt: ${v.text.substring(0, 300)}`,
         remediation: "Sanitize all query parameters before passing to database queries. Use an ORM/ODM with strict input typing. For MongoDB, reject objects in query parameters — only accept string/number values.",
         cwe: "CWE-943", owasp: "A03:2021",
+        codeSnippet: `// Validate input types before MongoDB queries\nimport { z } from "zod";\nconst schema = z.object({ email: z.string(), id: z.string() });\nconst input = schema.parse(req.query); // Rejects {$ne:""}\nconst user = await db.collection("users").findOne(input);`,
       });
     } else {
       findings.push({
@@ -202,6 +203,7 @@ export const nosqlInjectionModule: ScanModule = async (target) => {
         evidence: `URL: ${v.injectedUrl}\nBaseline records: ${v.baseCount}\nInjected records: ${v.injCount}`,
         remediation: "Never pass raw query parameters to MongoDB queries. Use mongoose schema validation or explicitly cast/validate each parameter type before querying.",
         cwe: "CWE-943", owasp: "A03:2021",
+        codeSnippet: `// Validate input types before MongoDB queries\nimport { z } from "zod";\nconst schema = z.object({ email: z.string(), id: z.string() });\nconst input = schema.parse(req.query); // Rejects {$ne:""}\nconst user = await db.collection("users").findOne(input);`,
       });
     }
   }

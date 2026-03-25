@@ -188,6 +188,39 @@ export const injectionModule: ScanModule = async (target) => {
             }
           } catch { /* skip */ }
         }
+        // Boolean-based SQLi detection: compare true vs false condition responses
+        if (t.method === "GET") {
+          try {
+            const trueUrl = new URL(t.url);
+            trueUrl.searchParams.set(t.paramName, "' OR '1'='1'--");
+            const falseUrl = new URL(t.url);
+            falseUrl.searchParams.set(t.paramName, "' AND '1'='2'--");
+            const baseUrl = new URL(t.url);
+            baseUrl.searchParams.set(t.paramName, "baseline_safe_value");
+            const [trueRes, falseRes, baseRes] = await Promise.all([
+              scanFetch(trueUrl.href, { timeoutMs: 5000 }),
+              scanFetch(falseUrl.href, { timeoutMs: 5000 }),
+              scanFetch(baseUrl.href, { timeoutMs: 5000 }),
+            ]);
+            const [trueText, falseText, baseText] = await Promise.all([
+              trueRes.text(), falseRes.text(), baseRes.text(),
+            ]);
+            // If true condition response differs significantly from false/base,
+            // but false matches base — classic boolean-based SQLi
+            if (
+              trueText.length > 50 && falseText.length > 50 &&
+              Math.abs(trueText.length - falseText.length) > Math.min(trueText.length, falseText.length) * 0.3 &&
+              Math.abs(falseText.length - baseText.length) < baseText.length * 0.1
+            ) {
+              return {
+                type: "boolean" as const, key: sqliKey,
+                pathname: new URL(t.url).pathname, paramName: t.paramName,
+                payload: "' OR '1'='1'--",
+                trueLen: trueText.length, falseLen: falseText.length, baseLen: baseText.length,
+              };
+            }
+          } catch { /* skip */ }
+        }
         return null;
       }),
     ),
@@ -286,8 +319,9 @@ export const injectionModule: ScanModule = async (target) => {
         remediation: "Use parameterized queries (prepared statements) instead of string concatenation. With Prisma: use the built-in query methods. With raw SQL: use $1, $2 placeholders.",
         cwe: "CWE-89",
         owasp: "A03:2021",
+        codeSnippet: `// Use parameterized queries\n// Prisma (safe by default)\nconst user = await prisma.user.findFirst({ where: { email } });\n\n// Raw SQL — use placeholders\nconst [rows] = await db.query("SELECT * FROM users WHERE id = $1", [id]);`,
       });
-    } else {
+    } else if (v.type === "blind") {
       findings.push({
         id: `injection-sqli-blind-${sqliCount++}`,
         module: "SQL Injection",
@@ -298,6 +332,20 @@ export const injectionModule: ScanModule = async (target) => {
         remediation: "Use parameterized queries. Never concatenate user input into SQL strings.",
         cwe: "CWE-89",
         owasp: "A03:2021",
+        codeSnippet: `// Use parameterized queries\n// Prisma (safe by default)\nconst user = await prisma.user.findFirst({ where: { email } });\n\n// Raw SQL — use placeholders\nconst [rows] = await db.query("SELECT * FROM users WHERE id = $1", [id]);`,
+      });
+    } else if (v.type === "boolean") {
+      findings.push({
+        id: `injection-sqli-boolean-${sqliCount++}`,
+        module: "SQL Injection",
+        severity: "critical",
+        title: `Boolean-based SQL injection on ${v.pathname} (param: ${v.paramName})`,
+        description: `Injecting a true condition ('OR 1=1') returned ${v.trueLen} bytes vs ${v.falseLen} bytes for a false condition. This differential response confirms SQL injection.`,
+        evidence: `True payload: ${v.payload} → ${v.trueLen} bytes\nFalse payload: ' AND '1'='2'-- → ${v.falseLen} bytes\nBaseline: ${v.baseLen} bytes`,
+        remediation: "Use parameterized queries. Never concatenate user input into SQL strings.",
+        cwe: "CWE-89",
+        owasp: "A03:2021",
+        codeSnippet: `// Use parameterized queries\n// Prisma (safe by default)\nconst user = await prisma.user.findFirst({ where: { email } });\n\n// Raw SQL — use placeholders\nconst [rows] = await db.query("SELECT * FROM users WHERE id = $1", [id]);`,
       });
     }
   }
@@ -321,6 +369,7 @@ export const injectionModule: ScanModule = async (target) => {
       remediation: "Sanitize all user input before rendering. Use framework auto-escaping (React does this by default for JSX, but dangerouslySetInnerHTML bypasses it).",
       cwe: "CWE-79",
       owasp: "A03:2021",
+      codeSnippet: `// Never use dangerouslySetInnerHTML with user input\n// Bad: <div dangerouslySetInnerHTML={{ __html: userInput }} />\n// Good: <div>{userInput}</div> (auto-escaped)\n\n// For API responses, escape HTML\nimport DOMPurify from "dompurify";\nconst safe = DOMPurify.sanitize(userInput);`,
     });
   }
 

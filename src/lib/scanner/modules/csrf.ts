@@ -28,6 +28,7 @@ export const csrfModule: ScanModule = async (target) => {
         remediation: "Add CSRF protection. For Next.js API routes, check the Origin header. For traditional forms, include a CSRF token.",
         cwe: "CWE-352",
         owasp: "A01:2021",
+        codeSnippet: `// middleware.ts — Origin-based CSRF protection\nexport function middleware(req: NextRequest) {\n  if (req.method !== "GET" && req.method !== "HEAD") {\n    const origin = req.headers.get("origin");\n    const host = req.headers.get("host");\n    if (origin && !origin.includes(host || "")) {\n      return NextResponse.json({ error: "CSRF rejected" }, { status: 403 });\n    }\n  }\n  return NextResponse.next();\n}`,
       });
     }
   }
@@ -65,6 +66,7 @@ export const csrfModule: ScanModule = async (target) => {
       evidence: `POST ${v.endpoint} with Origin: https://evil.com\nStatus: ${v.status}\nACAO: ${v.acao}`,
       remediation: "Validate the Origin header on state-changing endpoints. Require a custom Content-Type or header that triggers CORS preflight. Set SameSite cookies.",
       cwe: "CWE-352", owasp: "A01:2021",
+      codeSnippet: `// API route — require custom header to trigger CORS preflight\nexport async function POST(req: Request) {\n  // Custom headers like X-Requested-With trigger CORS preflight,\n  // which blocks cross-origin simple requests\n  if (!req.headers.get("x-requested-with")) {\n    return Response.json({ error: "Missing required header" }, { status: 403 });\n  }\n  // ... handle request\n}`,
     });
   }
 
