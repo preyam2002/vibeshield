@@ -195,5 +195,86 @@ export const privacyModule: ScanModule = async (target) => {
     });
   }
 
+  // Phase 7: Detect hardcoded PII or credentials in client JS
+  const piiPatterns: { re: RegExp; type: string }[] = [
+    { re: /["'](?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})["']/, type: "email address" },
+    { re: /(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token)\s*[:=]\s*["'][a-zA-Z0-9_\-]{20,}["']/i, type: "API key/secret" },
+    { re: /(?:password|passwd|pwd)\s*[:=]\s*["'][^"']{4,}["']/i, type: "password" },
+    { re: /sk[-_](?:live|test)[-_][a-zA-Z0-9]{24,}/i, type: "Stripe secret key" },
+    { re: /AKIA[0-9A-Z]{16}/, type: "AWS access key" },
+    { re: /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/, type: "GitHub token" },
+  ];
+  const exposedSecrets: { type: string; snippet: string }[] = [];
+  for (const { re, type } of piiPatterns) {
+    const match = allJs.match(re);
+    if (match) {
+      const val = match[0];
+      // Skip obvious false positives (placeholder, example values)
+      if (/example|placeholder|your[_-]?|xxx|test|dummy|TODO/i.test(val)) continue;
+      exposedSecrets.push({ type, snippet: val.substring(0, 60) });
+    }
+  }
+  if (exposedSecrets.length > 0) {
+    findings.push({
+      id: "privacy-exposed-secrets",
+      module: "Privacy",
+      severity: exposedSecrets.some((s) => s.type.includes("key") || s.type.includes("token") || s.type.includes("password") || s.type === "AWS access key") ? "critical" : "medium",
+      title: `${exposedSecrets.length} potential secret${exposedSecrets.length > 1 ? "s" : ""} in client JavaScript`,
+      description: `Client-side JavaScript contains what appears to be ${exposedSecrets.map((s) => s.type).join(", ")}. Secrets in client bundles are visible to anyone and should be moved to server-side environment variables.`,
+      evidence: exposedSecrets.map((s) => `${s.type}: ${s.snippet}...`).join("\n"),
+      remediation: "Move secrets to server-side environment variables. Use Next.js server actions or API routes to proxy calls that require secrets. Only NEXT_PUBLIC_ prefixed env vars should be in client code.",
+      cwe: "CWE-798",
+      owasp: "A07:2021",
+      confidence: 70,
+      codeSnippet: `// BAD: secret in client code\nconst stripe = new Stripe("sk_live_abc123...");\n\n// GOOD: call via server action\n"use server";\nexport async function createCheckout() {\n  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);\n  return stripe.checkout.sessions.create({ ... });\n}`,
+    });
+  }
+
+  // Phase 8: localStorage / sessionStorage sensitive data patterns
+  const storagePatterns = [
+    /localStorage\.setItem\s*\(\s*["'](?:token|access_token|auth_token|jwt|password|session|refresh_token|api_key)/i,
+    /sessionStorage\.setItem\s*\(\s*["'](?:token|access_token|auth_token|jwt|password|api_key)/i,
+  ];
+  const storageLeak = storagePatterns.some((re) => re.test(allJs));
+  if (storageLeak) {
+    findings.push({
+      id: "privacy-storage-secrets",
+      module: "Privacy",
+      severity: "medium",
+      title: "Sensitive data stored in localStorage/sessionStorage",
+      description: "The app stores authentication tokens or secrets in Web Storage. Unlike HttpOnly cookies, localStorage is accessible to any JavaScript on the page — including XSS payloads and third-party scripts. This is the #1 token storage mistake in vibe-coded apps.",
+      evidence: "Pattern: localStorage.setItem('token', ...) or similar detected in client JS",
+      remediation: "Store tokens in HttpOnly, Secure, SameSite cookies set by the server. If you must use client-side storage, use sessionStorage (cleared on tab close) and ensure robust XSS protection.",
+      cwe: "CWE-922",
+      owasp: "A05:2021",
+      confidence: 85,
+      codeSnippet: `// BAD: token in localStorage — any XSS can steal it\nlocalStorage.setItem("token", jwt);\n\n// GOOD: HttpOnly cookie set by server\n// Server response:\n// Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Lax; Path=/\n\n// Client reads user state from API, not from stored token\nconst { data: user } = useSWR("/api/me");`,
+    });
+  }
+
+  // Phase 9: Detect Do Not Track / GPC header respect
+  if (detectedTrackers.length > 0) {
+    const res = await scanFetch(target.url, { headers: { "DNT": "1", "Sec-GPC": "1" } });
+    const resNoGpc = await scanFetch(target.url);
+    if (res.ok && resNoGpc.ok) {
+      const htmlGpc = await res.text();
+      const htmlNormal = await resNoGpc.text();
+      // If response is identical despite GPC header, trackers aren't respecting it
+      const sameTrackers = TRACKER_PATTERNS.filter((t) => t.pattern.test(htmlGpc) && t.pattern.test(htmlNormal));
+      if (sameTrackers.length >= 2) {
+        findings.push({
+          id: "privacy-gpc-ignored",
+          module: "Privacy",
+          severity: "info",
+          title: "Global Privacy Control (GPC) signal not honored",
+          description: "The app loads the same tracking scripts regardless of the Sec-GPC: 1 header. Under California law (CCPA/CPRA), websites must honor the GPC signal as a valid opt-out of sale/sharing of personal information.",
+          evidence: `Trackers loaded with GPC=1: ${sameTrackers.map((t) => t.name).join(", ")}`,
+          remediation: "Check for the Sec-GPC header server-side and suppress non-essential tracking scripts when it's set to '1'. Most consent platforms (OneTrust, CookieBot) support GPC natively.",
+          cwe: "CWE-359",
+        });
+      }
+    }
+  }
+
   return findings;
 };
