@@ -32,47 +32,40 @@ export const csrfModule: ScanModule = async (target) => {
     }
   }
 
-  // Test state-changing API endpoints without CSRF protection
-  for (const endpoint of target.apiEndpoints.slice(0, 10)) {
-    try {
+  // Test state-changing API endpoints without CSRF protection — all in parallel
+  const csrfResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 10).map(async (endpoint) => {
       const res = await scanFetch(endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: "https://evil.com",
-        },
+        headers: { "Content-Type": "application/json", Origin: "https://evil.com" },
         body: JSON.stringify({ test: true }),
       });
-
-      // If cross-origin POST succeeds, CSRF might be possible
-      if (res.ok) {
-        const acao = res.headers.get("access-control-allow-origin");
-        if (acao === "*" || acao === "https://evil.com") {
-          // Check if the endpoint requires a custom header (valid CSRF defense)
-          // Try without Content-Type (simple request) — if it still works, no custom header required
-          const simpleRes = await scanFetch(endpoint, {
-            method: "POST",
-            headers: { Origin: "https://evil.com", "Content-Type": "application/x-www-form-urlencoded" },
-            body: "test=true",
-          });
-          if (simpleRes.ok && !hasSameSiteCookie) {
-            findings.push({
-              id: `csrf-api-${findings.length}`,
-              module: "CSRF",
-              severity: "high",
-              title: `API endpoint vulnerable to CSRF: ${new URL(endpoint).pathname}`,
-              description: "This endpoint accepts simple cross-origin POST requests without CSRF protection. A malicious website can make authenticated requests on behalf of users.",
-              evidence: `POST ${endpoint} with Origin: https://evil.com\nStatus: ${simpleRes.status}\nACAO: ${acao}`,
-              remediation: "Validate the Origin header on state-changing endpoints. Require a custom Content-Type or header that triggers CORS preflight. Set SameSite cookies.",
-              cwe: "CWE-352",
-              owasp: "A01:2021",
-            });
-          }
-        }
+      if (!res.ok) return null;
+      const acao = res.headers.get("access-control-allow-origin");
+      if (acao !== "*" && acao !== "https://evil.com") return null;
+      const simpleRes = await scanFetch(endpoint, {
+        method: "POST",
+        headers: { Origin: "https://evil.com", "Content-Type": "application/x-www-form-urlencoded" },
+        body: "test=true",
+      });
+      if (simpleRes.ok && !hasSameSiteCookie) {
+        return { endpoint, pathname: new URL(endpoint).pathname, status: simpleRes.status, acao };
       }
-    } catch {
-      // skip
-    }
+      return null;
+    }),
+  );
+
+  for (const r of csrfResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `csrf-api-${findings.length}`, module: "CSRF", severity: "high",
+      title: `API endpoint vulnerable to CSRF: ${v.pathname}`,
+      description: "This endpoint accepts simple cross-origin POST requests without CSRF protection.",
+      evidence: `POST ${v.endpoint} with Origin: https://evil.com\nStatus: ${v.status}\nACAO: ${v.acao}`,
+      remediation: "Validate the Origin header on state-changing endpoints. Require a custom Content-Type or header that triggers CORS preflight. Set SameSite cookies.",
+      cwe: "CWE-352", owasp: "A01:2021",
+    });
   }
 
   return findings;

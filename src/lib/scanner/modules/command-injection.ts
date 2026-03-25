@@ -72,130 +72,115 @@ export const commandInjectionModule: ScanModule = async (target) => {
 
   const flagged = new Set<string>();
 
-  // Phase 1: Time-based detection (most reliable, fewest FPs)
-  for (const t of deduped.slice(0, 10)) {
-    const pathname = new URL(t.url).pathname;
-    const key = `${pathname}:${t.paramName}`;
-    if (flagged.has(key)) continue;
+  // Phase 1 & 2 run in parallel across endpoints — time-based payloads are sequential per endpoint
+  const allResults = await Promise.allSettled(
+    deduped.slice(0, 10).map(async (t) => {
+      const pathname = new URL(t.url).pathname;
+      const key = `${pathname}:${t.paramName}`;
+      if (flagged.has(key)) return null;
 
-    // Measure baseline response time (3 requests, take median)
-    const baseTimes: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      const start = Date.now();
-      try {
-        const url = new URL(t.url);
-        url.searchParams.set(t.paramName, "normal_value");
-        await scanFetch(url.href, { timeoutMs: 8000 });
-      } catch { /* skip */ }
-      baseTimes.push(Date.now() - start);
-    }
-    const sortedBase = [...baseTimes].sort((a, b) => a - b);
-    const baseline = sortedBase[1] || 500;
-
-    for (const { payload, os } of TIME_PAYLOADS.slice(0, 4)) {
-      try {
+      // Phase 1: Time-based detection (sequential per endpoint for baseline accuracy)
+      const baseTimes: number[] = [];
+      for (let i = 0; i < 3; i++) {
         const start = Date.now();
-        if (t.method === "GET") {
+        try {
           const url = new URL(t.url);
-          url.searchParams.set(t.paramName, `test${payload}`);
+          url.searchParams.set(t.paramName, "normal_value");
           await scanFetch(url.href, { timeoutMs: 8000 });
-        } else {
-          await scanFetch(t.url, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`,
-            timeoutMs: 8000,
-          });
-        }
-        const elapsed = Date.now() - start;
+        } catch { /* skip */ }
+        baseTimes.push(Date.now() - start);
+      }
+      const sortedBase = [...baseTimes].sort((a, b) => a - b);
+      const baseline = sortedBase[1] || 500;
 
-        // Flag if response took significantly longer than baseline (>1800ms and >2x baseline)
-        if (elapsed >= 1800 && elapsed >= baseline * 2) {
-          // Confirmation: try a shorter sleep to verify proportional delay
-          const confirmStart = Date.now();
-          const confirmPayload = payload.replace("2", "1");
-          const confirmUrl = new URL(t.url);
-          confirmUrl.searchParams.set(t.paramName, `test${confirmPayload}`);
-          try { await scanFetch(confirmUrl.href, { timeoutMs: 8000 }); } catch { /* skip */ }
-          const confirmElapsed = Date.now() - confirmStart;
-
-          // Confirm: shorter sleep should be faster than longer sleep
-          if (confirmElapsed < elapsed * 0.85) {
-            flagged.add(key);
-            findings.push({
-              id: `cmdi-time-${count++}`,
-              module: "Command Injection",
-              severity: "critical",
-              title: `Command injection (time-based) on ${pathname} (param: ${t.paramName})`,
-              description: `A ${os} sleep command caused a ${elapsed}ms delay (baseline: ${baseline}ms, confirmation: ${confirmElapsed}ms). The server is executing system commands with user input.`,
-              evidence: `Payload: test${payload}\nResponse time: ${elapsed}ms\nBaseline: ${baseline}ms\nConfirmation (1s sleep): ${confirmElapsed}ms`,
-              remediation: "Never pass user input to system commands (exec, spawn, system, popen). Use language-native libraries instead of shelling out. If unavoidable, use allowlists and strict input validation.",
-              cwe: "CWE-78",
-              owasp: "A03:2021",
-            });
-            break;
-          }
-        }
-      } catch { /* skip */ }
-    }
-  }
-
-  // Phase 2: Output-based detection (parallelized per endpoint)
-  const outputTests = deduped.slice(0, 10).map(async (t) => {
-    const pathname = new URL(t.url).pathname;
-    const key = `${pathname}:${t.paramName}`;
-    if (flagged.has(key)) return;
-
-    let baselineText = "";
-    try {
-      const url = new URL(t.url);
-      url.searchParams.set(t.paramName, "normal_value_12345");
-      const res = await scanFetch(url.href, { timeoutMs: 5000 });
-      baselineText = await res.text();
-    } catch { return; }
-
-    const results = await Promise.allSettled(
-      OUTPUT_PAYLOADS.slice(0, 4)
-        .filter(({ pattern }) => !pattern.test(baselineText))
-        .map(async ({ payload, pattern }) => {
-          let res: Response;
+      for (const { payload, os } of TIME_PAYLOADS.slice(0, 4)) {
+        if (flagged.has(key)) break;
+        try {
+          const start = Date.now();
           if (t.method === "GET") {
             const url = new URL(t.url);
             url.searchParams.set(t.paramName, `test${payload}`);
-            res = await scanFetch(url.href, { timeoutMs: 5000 });
+            await scanFetch(url.href, { timeoutMs: 8000 });
           } else {
-            res = await scanFetch(t.url, {
-              method: "POST",
-              headers: { "Content-Type": "application/x-www-form-urlencoded" },
-              body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`,
-              timeoutMs: 5000,
-            });
+            await scanFetch(t.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`, timeoutMs: 8000 });
           }
-          return { payload, pattern, text: await res.text() };
-        }),
-    );
-
-    for (const r of results) {
-      if (r.status !== "fulfilled" || flagged.has(key)) continue;
-      const { payload, pattern, text } = r.value;
-      if (pattern.test(text) && !pattern.test(baselineText)) {
-        flagged.add(key);
-        findings.push({
-          id: `cmdi-output-${count++}`,
-          module: "Command Injection",
-          severity: "critical",
-          title: `Command injection on ${pathname} (param: ${t.paramName})`,
-          description: "A system command payload produced identifiable output in the response. The server is executing user-controlled commands.",
-          evidence: `Payload: test${payload}\nPattern matched: ${pattern.source}\nResponse excerpt: ${text.substring(0, 300)}`,
-          remediation: "Never pass user input to system commands. Use language-native libraries instead of shelling out. If unavoidable, use strict allowlists.",
-          cwe: "CWE-78",
-          owasp: "A03:2021",
-        });
-        break;
+          const elapsed = Date.now() - start;
+          if (elapsed >= 1800 && elapsed >= baseline * 2) {
+            const confirmStart = Date.now();
+            const confirmPayload = payload.replace("2", "1");
+            const confirmUrl = new URL(t.url);
+            confirmUrl.searchParams.set(t.paramName, `test${confirmPayload}`);
+            try { await scanFetch(confirmUrl.href, { timeoutMs: 8000 }); } catch { /* skip */ }
+            const confirmElapsed = Date.now() - confirmStart;
+            if (confirmElapsed < elapsed * 0.85) {
+              flagged.add(key);
+              return { type: "time" as const, pathname, paramName: t.paramName, os, payload, elapsed, baseline, confirmElapsed };
+            }
+          }
+        } catch { /* skip */ }
       }
+
+      // Phase 2: Output-based detection (payloads in parallel)
+      if (flagged.has(key)) return null;
+      let baselineText = "";
+      try {
+        const url = new URL(t.url);
+        url.searchParams.set(t.paramName, "normal_value_12345");
+        const res = await scanFetch(url.href, { timeoutMs: 5000 });
+        baselineText = await res.text();
+      } catch { return null; }
+
+      const outputResults = await Promise.allSettled(
+        OUTPUT_PAYLOADS.slice(0, 4)
+          .filter(({ pattern }) => !pattern.test(baselineText))
+          .map(async ({ payload, pattern }) => {
+            let res: Response;
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, `test${payload}`);
+              res = await scanFetch(url.href, { timeoutMs: 5000 });
+            } else {
+              res = await scanFetch(t.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `${t.paramName}=${encodeURIComponent(`test${payload}`)}`, timeoutMs: 5000 });
+            }
+            return { payload, pattern, text: await res.text() };
+          }),
+      );
+
+      for (const r of outputResults) {
+        if (r.status !== "fulfilled" || flagged.has(key)) continue;
+        const { payload, pattern, text } = r.value;
+        if (pattern.test(text) && !pattern.test(baselineText)) {
+          flagged.add(key);
+          return { type: "output" as const, pathname, paramName: t.paramName, payload, pattern: pattern.source, text: text.substring(0, 300) };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of allResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (v.type === "time") {
+      findings.push({
+        id: `cmdi-time-${count++}`, module: "Command Injection", severity: "critical",
+        title: `Command injection (time-based) on ${v.pathname} (param: ${v.paramName})`,
+        description: `A ${v.os} sleep command caused a ${v.elapsed}ms delay (baseline: ${v.baseline}ms, confirmation: ${v.confirmElapsed}ms). The server is executing system commands with user input.`,
+        evidence: `Payload: test${v.payload}\nResponse time: ${v.elapsed}ms\nBaseline: ${v.baseline}ms\nConfirmation (1s sleep): ${v.confirmElapsed}ms`,
+        remediation: "Never pass user input to system commands (exec, spawn, system, popen). Use language-native libraries instead of shelling out. If unavoidable, use allowlists and strict input validation.",
+        cwe: "CWE-78", owasp: "A03:2021",
+      });
+    } else {
+      findings.push({
+        id: `cmdi-output-${count++}`, module: "Command Injection", severity: "critical",
+        title: `Command injection on ${v.pathname} (param: ${v.paramName})`,
+        description: "A system command payload produced identifiable output in the response. The server is executing user-controlled commands.",
+        evidence: `Payload: test${v.payload}\nPattern matched: ${v.pattern}\nResponse excerpt: ${v.text}`,
+        remediation: "Never pass user input to system commands. Use language-native libraries instead of shelling out. If unavoidable, use strict allowlists.",
+        cwe: "CWE-78", owasp: "A03:2021",
+      });
     }
-  });
-  await Promise.allSettled(outputTests);
+  }
 
   return findings;
 };

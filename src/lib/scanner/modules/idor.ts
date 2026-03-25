@@ -76,92 +76,81 @@ export const idorModule: ScanModule = async (target) => {
     }
   }
 
-  // Test sequential ID access
-  for (const ep of idEndpoints.slice(0, 8)) {
-    if (findings.length >= MAX_IDOR_FINDINGS) break;
-    // Skip UUID-based endpoints — can't enumerate UUIDs sequentially
-    if (ep.currentId === 0) continue;
-    const testIds = [1, 2, 3, ep.currentId + 1, ep.currentId + 2];
-    let accessibleCount = 0;
-    const evidenceLines: string[] = [];
-    const evidenceTexts: string[] = [];
-
-    for (const id of testIds) {
-      try {
-        const url = `${ep.base}/${id}`;
-        const res = await scanFetch(url);
-        if (res.ok) {
-          const ct = res.headers.get("content-type") || "";
-          if (ct.includes("json")) {
+  // Test sequential ID access and query param IDOR in parallel
+  const [seqResults, paramResults] = await Promise.all([
+    // Sequential ID tests — each endpoint tests its IDs in parallel
+    Promise.allSettled(
+      idEndpoints.slice(0, 8).filter((ep) => ep.currentId !== 0).map(async (ep) => {
+        if (PUBLIC_RESOURCE_PATTERNS.test(ep.base)) return null;
+        const testIds = [1, 2, 3, ep.currentId + 1, ep.currentId + 2];
+        const idResults = await Promise.allSettled(
+          testIds.map(async (id) => {
+            const url = `${ep.base}/${id}`;
+            const res = await scanFetch(url);
+            if (!res.ok) return null;
+            const ct = res.headers.get("content-type") || "";
+            if (!ct.includes("json")) return null;
             const text = await res.text();
-            if (looksLikeHtml(text)) continue;
-            accessibleCount++;
-            evidenceLines.push(`GET ${url} → ${res.status}`);
-            evidenceTexts.push(text.substring(0, 500));
-          }
+            if (looksLikeHtml(text)) return null;
+            return { url, status: res.status, text: text.substring(0, 500) };
+          }),
+        );
+        const accessible = idResults.filter((r) => r.status === "fulfilled" && r.value).map((r) => (r as PromiseFulfilledResult<{ url: string; status: number; text: string }>).value);
+        if (accessible.length >= 3) {
+          const hasPrivateData = accessible.some((a) => PRIVATE_DATA_PATTERNS.test(a.text));
+          return { base: ep.base, count: accessible.length, evidence: accessible.map((a) => `GET ${a.url} → ${a.status}`), hasPrivateData };
         }
-      } catch {
-        // skip
-      }
-    }
+        return null;
+      }),
+    ),
+    // Query param IDOR tests — each endpoint tests its IDs in parallel
+    Promise.allSettled(
+      target.apiEndpoints.slice(0, 10).map(async (endpoint) => {
+        const url = new URL(endpoint);
+        const paramName = url.searchParams.has("id") ? "id" : url.searchParams.has("user_id") ? "user_id" : url.searchParams.has("userId") ? "userId" : null;
+        if (!paramName) return null;
+        const originalId = url.searchParams.get(paramName);
+        const testIds = ["1", "2", "999"].filter((id) => id !== originalId);
+        const results = await Promise.allSettled(
+          testIds.map(async (testId) => {
+            const testUrl = new URL(endpoint);
+            testUrl.searchParams.set(paramName, testId);
+            const res = await scanFetch(testUrl.href);
+            return res.ok;
+          }),
+        );
+        const success = results.filter((r) => r.status === "fulfilled" && r.value).length;
+        if (success >= 2) return { paramName, pathname: url.pathname };
+        return null;
+      }),
+    ),
+  ]);
 
-    if (accessibleCount >= 3) {
-      // Skip endpoints that serve intentionally public content (blogs, products, etc.)
-      if (PUBLIC_RESOURCE_PATTERNS.test(ep.base)) continue;
-
-      // Check if responses contain private user data (stronger signal)
-      const hasPrivateData = evidenceTexts.some((t) => PRIVATE_DATA_PATTERNS.test(t));
-      const severity = hasPrivateData ? "high" : "medium";
-
-      findings.push({
-        id: `idor-sequential-${seqCount++}`,
-        module: "IDOR",
-        severity,
-        title: `Sequential ID enumeration on ${ep.base}/[id]`,
-        description: `${accessibleCount} different IDs returned data without any access control check. An attacker can enumerate all records by iterating through IDs.${hasPrivateData ? " Responses contain private user data fields." : ""}`,
-        evidence: evidenceLines.join("\n"),
-        remediation: "Use UUIDs instead of sequential IDs. Always verify the requesting user has permission to access the specific resource.",
-        cwe: "CWE-639",
-        owasp: "A01:2021",
-      });
-    }
+  for (const r of seqResults) {
+    if (findings.length >= MAX_IDOR_FINDINGS) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `idor-sequential-${seqCount++}`, module: "IDOR", severity: v.hasPrivateData ? "high" : "medium",
+      title: `Sequential ID enumeration on ${v.base}/[id]`,
+      description: `${v.count} different IDs returned data without any access control check.${v.hasPrivateData ? " Responses contain private user data fields." : ""}`,
+      evidence: v.evidence.join("\n"),
+      remediation: "Use UUIDs instead of sequential IDs. Always verify the requesting user has permission to access the specific resource.",
+      cwe: "CWE-639", owasp: "A01:2021",
+    });
   }
 
-  // Test IDOR via query parameters
-  for (const endpoint of target.apiEndpoints.slice(0, 10)) {
+  for (const r of paramResults) {
     if (findings.length >= MAX_IDOR_FINDINGS) break;
-    const url = new URL(endpoint);
-    if (url.searchParams.has("id") || url.searchParams.has("user_id") || url.searchParams.has("userId")) {
-      const paramName = url.searchParams.has("id") ? "id" : url.searchParams.has("user_id") ? "user_id" : "userId";
-      const originalId = url.searchParams.get(paramName);
-      const testIds = ["1", "2", "999"];
-      let success = 0;
-
-      for (const testId of testIds) {
-        if (testId === originalId) continue;
-        try {
-          const testUrl = new URL(endpoint);
-          testUrl.searchParams.set(paramName, testId);
-          const res = await scanFetch(testUrl.href);
-          if (res.ok) success++;
-        } catch {
-          // skip
-        }
-      }
-
-      if (success >= 2) {
-        findings.push({
-          id: `idor-param-${paramCount++}`,
-          module: "IDOR",
-          severity: "high",
-          title: `IDOR via ${paramName} parameter on ${url.pathname}`,
-          description: `Changing the ${paramName} parameter returns different users' data without access checks.`,
-          remediation: "Validate that the authenticated user owns the requested resource.",
-          cwe: "CWE-639",
-          owasp: "A01:2021",
-        });
-      }
-    }
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `idor-param-${paramCount++}`, module: "IDOR", severity: "high",
+      title: `IDOR via ${v.paramName} parameter on ${v.pathname}`,
+      description: `Changing the ${v.paramName} parameter returns different users' data without access checks.`,
+      remediation: "Validate that the authenticated user owns the requested resource.",
+      cwe: "CWE-639", owasp: "A01:2021",
+    });
   }
 
   return findings;

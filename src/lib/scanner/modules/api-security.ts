@@ -22,173 +22,153 @@ const LARGE_ARRAY_THRESHOLD = 50; // arrays with 50+ items suggest missing pagin
 export const apiSecurityModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
 
-  // Check for MIME type mismatches on API endpoints (JSON body with text/html content-type)
-  const mismatchEndpoints: string[] = [];
-  for (const endpoint of target.apiEndpoints.slice(0, 20)) {
-    try {
-      const res = await scanFetch(endpoint);
-      if (!res.ok) continue;
-      const ct = res.headers.get("content-type") || "";
-      const text = await res.text();
-      if (text.startsWith("{") || text.startsWith("[")) {
-        try { JSON.parse(text); } catch { continue; }
-        if (ct.includes("text/html") || ct.includes("text/plain")) {
-          mismatchEndpoints.push(`${new URL(endpoint).pathname} (returns JSON, served as ${ct.split(";")[0]})`);
+  // Run MIME check and per-endpoint tests in parallel
+  const [mimeResults, endpointResults] = await Promise.all([
+    // 1. Check MIME mismatches in parallel
+    Promise.allSettled(
+      target.apiEndpoints.slice(0, 20).map(async (endpoint) => {
+        const res = await scanFetch(endpoint);
+        if (!res.ok) return null;
+        const ct = res.headers.get("content-type") || "";
+        const text = await res.text();
+        if (text.startsWith("{") || text.startsWith("[")) {
+          try { JSON.parse(text); } catch { return null; }
+          if (ct.includes("text/html") || ct.includes("text/plain")) {
+            return `${new URL(endpoint).pathname} (returns JSON, served as ${ct.split(";")[0]})`;
+          }
         }
-      }
-    } catch { /* skip */ }
+        return null;
+      }),
+    ),
+    // 2. Test each endpoint for proto pollution, over-fetching, and mass assignment in parallel
+    Promise.allSettled(
+      target.apiEndpoints.slice(0, 15).map(async (endpoint) => {
+        const contentType = await getContentType(endpoint);
+        if (!contentType?.includes("json")) return null;
+        const pathname = new URL(endpoint).pathname;
+        const result: { proto?: Finding; overfetch?: Finding; pagination?: Finding; massAssign?: Finding } = {};
+
+        // Proto pollution — test payloads sequentially (stop on first hit)
+        for (const { key, json } of PROTO_POLLUTION_PAYLOADS) {
+          try {
+            const res = await scanFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: json });
+            if (!res.ok) continue;
+            const text = await res.text();
+            let parsed: Record<string, unknown> | null = null;
+            try { parsed = JSON.parse(text); } catch { /* skip */ }
+            const isPolluted = parsed && "polluted" in parsed && parsed.polluted === true;
+            const storedProto = parsed && key === "__proto__" && Object.prototype.hasOwnProperty.call(parsed, "__proto__");
+            if (isPolluted || storedProto) {
+              result.proto = {
+                id: `api-proto-pollution-${pathname}`, module: "API Security", severity: "high",
+                title: `Possible prototype pollution via ${key} on ${pathname}`,
+                description: `The API accepted and processed a JSON body containing "${key}". This can lead to prototype pollution, which may allow an attacker to modify application behavior, bypass security checks, or achieve remote code execution.`,
+                evidence: `POST ${endpoint}\nPayload: ${json}\nResponse: ${text.substring(0, 300)}`,
+                remediation: "Sanitize incoming JSON to strip __proto__ and constructor keys. Use Object.create(null) for lookup objects. Consider a library like secure-json-parse.",
+                cwe: "CWE-1321", owasp: "A03:2021",
+              };
+              break;
+            }
+          } catch { /* skip */ }
+        }
+
+        // Over-fetching / pagination check
+        try {
+          const res = await scanFetch(endpoint);
+          if (res.ok) {
+            const text = await res.text();
+            if (text.length >= 10) {
+              let data: unknown;
+              try { data = JSON.parse(text); } catch { data = null; }
+              if (data) {
+                if (text.length > LARGE_RESPONSE_THRESHOLD) {
+                  result.overfetch = {
+                    id: `api-overfetch-${pathname}`, module: "API Security", severity: "medium",
+                    title: `Possible over-fetching on ${pathname}`,
+                    description: `This API endpoint returns ${(text.length / 1024).toFixed(1)}KB of data in a single response. This often means the server is returning full database records instead of selecting only needed fields, potentially exposing internal or sensitive fields.`,
+                    evidence: `GET ${endpoint}\nResponse size: ${text.length} bytes\nPreview: ${text.substring(0, 200)}...`,
+                    remediation: "Implement field selection — only return the fields the client needs. Use DTOs or serializers to control API output shape.",
+                    cwe: "CWE-213", owasp: "A01:2021",
+                  };
+                }
+                const arr = Array.isArray(data) ? data : null;
+                if (arr && arr.length >= LARGE_ARRAY_THRESHOLD) {
+                  result.pagination = {
+                    id: `api-no-pagination-${pathname}`, module: "API Security", severity: "medium",
+                    title: `No pagination on ${pathname} (${arr.length} items)`,
+                    description: `This endpoint returns ${arr.length} items in a single response with no apparent pagination. As data grows, this becomes a denial-of-service risk and can leak data an attacker shouldn't see in bulk.`,
+                    evidence: `GET ${endpoint}\nItems returned: ${arr.length}\nResponse size: ${text.length} bytes`,
+                    remediation: "Implement cursor or offset-based pagination. Enforce a maximum page size (e.g., 50-100 items). Add rate limiting.",
+                    cwe: "CWE-770", owasp: "A04:2021",
+                  };
+                }
+              }
+            }
+          }
+        } catch { /* skip */ }
+
+        // Mass assignment — GET baseline then test fields sequentially
+        try {
+          const getRes = await scanFetch(endpoint);
+          if (getRes.ok) {
+            const getText = await getRes.text();
+            for (const extraFields of MASS_ASSIGNMENT_FIELDS.slice(0, 3)) {
+              try {
+                const res = await scanFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ test: "vibeshield-scan", ...extraFields }) });
+                if (!res.ok) continue;
+                const text = await res.text();
+                const fieldName = Object.keys(extraFields)[0];
+                const fieldVal = String(Object.values(extraFields)[0]);
+                if (text.includes(fieldName) && text.includes(fieldVal)) {
+                  let parsed: Record<string, unknown> | null = null;
+                  try { parsed = JSON.parse(text); } catch { /* skip */ }
+                  const fieldAlreadyInBaseline = getText.includes(`"${fieldName}"`) && getText.includes(fieldVal);
+                  if (parsed && fieldName in parsed && !fieldAlreadyInBaseline) {
+                    result.massAssign = {
+                      id: `api-mass-assignment-${pathname}`, module: "API Security", severity: "high",
+                      title: `Possible mass assignment on ${pathname}`,
+                      description: `The API accepted and returned a privileged field "${fieldName}" set to "${fieldVal}". This suggests the endpoint blindly assigns all incoming fields to the data model, which could allow privilege escalation.`,
+                      evidence: `POST ${endpoint}\nPayload included: ${JSON.stringify(extraFields)}\nResponse contains "${fieldName}": ${text.substring(0, 300)}`,
+                      remediation: "Use an allowlist of accepted fields in your API handlers. Never pass raw request body directly to database create/update operations. Use DTOs or pick() to select only permitted fields.",
+                      cwe: "CWE-915", owasp: "A08:2021",
+                    };
+                    break;
+                  }
+                }
+              } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+
+        return result;
+      }),
+    ),
+  ]);
+
+  // Collect MIME mismatch findings
+  const mismatchEndpoints: string[] = [];
+  for (const r of mimeResults) {
+    if (r.status === "fulfilled" && r.value) mismatchEndpoints.push(r.value);
   }
   if (mismatchEndpoints.length > 0) {
     findings.push({
-      id: "api-mime-mismatch",
-      module: "API Security",
-      severity: "low",
+      id: "api-mime-mismatch", module: "API Security", severity: "low",
       title: `${mismatchEndpoints.length} API endpoint${mismatchEndpoints.length > 1 ? "s" : ""} with Content-Type mismatch`,
       description: "API endpoints return JSON data but with an incorrect Content-Type header. Combined with missing X-Content-Type-Options, this enables MIME-sniffing attacks where browsers may interpret JSON as HTML.",
       evidence: mismatchEndpoints.slice(0, 5).join("\n"),
       remediation: "Set Content-Type: application/json for all JSON API responses. Ensure X-Content-Type-Options: nosniff is set.",
-      cwe: "CWE-436",
-      owasp: "A05:2021",
+      cwe: "CWE-436", owasp: "A05:2021",
     });
   }
 
-  for (const endpoint of target.apiEndpoints.slice(0, 15)) {
-    const contentType = await getContentType(endpoint);
-    if (!contentType?.includes("json")) continue;
-
-    // Test prototype pollution
-    for (const { key, json } of PROTO_POLLUTION_PAYLOADS) {
-      try {
-        const res = await scanFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: json,
-        });
-
-        if (!res.ok) continue;
-
-        const text = await res.text();
-        // Check if the polluted property propagated — just echoing back the key isn't enough
-        let parsed: Record<string, unknown> | null = null;
-        try { parsed = JSON.parse(text); } catch { /* skip */ }
-        const isPolluted = parsed && "polluted" in parsed && parsed.polluted === true;
-        // Also flag if the server returns the __proto__ key directly (stored pollution)
-        const storedProto = parsed && key === "__proto__" && Object.prototype.hasOwnProperty.call(parsed, "__proto__");
-        if (isPolluted || storedProto) {
-          findings.push({
-            id: `api-proto-pollution-${findings.length}`,
-            module: "API Security",
-            severity: "high",
-            title: `Possible prototype pollution via ${key} on ${new URL(endpoint).pathname}`,
-            description: `The API accepted and processed a JSON body containing "${key}". This can lead to prototype pollution, which may allow an attacker to modify application behavior, bypass security checks, or achieve remote code execution.`,
-            evidence: `POST ${endpoint}\nPayload: ${json}\nResponse: ${text.substring(0, 300)}`,
-            remediation: "Sanitize incoming JSON to strip __proto__ and constructor keys. Use Object.create(null) for lookup objects. Consider a library like secure-json-parse.",
-            cwe: "CWE-1321",
-            owasp: "A03:2021",
-          });
-          break;
-        }
-      } catch {
-        // skip
-      }
-    }
-
-    // Test over-fetching / large responses
-    try {
-      const res = await scanFetch(endpoint);
-      if (!res.ok) continue;
-
-      const text = await res.text();
-      if (text.length < 10) continue;
-
-      let data: unknown;
-      try { data = JSON.parse(text); } catch { continue; }
-
-      // Check response size — large responses suggest no field filtering
-      if (text.length > LARGE_RESPONSE_THRESHOLD) {
-        findings.push({
-          id: `api-overfetch-${findings.length}`,
-          module: "API Security",
-          severity: "medium",
-          title: `Possible over-fetching on ${new URL(endpoint).pathname}`,
-          description: `This API endpoint returns ${(text.length / 1024).toFixed(1)}KB of data in a single response. This often means the server is returning full database records instead of selecting only needed fields, potentially exposing internal or sensitive fields.`,
-          evidence: `GET ${endpoint}\nResponse size: ${text.length} bytes\nPreview: ${text.substring(0, 200)}...`,
-          remediation: "Implement field selection — only return the fields the client needs. Use DTOs or serializers to control API output shape.",
-          cwe: "CWE-213",
-          owasp: "A01:2021",
-        });
-      }
-
-      // Check for missing pagination
-      const arr = Array.isArray(data) ? data : null;
-      if (arr && arr.length >= LARGE_ARRAY_THRESHOLD) {
-        findings.push({
-          id: `api-no-pagination-${findings.length}`,
-          module: "API Security",
-          severity: "medium",
-          title: `No pagination on ${new URL(endpoint).pathname} (${arr.length} items)`,
-          description: `This endpoint returns ${arr.length} items in a single response with no apparent pagination. As data grows, this becomes a denial-of-service risk and can leak data an attacker shouldn't see in bulk.`,
-          evidence: `GET ${endpoint}\nItems returned: ${arr.length}\nResponse size: ${text.length} bytes`,
-          remediation: "Implement cursor or offset-based pagination. Enforce a maximum page size (e.g., 50-100 items). Add rate limiting.",
-          cwe: "CWE-770",
-          owasp: "A04:2021",
-        });
-      }
-    } catch {
-      // skip
-    }
-
-    // Test mass assignment
-    try {
-      // First do a GET to understand the shape
-      const getRes = await scanFetch(endpoint);
-      if (!getRes.ok) continue;
-      const getText = await getRes.text();
-
-      for (const extraFields of MASS_ASSIGNMENT_FIELDS.slice(0, 3)) {
-        try {
-          const res = await scanFetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ test: "vibeshield-scan", ...extraFields }),
-          });
-
-          if (!res.ok) continue;
-
-          const text = await res.text();
-          // Check if the privilege field appears in the response
-          const fieldName = Object.keys(extraFields)[0];
-          const fieldVal = String(Object.values(extraFields)[0]);
-
-          if (text.includes(fieldName) && text.includes(fieldVal)) {
-            // Verify it's not just echoing the request — check it looks like a stored/processed response
-            let parsed: Record<string, unknown> | null = null;
-            try { parsed = JSON.parse(text); } catch { /* skip */ }
-
-            // Skip if the field already existed in the GET baseline (not a new assignment)
-            const fieldAlreadyInBaseline = getText.includes(`"${fieldName}"`) && getText.includes(fieldVal);
-            if (parsed && fieldName in parsed && !fieldAlreadyInBaseline) {
-              findings.push({
-                id: `api-mass-assignment-${findings.length}`,
-                module: "API Security",
-                severity: "high",
-                title: `Possible mass assignment on ${new URL(endpoint).pathname}`,
-                description: `The API accepted and returned a privileged field "${fieldName}" set to "${fieldVal}". This suggests the endpoint blindly assigns all incoming fields to the data model, which could allow privilege escalation.`,
-                evidence: `POST ${endpoint}\nPayload included: ${JSON.stringify(extraFields)}\nResponse contains "${fieldName}": ${text.substring(0, 300)}`,
-                remediation: "Use an allowlist of accepted fields in your API handlers. Never pass raw request body directly to database create/update operations. Use DTOs or pick() to select only permitted fields.",
-                cwe: "CWE-915",
-                owasp: "A08:2021",
-              });
-              break;
-            }
-          }
-        } catch {
-          // skip
-        }
-      }
-    } catch {
-      // skip
-    }
+  // Collect per-endpoint findings
+  for (const r of endpointResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (v.proto) findings.push(v.proto);
+    if (v.overfetch) findings.push(v.overfetch);
+    if (v.pagination) findings.push(v.pagination);
+    if (v.massAssign) findings.push(v.massAssign);
   }
 
   return findings;
