@@ -207,12 +207,40 @@ export const getStats = () => {
   const completed = all.filter((s) => s.status === "completed");
   const totalFindings = completed.reduce((sum, s) => sum + s.summary.total, 0);
   const totalCritical = completed.reduce((sum, s) => sum + s.summary.critical, 0);
+
+  // Top vulnerability modules across all scans
+  const moduleCounts = new Map<string, number>();
+  for (const s of completed) {
+    for (const f of s.findings) {
+      if (f.severity === "info") continue;
+      moduleCounts.set(f.module, (moduleCounts.get(f.module) || 0) + 1);
+    }
+  }
+  const topModules = [...moduleCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, count]) => ({ name, count }));
+
+  // Grade distribution
+  const gradeDistribution: Record<string, number> = {};
+  for (const s of completed) {
+    gradeDistribution[s.grade] = (gradeDistribution[s.grade] || 0) + 1;
+  }
+
+  // Average score
+  const avgScore = completed.length > 0
+    ? Math.round(completed.reduce((sum, s) => sum + s.score, 0) / completed.length)
+    : 0;
+
   return {
     totalScans: all.length,
     completedScans: completed.length,
     totalFindings,
     totalCritical,
     uniqueTargets: new Set(all.map((s) => { try { return new URL(s.target).hostname; } catch { return s.target; } })).size,
+    avgScore,
+    topModules,
+    gradeDistribution,
   };
 };
 
