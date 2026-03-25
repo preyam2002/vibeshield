@@ -60,7 +60,7 @@ const cleanupStaleScans = () => {
   }
 };
 
-export const getRecentScans = (): { id: string; target: string; grade: string; score: number; status: string; findings: number; summary: ScanResult["summary"]; startedAt: string; completedAt?: string }[] => {
+export const getRecentScans = (): { id: string; target: string; grade: string; score: number; status: string; findings: number; summary: ScanResult["summary"]; startedAt: string; completedAt?: string; mode: string; delta?: { score: number; findings: number } }[] => {
   cleanupStaleScans();
   return Array.from(scans.values())
     .sort((a, b) => {
@@ -69,7 +69,12 @@ export const getRecentScans = (): { id: string; target: string; grade: string; s
       return (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt);
     })
     .slice(0, 50)
-    .map((s) => ({ id: s.id, target: s.target, grade: s.grade, score: s.score, status: s.status, findings: s.summary.total, summary: s.summary, startedAt: s.startedAt, completedAt: s.completedAt }));
+    .map((s) => ({
+      id: s.id, target: s.target, grade: s.grade, score: s.score, status: s.status,
+      findings: s.summary.total, summary: s.summary, startedAt: s.startedAt,
+      completedAt: s.completedAt, mode: s.mode,
+      ...(s.comparison ? { delta: { score: s.comparison.delta.score, findings: s.comparison.delta.findings } } : {}),
+    }));
 };
 
 export const updateScanStatus = (id: string, status: ScanResult["status"]) => {

@@ -12,6 +12,8 @@ interface ScanEntry {
   summary: { critical: number; high: number; medium: number; low: number; info: number; total: number };
   startedAt: string;
   completedAt?: string;
+  mode?: string;
+  delta?: { score: number; findings: number };
 }
 
 const GRADE_COLORS: Record<string, string> = {
@@ -231,6 +233,14 @@ export default function ScansPage() {
                       {s.score > 0 && !isRunning && !isFailed && (
                         <span className="text-[10px] text-zinc-600">{s.score}/100</span>
                       )}
+                      {s.delta && s.delta.score !== 0 && (
+                        <span className={`text-[10px] font-medium ${s.delta.score > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {s.delta.score > 0 ? "+" : ""}{s.delta.score} pts
+                        </span>
+                      )}
+                      {s.mode && s.mode !== "full" && !isRunning && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-800/50 text-zinc-600">{s.mode}</span>
+                      )}
                     </div>
                     <div className="text-xs text-zinc-600 mt-0.5 flex items-center gap-2">
                       {isRunning ? (
@@ -242,6 +252,11 @@ export default function ScansPage() {
                           {s.findings} {s.findings === 1 ? "finding" : "findings"}
                           {s.summary.critical > 0 && <span className="text-red-400"> · {s.summary.critical} critical</span>}
                           {s.summary.high > 0 && <span className="text-orange-400"> · {s.summary.high} high</span>}
+                          {s.delta && s.delta.findings !== 0 && (
+                            <span className={s.delta.findings < 0 ? "text-emerald-500" : "text-red-400"}>
+                              {" · "}{s.delta.findings > 0 ? "+" : ""}{s.delta.findings} {Math.abs(s.delta.findings) === 1 ? "issue" : "issues"}
+                            </span>
+                          )}
                         </span>
                       )}
                       <span className="text-zinc-700">·</span>

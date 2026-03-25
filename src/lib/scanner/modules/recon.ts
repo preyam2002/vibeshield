@@ -363,7 +363,7 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
         }));
       } catch {}
     })(),
-    // Soft 404 detection
+    // Soft 404 detection + SPA detection
     (async () => {
       try {
         const canaryUrl = baseUrl + "/vibeshield-canary-404-test-" + Date.now();
@@ -374,6 +374,14 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
           target.isSpa = ratio > 0.7 && ratio < 1.3;
         }
       } catch {}
+      // Enhanced SPA detection via framework markers
+      if (!target.isSpa) {
+        const spaMarkers = [
+          /<div\s+id="__next"/i, /<div\s+id="root"/i, /<div\s+id="app"/i,
+          /window\.__NEXT_DATA__/i, /window\.__NUXT__/i, /window\.__remixContext/i,
+        ];
+        if (spaMarkers.some((m) => m.test(html))) target.isSpa = true;
+      }
     })(),
   ]);
 
@@ -419,6 +427,44 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     });
   }
 
+  // Extract __NEXT_DATA__ for additional routes and props
+  const nextDataMatch = html.match(/<script\s+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  if (nextDataMatch) {
+    try {
+      const nextData = JSON.parse(nextDataMatch[1]);
+      // Extract dynamic routes from buildManifest
+      if (nextData.buildId) {
+        const routePages = Object.keys(nextData.page ? { [nextData.page]: true } : {});
+        for (const route of routePages) {
+          const resolved = baseUrl + route;
+          if (!seen.has(resolved)) { seen.add(resolved); target.pages.push(resolved); }
+        }
+      }
+      // Extract API endpoints from props (common pattern: pages fetch data in getServerSideProps)
+      const propsStr = JSON.stringify(nextData.props || {});
+      for (const m of propsStr.matchAll(/["'](\/api\/[a-zA-Z0-9/_.-]+)["']/g)) {
+        const ep = baseUrl + m[1];
+        if (!target.apiEndpoints.includes(ep)) target.apiEndpoints.push(ep);
+      }
+    } catch { /* malformed JSON */ }
+  }
+
+  // Extract hash-based routes from JS bundles (SPA hash routing: /#/dashboard, /#/settings)
+  const hashRoutes = new Set<string>();
+  for (const m of allJs.matchAll(/["'`](#\/[a-zA-Z0-9/_-]{2,50})["'`]/g)) {
+    hashRoutes.add(m[1]);
+  }
+  // Hash routes can hint at API endpoints (/#/users → /api/users)
+  for (const hashRoute of hashRoutes) {
+    const path = hashRoute.replace(/^#/, "");
+    const apiGuess = baseUrl + "/api" + path;
+    if (!target.apiEndpoints.includes(apiGuess)) {
+      // Don't probe — just note it as a discovered page path
+      const pagePath = baseUrl + path;
+      if (!seen.has(pagePath)) { seen.add(pagePath); target.pages.push(pagePath); }
+    }
+  }
+
   // Deduplicate API endpoints
   target.apiEndpoints = [...new Set(target.apiEndpoints)];
 
@@ -427,7 +473,8 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
 
 const resolveUrl = (href: string, base: string): string | null => {
   try {
-    if (href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("#")) return null;
+    if (href.startsWith("javascript:") || href.startsWith("mailto:")) return null;
+    if (href.startsWith("#")) return null; // hash-only links handled separately in recon
     return new URL(href, base).href;
   } catch {
     return null;

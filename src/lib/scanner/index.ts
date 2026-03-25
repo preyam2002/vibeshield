@@ -58,47 +58,51 @@ import { businessLogicModule } from "./modules/business-logic";
 import { oauthModule } from "./modules/oauth";
 import { apiVersioningModule } from "./modules/api-versioning";
 
+// Ordered by signal-to-time ratio: fastest/highest-signal modules first
 const SECURITY_MODULES: ScanModuleDefinition[] = [
+  // Batch 1: Fast, high-signal checks (headers, config, static analysis)
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
   { name: "SSL/TLS", description: "Check HTTPS and TLS configuration", category: "security", run: sslModule },
-  { name: "CORS", description: "Test Cross-Origin Resource Sharing policies", category: "security", run: corsModule },
+  { name: "Cookies", description: "Check cookie security flags", category: "security", run: cookiesModule },
+  { name: "Clickjacking", description: "Test clickjacking protection", category: "security", run: clickjackingModule },
   { name: "Secret Detection", description: "Scan JS bundles for exposed API keys and secrets", category: "security", run: secretsModule },
   { name: "Source Maps", description: "Check for exposed source maps", category: "security", run: sourceMapsModule },
-  { name: "Supabase", description: "Test Supabase RLS policies and configuration", category: "security", run: supabaseModule },
-  { name: "Firebase", description: "Test Firebase security rules", category: "security", run: firebaseModule },
+  { name: "Dependencies", description: "Detect vulnerable client-side library versions", category: "security", run: dependenciesModule },
+  { name: "JWT Security", description: "Analyze JSON Web Token security", category: "security", run: jwtModule },
+  { name: "HTTP Methods", description: "Test for dangerous HTTP methods", category: "security", run: httpMethodsModule },
+  { name: "CORS", description: "Test Cross-Origin Resource Sharing policies", category: "security", run: corsModule },
+  { name: "Information Leakage", description: "Test for verbose errors and data exposure", category: "security", run: infoLeakModule },
+  { name: "Environment Leak", description: "Deep scan for environment variable and config leaks", category: "security", run: envLeakModule },
+  { name: "Directory & File Exposure", description: "Check for exposed files and directories", category: "security", run: directoriesModule },
+  { name: "Exposed Dev Tools", description: "Check for exposed developer tools (Prisma Studio, Swagger, Storybook)", category: "security", run: exposedToolsModule },
+  // Batch 2: Medium-speed, per-endpoint testing
   { name: "Authentication", description: "Test for unauthenticated access to protected resources", category: "security", run: authModule },
   { name: "IDOR", description: "Test for Insecure Direct Object References", category: "security", run: idorModule },
   { name: "SQL Injection & XSS", description: "Test for injection vulnerabilities", category: "security", run: injectionModule },
-  { name: "JWT Security", description: "Analyze JSON Web Token security", category: "security", run: jwtModule },
-  { name: "Cookies", description: "Check cookie security flags", category: "security", run: cookiesModule },
-  { name: "Directory & File Exposure", description: "Check for exposed files and directories", category: "security", run: directoriesModule },
-  { name: "Information Leakage", description: "Test for verbose errors and data exposure", category: "security", run: infoLeakModule },
-  { name: "Open Redirect", description: "Test for open redirect vulnerabilities", category: "security", run: openRedirectModule },
-  { name: "GraphQL", description: "Test GraphQL introspection and security", category: "security", run: graphqlModule },
-  { name: "WebSocket", description: "Check WebSocket security", category: "security", run: websocketModule },
-  { name: "HTTP Methods", description: "Test for dangerous HTTP methods", category: "security", run: httpMethodsModule },
-  { name: "Clickjacking", description: "Test clickjacking protection", category: "security", run: clickjackingModule },
-  { name: "Email Enumeration", description: "Test for user enumeration via auth endpoints", category: "security", run: emailEnumModule },
-  { name: "Next.js", description: "Next.js-specific security checks", category: "security", run: nextjsModule },
-  { name: "Stripe", description: "Test Stripe payment integration security", category: "security", run: stripeModule },
   { name: "CSRF", description: "Test Cross-Site Request Forgery protection", category: "security", run: csrfModule },
-  { name: "Exposed Dev Tools", description: "Check for exposed developer tools (Prisma Studio, Swagger, Storybook)", category: "security", run: exposedToolsModule },
+  { name: "Open Redirect", description: "Test for open redirect vulnerabilities", category: "security", run: openRedirectModule },
+  { name: "Supabase", description: "Test Supabase RLS policies and configuration", category: "security", run: supabaseModule },
+  { name: "Firebase", description: "Test Firebase security rules", category: "security", run: firebaseModule },
+  { name: "Next.js", description: "Next.js-specific security checks", category: "security", run: nextjsModule },
+  { name: "GraphQL", description: "Test GraphQL introspection and security", category: "security", run: graphqlModule },
+  { name: "Email Enumeration", description: "Test for user enumeration via auth endpoints", category: "security", run: emailEnumModule },
+  { name: "Stripe", description: "Test Stripe payment integration security", category: "security", run: stripeModule },
+  { name: "WebSocket", description: "Check WebSocket security", category: "security", run: websocketModule },
+  { name: "OAuth/OIDC", description: "Test OAuth flows, redirect_uri validation, and state parameter checks", category: "security", run: oauthModule },
   { name: "API Security", description: "Test for prototype pollution, over-fetching, and mass assignment", category: "security", run: apiSecurityModule },
-  { name: "Environment Leak", description: "Deep scan for environment variable and config leaks", category: "security", run: envLeakModule },
-  { name: "AI Security", description: "Test AI/LLM endpoint security and prompt injection", category: "security", run: aiSecurityModule },
+  // Batch 3: Slower, deeper probing modules
   { name: "SSRF", description: "Test for Server-Side Request Forgery vulnerabilities", category: "security", run: ssrfModule },
   { name: "File Upload", description: "Test file upload security and type validation", category: "security", run: fileUploadModule },
   { name: "CRLF Injection", description: "Test for HTTP header injection via CRLF characters", category: "security", run: crlfModule },
   { name: "Host Header", description: "Test for Host header injection and password reset poisoning", category: "security", run: hostHeaderModule },
-  { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
-  { name: "Dependencies", description: "Detect vulnerable client-side library versions", category: "security", run: dependenciesModule },
   { name: "Path Traversal", description: "Test for directory traversal and file inclusion", category: "security", run: pathTraversalModule },
   { name: "Command Injection", description: "Test for OS command injection vulnerabilities", category: "security", run: commandInjectionModule },
   { name: "NoSQL Injection", description: "Test for MongoDB/NoSQL operator injection and auth bypass", category: "security", run: nosqlInjectionModule },
+  { name: "AI Security", description: "Test AI/LLM endpoint security and prompt injection", category: "security", run: aiSecurityModule },
   { name: "Cache Poisoning", description: "Test for CDN/proxy cache poisoning via header injection", category: "security", run: cachePoisoningModule },
   { name: "Business Logic", description: "Test for negative values, zero-price bypass, and idempotency issues", category: "security", run: businessLogicModule },
-  { name: "OAuth/OIDC", description: "Test OAuth flows, redirect_uri validation, and state parameter checks", category: "security", run: oauthModule },
   { name: "API Versioning", description: "Detect hidden API versions, path normalization bypass, and endpoint shadowing", category: "security", run: apiVersioningModule },
+  { name: "Subdomain Takeover", description: "Discover subdomains via CT logs and check for takeover", category: "security", run: subdomainModule },
 ];
 
 const STRESS_MODULES: ScanModuleDefinition[] = [
@@ -211,8 +215,10 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
       await Promise.all(batch.map(runModule));
     }
     if (mode === "full") {
-      for (const mod of STRESS_MODULES) {
-        await runModule(mod);
+      // Run stress modules in small batches (not fully parallel to avoid overwhelming target)
+      for (let i = 0; i < STRESS_MODULES.length; i += 3) {
+        const batch = STRESS_MODULES.slice(i, i + 3);
+        await Promise.all(batch.map(runModule));
       }
     }
   }
