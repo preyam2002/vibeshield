@@ -159,6 +159,72 @@ export const cookiesModule: ScanModule = async (target) => {
     });
   }
 
+  // Cookie size analysis — oversized cookies may indicate storing sensitive data directly
+  const MAX_COOKIE_SIZE = 4096; // 4KB per cookie
+  const MAX_TOTAL_COOKIE_SIZE = 10240; // ~10KB total
+  let totalCookieSize = 0;
+  const oversizedCookies: string[] = [];
+  for (const cookie of target.cookies) {
+    const cookieSize = new TextEncoder().encode(`${cookie.name}=${cookie.value}`).length;
+    totalCookieSize += cookieSize;
+    if (cookieSize > MAX_COOKIE_SIZE) {
+      oversizedCookies.push(`${cookie.name} (${Math.round(cookieSize / 1024 * 10) / 10}KB)`);
+    }
+  }
+  if (oversizedCookies.length > 0) {
+    findings.push({
+      id: "cookies-oversized",
+      module: "Cookies",
+      severity: "medium",
+      title: `${oversizedCookies.length} oversized cookie${oversizedCookies.length > 1 ? "s" : ""} detected (>4KB)`,
+      description: "One or more cookies exceed the 4KB size limit. Large cookies may indicate sensitive data (e.g., JWTs, user profiles) stored directly in cookies instead of server-side sessions. This wastes bandwidth on every request and risks data exposure.",
+      evidence: oversizedCookies.join(", "),
+      remediation: "Store large data in server-side sessions and use a small session ID cookie. Keep cookies under 4KB.",
+      cwe: "CWE-539",
+      owasp: "A05:2021",
+      codeSnippet: `// Use server-side sessions instead of large cookies\n// Store only a session ID in the cookie\nres.cookies.set("session_id", shortSessionId, {\n  httpOnly: true,\n  secure: true,\n  sameSite: "lax",\n});\n// Store data server-side: await redis.set(sessionId, JSON.stringify(data));`,
+    });
+  }
+  if (totalCookieSize > MAX_TOTAL_COOKIE_SIZE) {
+    findings.push({
+      id: "cookies-total-size-excessive",
+      module: "Cookies",
+      severity: "low",
+      title: `Total cookie size excessive (${Math.round(totalCookieSize / 1024 * 10) / 10}KB)`,
+      description: `The total size of all cookies is ${Math.round(totalCookieSize / 1024 * 10) / 10}KB. Excessive cookie data is sent with every HTTP request, degrading performance and increasing bandwidth costs.`,
+      evidence: `Total cookie payload: ${totalCookieSize} bytes across ${target.cookies.length} cookies`,
+      remediation: "Reduce cookie count and size. Use server-side sessions for large data. Remove unnecessary tracking cookies.",
+      cwe: "CWE-400",
+    });
+  }
+
+  // Duplicate cookie detection — same name set multiple times with different values
+  const cookiesByName = new Map<string, string[]>();
+  for (const cookie of target.cookies) {
+    const existing = cookiesByName.get(cookie.name);
+    if (existing) {
+      if (!existing.includes(cookie.value)) {
+        existing.push(cookie.value);
+      }
+    } else {
+      cookiesByName.set(cookie.name, [cookie.value]);
+    }
+  }
+  const duplicateCookies = [...cookiesByName.entries()].filter(([, values]) => values.length > 1);
+  if (duplicateCookies.length > 0) {
+    findings.push({
+      id: "cookies-duplicate-names",
+      module: "Cookies",
+      severity: "medium",
+      title: `${duplicateCookies.length} cookie${duplicateCookies.length > 1 ? "s" : ""} set multiple times with different values`,
+      description: "The same cookie name is set multiple times with different values. This can indicate race conditions, middleware conflicts, or misconfigured backends overwriting each other's cookies. It may also enable session fixation if an attacker can influence which value the browser uses.",
+      evidence: duplicateCookies.map(([name, values]) => `${name}: ${values.length} distinct values`).join("\n"),
+      remediation: "Ensure each cookie name is set only once per response. Audit middleware and backend handlers for conflicting Set-Cookie headers.",
+      cwe: "CWE-436",
+      owasp: "A05:2021",
+    });
+  }
+
   // Check for auth tokens stored in localStorage (XSS-vulnerable)
   const allJs = Array.from(target.jsContents.values()).join("\n");
   const localStoragePatterns = [
