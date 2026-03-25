@@ -412,7 +412,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   }
 
   const isRunning = scan.status === "scanning" || scan.status === "queued";
-  const completedModules = scan.modules.filter((m) => m.status === "completed" || m.status === "failed").length;
+  const completedModules = scan.modules.filter((m) => m.status === "completed" || m.status === "failed" || m.status === "skipped").length;
   const totalModules = scan.modules.length;
   const progress = totalModules > 0 ? Math.round((completedModules / totalModules) * 100) : 0;
   const currentModule = scan.modules.find((m) => m.status === "running");
@@ -872,12 +872,18 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                         </svg>
                       </span>
                     )}
+                    {mod.status === "skipped" && (
+                      <svg className="h-3 w-3 text-zinc-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                      </svg>
+                    )}
                     {mod.status === "pending" && (
                       <div className="h-3 w-3 rounded-full border border-zinc-700/50 shrink-0" />
                     )}
                     <span className={`truncate ${
                       mod.status === "running" ? "text-zinc-200 font-medium" :
-                      mod.status === "completed" ? "text-zinc-500" : "text-zinc-700"
+                      mod.status === "completed" ? "text-zinc-500" :
+                      mod.status === "skipped" ? "text-zinc-700 line-through" : "text-zinc-700"
                     }`}>
                       {mod.name}
                     </span>
