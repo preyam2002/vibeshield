@@ -723,7 +723,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         {!isRunning && scan.status === "completed" && scan.mode === "quick" && scan.summary.total > 0 && (
           <div className="mb-4 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center justify-between gap-3">
             <div className="text-xs text-orange-300/80">
-              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {48 - 13} more security modules including injection, SSRF, and stress testing.
+              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {52 - 13} more security modules including injection, SSRF, and stress testing.
             </div>
             <button
               onClick={async () => {
@@ -1067,6 +1067,52 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                 ))}
               </div>
             </div>
+
+            {/* Module performance timeline */}
+            {!isRunning && scan.status === "completed" && (() => {
+              const timed = scan.modules
+                .filter((m) => m.durationMs != null && m.durationMs > 0)
+                .sort((a, b) => (b.durationMs || 0) - (a.durationMs || 0));
+              if (timed.length < 3) return null;
+              const maxMs = timed[0].durationMs || 1;
+              const totalMs = timed.reduce((s, m) => s + (m.durationMs || 0), 0);
+              return (
+                <details className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl">
+                  <summary className="px-4 py-3 text-[10px] font-semibold text-zinc-500 uppercase tracking-wider cursor-pointer hover:text-zinc-400 transition-colors select-none">
+                    Performance ({(totalMs / 1000).toFixed(1)}s total)
+                  </summary>
+                  <div className="px-4 pb-3 space-y-1">
+                    {timed.slice(0, 15).map((mod) => {
+                      const pct = ((mod.durationMs || 0) / maxMs) * 100;
+                      const ms = mod.durationMs || 0;
+                      const isSlow = ms > 5000;
+                      return (
+                        <div key={mod.name} className="flex items-center gap-2">
+                          <span className={`text-[9px] w-[90px] truncate shrink-0 ${isSlow ? "text-orange-400/80" : "text-zinc-600"}`} title={mod.name}>
+                            {mod.name}
+                          </span>
+                          <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                isSlow ? "bg-orange-500/60" :
+                                mod.findingsCount > 0 ? "bg-red-500/40" : "bg-zinc-600/50"
+                              }`}
+                              style={{ width: `${Math.max(pct, 2)}%` }}
+                            />
+                          </div>
+                          <span className={`text-[9px] tabular-nums shrink-0 ${isSlow ? "text-orange-400/60" : "text-zinc-700"}`}>
+                            {ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {timed.length > 15 && (
+                      <div className="text-[9px] text-zinc-700 pt-1">+{timed.length - 15} more modules</div>
+                    )}
+                  </div>
+                </details>
+              );
+            })()}
 
             {/* Tech stack */}
             {scan.technologies && scan.technologies.length > 0 && (
