@@ -168,6 +168,19 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
             <button
               onClick={(e) => {
                 e.stopPropagation();
+                const url = `${window.location.origin}${window.location.pathname}#finding-${finding.id}`;
+                navigator.clipboard.writeText(url);
+                const btn = e.currentTarget;
+                btn.textContent = "Linked!";
+                setTimeout(() => { btn.textContent = "Link"; }, 1500);
+              }}
+              className="text-[10px] bg-zinc-800/50 border border-zinc-700/30 hover:border-zinc-600/50 text-zinc-500 rounded px-2 py-0.5 transition-colors"
+            >
+              Link
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
                 const prompt = `Fix this security vulnerability in my app:\n\n**${finding.title}**\n\nSeverity: ${finding.severity.toUpperCase()}\n\n${finding.description}\n\n${finding.evidence ? `Evidence:\n${finding.evidence}\n\n` : ""}Recommended fix:\n${finding.remediation}${finding.codeSnippet ? `\n\nExample code fix:\n\`\`\`\n${finding.codeSnippet}\n\`\`\`` : ""}`;
                 navigator.clipboard.writeText(prompt);
                 const btn = e.currentTarget;
@@ -284,9 +297,18 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Auto-expand first critical/high finding when scan completes
+  // Auto-expand first critical/high finding when scan completes, or deep-link to hash target
   useEffect(() => {
     if (scan?.status === "completed" && openFindings.size === 0) {
+      const hash = window.location.hash.replace("#", "");
+      if (hash) {
+        const target = scan.findings.find((f) => `finding-${f.id}` === hash);
+        if (target) {
+          setOpenFindings(new Set([target.id]));
+          setTimeout(() => document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+          return;
+        }
+      }
       const first = scan.findings.find((f) => f.severity === "critical" || f.severity === "high");
       if (first) setOpenFindings(new Set([first.id]));
     }
