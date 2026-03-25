@@ -371,6 +371,7 @@ export const secretsModule: ScanModule = async (target) => {
           ? match.substring(0, 10) + "..." + match.substring(match.length - 5)
           : match.substring(0, 8) + "...";
         const suffix = validMatches.length > 1 ? ` (#${i + 1})` : "";
+        const isAiKey = /openai|anthropic|deepseek|groq|replicate|together|fireworks|hugging/i.test(pat.name);
         findings.push({
           id: `secrets-${pat.name.toLowerCase().replace(/\s+/g, "-")}-${findings.length}`,
           module: "Secret Detection",
@@ -381,6 +382,9 @@ export const secretsModule: ScanModule = async (target) => {
           remediation: pat.remediation,
           cwe: "CWE-798",
           owasp: "A07:2021",
+          codeSnippet: isAiKey
+            ? `// Move to server-side API route\n// app/api/ai/route.ts\nexport async function POST(req: Request) {\n  const { prompt } = await req.json();\n  const res = await fetch("https://api...", {\n    headers: { Authorization: \`Bearer \${process.env.API_KEY}\` },\n    body: JSON.stringify({ prompt }),\n  });\n  return Response.json(await res.json());\n}`
+            : `// Move to .env.local (never commit)\n${pat.name.toUpperCase().replace(/[^A-Z]/g, "_")}=your_key_here\n\n// Access server-side only\nconst key = process.env.${pat.name.toUpperCase().replace(/[^A-Z]/g, "_")};`,
         });
       }
     }
