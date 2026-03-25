@@ -354,6 +354,97 @@ const TOOL_CHECKS: ToolCheck[] = [
     remediation: "Remove LocalStack from production deployments.",
     requireJson: true,
   },
+  // Grafana
+  {
+    path: "/grafana",
+    name: "Grafana Dashboard",
+    contentPatterns: [/grafana/i, /dashboard/i, /datasource/i, /panel/i],
+    severity: "high",
+    description: "Grafana monitoring dashboard is publicly accessible. May expose infrastructure metrics, alert rules, and database connection info.",
+    remediation: "Restrict Grafana access behind VPN or authentication. Disable anonymous access in grafana.ini.",
+  },
+  // Prometheus metrics
+  {
+    path: "/metrics",
+    name: "Prometheus Metrics",
+    contentPatterns: [/HELP|TYPE|go_|process_|http_request/],
+    severity: "medium",
+    description: "Prometheus metrics endpoint is exposed, revealing application performance data, request counts, error rates, and potentially sensitive labels.",
+    remediation: "Restrict /metrics to internal networks. Use a service mesh or reverse proxy to control access.",
+  },
+  // Apollo Studio / GraphQL Playground
+  {
+    path: "/graphql",
+    name: "GraphQL Playground/Explorer",
+    contentPatterns: [/playground|graphiql|explorer|apollo/i],
+    severity: "medium",
+    description: "GraphQL Playground or Explorer is publicly accessible, allowing anyone to interactively query your GraphQL API.",
+    remediation: "Disable GraphQL Playground in production. Set playground: false and introspection: false in your Apollo/GraphQL config.",
+  },
+  // Sentry debug endpoint
+  {
+    path: "/api/sentry",
+    name: "Sentry Debug",
+    contentPatterns: [/sentry|dsn|event|exception/i],
+    severity: "medium",
+    description: "Sentry debug endpoint is publicly accessible. May expose error tracking configuration or DSN.",
+    remediation: "Remove Sentry debug endpoints from production.",
+    requireJson: true,
+  },
+  // MailHog / MailPit (email capture)
+  {
+    path: "/mailhog",
+    name: "MailHog (Dev Email)",
+    contentPatterns: [/mailhog|message|inbox|smtp/i],
+    severity: "high",
+    description: "MailHog development email server UI is publicly accessible. All captured emails are viewable.",
+    remediation: "Remove MailHog from production. Use a real email service.",
+  },
+  {
+    path: "/mailpit",
+    name: "Mailpit (Dev Email)",
+    contentPatterns: [/mailpit|message|inbox|smtp/i],
+    severity: "high",
+    description: "Mailpit development email UI is publicly accessible. All captured emails including password resets are viewable.",
+    remediation: "Remove Mailpit from production. Use a real email service.",
+  },
+  // MinIO Console
+  {
+    path: "/minio",
+    name: "MinIO Console",
+    contentPatterns: [/minio|console|bucket|object/i],
+    severity: "critical",
+    description: "MinIO object storage console is publicly accessible, providing direct access to stored files and buckets.",
+    remediation: "Restrict MinIO console access. Use authentication and network-level controls.",
+  },
+  // Redis Commander / RedisInsight
+  {
+    path: "/redis",
+    name: "Redis Commander",
+    contentPatterns: [/redis|commander|key|value|database/i],
+    severity: "critical",
+    description: "Redis management UI is publicly accessible, allowing direct access to cache/session data.",
+    remediation: "Remove Redis management UIs from production. Access via VPN only.",
+  },
+  // Next.js ISR cache invalidation
+  {
+    path: "/api/revalidate",
+    name: "ISR Revalidation Endpoint",
+    contentPatterns: [/revalidat/i, /cache/i, /success/i, /true/i],
+    severity: "medium",
+    description: "ISR revalidation endpoint is accessible without authentication. Attackers can force cache invalidation, causing unnecessary rebuilds.",
+    remediation: "Protect revalidation endpoints with a secret token.",
+    requireJson: true,
+  },
+  // Directus admin
+  {
+    path: "/admin/content",
+    name: "Directus CMS",
+    contentPatterns: [/directus/i, /collection/i, /content/i],
+    severity: "high",
+    description: "Directus CMS admin panel is publicly accessible.",
+    remediation: "Restrict Directus admin access. Configure ADMIN_PASSWORD and access controls.",
+  },
 ];
 
 export const exposedToolsModule: ScanModule = async (target) => {

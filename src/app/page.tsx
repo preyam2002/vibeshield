@@ -35,7 +35,7 @@ const ATTACK_MODULES = [
   { name: "Cost Attack", desc: "Estimate $/hour of API abuse on serverless", icon: "💸" },
   { name: "Error Leak Under Stress", desc: "Verbose errors when server overloaded", icon: "🔥" },
   { name: "Connection Exhaustion", desc: "100 sustained connections, measure degradation", icon: "🔌" },
-  { name: "Exposed Dev Tools", desc: "Prisma Studio, Swagger, Storybook, debug endpoints", icon: "🔧" },
+  { name: "Exposed Dev Tools", desc: "Prisma/Drizzle Studio, Grafana, Redis, MinIO, MailHog, Swagger, Storybook", icon: "🔧" },
   { name: "API Security", desc: "Prototype pollution, over-fetching, mass assignment", icon: "🧬" },
   { name: "Env Variable Leak", desc: "Exposed env vars, dev configs, localhost URLs", icon: "🔐" },
   { name: "AI/LLM Security", desc: "Prompt injection, system prompt leak, tool abuse, unauthed AI", icon: "🤖" },
