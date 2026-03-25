@@ -273,8 +273,8 @@ export default function Home() {
               <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
                 {([
                   { key: "quick" as const, label: "Quick (~10s)", title: "13 modules: headers, SSL, secrets, CORS, cookies, CSP, dependencies, source maps" },
-                  { key: "security" as const, label: "Security (~45s)", title: "44 modules: all security checks including injection, auth bypass, SSRF, IDOR" },
-                  { key: "full" as const, label: "Full + Stress (~90s)", title: "50 modules: everything + load testing, race conditions, rate limit checks" },
+                  { key: "security" as const, label: "Security (~45s)", title: "42 modules: all security checks including injection, auth bypass, SSRF, IDOR" },
+                  { key: "full" as const, label: "Full + Stress (~90s)", title: "48 modules: everything + load testing, race conditions, rate limit checks" },
                 ]).map((m) => (
                   <button
                     key={m.key}

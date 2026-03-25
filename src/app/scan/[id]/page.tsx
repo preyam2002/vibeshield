@@ -90,9 +90,11 @@ const GRADE_CONFIG: Record<string, { color: string; bg: string; border: string; 
 const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: boolean; onToggle: () => void }) => {
   const sev = SEVERITY_CONFIG[finding.severity];
   return (
-    <div id={`finding-${finding.id}`} className={`border ${sev.border} rounded-lg overflow-hidden bg-zinc-950/50`}>
+    <div id={`finding-${finding.id}`} className={`border ${sev.border} rounded-lg overflow-hidden bg-zinc-950/50`} role="region" aria-label={`${finding.severity} finding: ${finding.title}`}>
       <button
         onClick={onToggle}
+        aria-expanded={isOpen}
+        aria-controls={`finding-detail-${finding.id}`}
         className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-zinc-900/50 transition-colors"
       >
         <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${sev.bg} ${sev.color} shrink-0`}>
@@ -110,7 +112,7 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
         </svg>
       </button>
       {isOpen && (
-        <div className="px-4 pb-4 space-y-3 border-t border-zinc-800/50">
+        <div id={`finding-detail-${finding.id}`} className="px-4 pb-4 space-y-3 border-t border-zinc-800/50">
           <div className="pt-3">
             <p className="text-sm text-zinc-400 leading-relaxed">{finding.description}</p>
           </div>
@@ -709,7 +711,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
         {!isRunning && scan.status === "completed" && scan.mode === "quick" && scan.summary.total > 0 && (
           <div className="mb-4 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center justify-between gap-3">
             <div className="text-xs text-orange-300/80">
-              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {50 - 13} more security modules including injection, SSRF, and stress testing.
+              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {48 - 13} more security modules including injection, SSRF, and stress testing.
             </div>
             <button
               onClick={async () => {

@@ -126,6 +126,15 @@ const CHECKS: DirCheck[] = [
   // BI / Admin tools
   { path: "/metabase", severity: "high", title: "Metabase dashboard exposed", description: "Metabase analytics dashboard is publicly accessible.", remediation: "Restrict access to authenticated users." },
   { path: "/airflow", severity: "high", title: "Apache Airflow UI exposed", description: "Airflow job scheduler UI is publicly accessible.", remediation: "Restrict access behind authentication." },
+
+  // Modern vibe-coded stack configs
+  { path: "/convex.json", severity: "medium", title: "Convex config exposed", description: "Convex backend configuration is accessible, revealing project structure.", remediation: "Block access to convex.json.", contentCheck: /\{/ },
+  { path: "/.clerk", severity: "medium", title: "Clerk config directory exposed", description: "Clerk auth configuration directory is accessible.", remediation: "Block access to .clerk/ directory." },
+  { path: "/biome.json", severity: "info", title: "Biome config exposed", description: "Biome linter config reveals code conventions and rules.", remediation: "Block access to config files.", contentCheck: /\{/ },
+  { path: "/.sentryclirc", severity: "high", title: "Sentry CLI config exposed", description: "Sentry CLI config may contain auth tokens and org details.", remediation: "Remove .sentryclirc from web root.", contentCheck: /token|org|project/i },
+  { path: "/fly.toml", severity: "medium", title: "Fly.io config exposed", description: "Fly.io deployment config reveals app name, region, and service settings.", remediation: "Block access to fly.toml.", contentCheck: /app|primary_region/i },
+  { path: "/railway.json", severity: "medium", title: "Railway config exposed", description: "Railway deployment config is accessible.", remediation: "Block access to railway.json.", contentCheck: /\{/ },
+  { path: "/.env.sentry-build-plugin", severity: "high", title: "Sentry build plugin env exposed", description: "Sentry build env may contain auth tokens.", remediation: "Block access to .env files.", contentCheck: /SENTRY/ },
 ];
 
 export const directoriesModule: ScanModule = async (target) => {

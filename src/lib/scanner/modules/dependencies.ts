@@ -254,6 +254,42 @@ const VULNERABLE_LIBS: {
     cve: "CVE-2024-25104",
     description: "chart.js < 4.4.2 is vulnerable to prototype pollution via object merge in config processing.",
   },
+  {
+    name: "path-to-regexp",
+    detect: /pathToRegexp|path-to-regexp/,
+    versionExtract: /path-to-regexp[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "6.3.0",
+    severity: "high",
+    cve: "CVE-2024-45296",
+    description: "path-to-regexp < 6.3.0 is vulnerable to ReDoS that can cause server denial-of-service via crafted URL paths.",
+  },
+  {
+    name: "cookie",
+    detect: /["\s]cookie[./]|cookie\.parse|cookie\.serialize/,
+    versionExtract: /cookie[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "0.7.0",
+    severity: "medium",
+    cve: "CVE-2024-47764",
+    description: "cookie < 0.7.0 accepts cookie names and values with out-of-bounds characters, enabling injection attacks.",
+  },
+  {
+    name: "micromatch",
+    detect: /micromatch[./]/,
+    versionExtract: /micromatch[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "4.0.8",
+    severity: "medium",
+    cve: "CVE-2024-4067",
+    description: "micromatch < 4.0.8 is vulnerable to ReDoS when processing crafted glob patterns.",
+  },
+  {
+    name: "tar",
+    detect: /["\s]tar[./]|tar\.extract|tar\.create/,
+    versionExtract: /tar[./\s]*v?(\d+\.\d+\.\d+)/i,
+    vulnerableBelow: "6.2.1",
+    severity: "high",
+    cve: "CVE-2024-28863",
+    description: "tar < 6.2.1 is vulnerable to denial of service via crafted tar headers that cause excessive memory consumption.",
+  },
 ];
 
 // Detect library versions from common bundle patterns
