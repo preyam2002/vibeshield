@@ -10,7 +10,7 @@ const NOSQL_PAYLOADS_GET = [
   { param: "[$exists]", value: "true", desc: "MongoDB $exists operator" },
 ];
 
-const NOSQL_JSON_PAYLOADS = [
+const NOSQL_JSON_PAYLOADS: { body: Record<string, unknown>; desc: string }[] = [
   // JSON body injection
   { body: { "$gt": "" }, desc: "$gt operator in JSON" },
   { body: { "$ne": null }, desc: "$ne null in JSON" },
@@ -18,6 +18,11 @@ const NOSQL_JSON_PAYLOADS = [
   { body: { "$where": "1==1" }, desc: "$where always-true" },
   { body: { "$in": [null, "", 0] }, desc: "$in array injection" },
   { body: { "$or": [{ "a": 1 }, { "b": 1 }] }, desc: "$or condition injection" },
+  // JS execution via $where (RCE vector)
+  { body: { "$where": "function(){return true}" }, desc: "$where JS function" },
+  // Prototype pollution via __proto__
+  { body: { "__proto__": { "isAdmin": true } }, desc: "__proto__ pollution" },
+  { body: { "constructor": { "prototype": { "isAdmin": true } } }, desc: "constructor.prototype pollution" },
 ];
 
 const NOSQL_AUTH_BYPASS = [
@@ -216,10 +221,13 @@ export const nosqlInjectionModule: ScanModule = async (target) => {
     const v = r.value;
     if (flagged.has(v.pathname)) continue;
     flagged.add(v.pathname);
+    const isProtoPollution = v.desc.includes("__proto__") || v.desc.includes("constructor.prototype");
     findings.push({
-      id: `nosql-json-${count++}`, module: "NoSQL Injection", severity: "high",
-      title: `NoSQL injection via JSON body on ${v.pathname}`,
-      description: `Sending a ${v.desc} payload in the JSON body triggered a database error. The server passes user-supplied objects directly to database queries.`,
+      id: `nosql-json-${count++}`, module: isProtoPollution ? "Prototype Pollution" : "NoSQL Injection", severity: isProtoPollution ? "critical" : "high",
+      title: isProtoPollution ? `Prototype pollution via JSON body on ${v.pathname}` : `NoSQL injection via JSON body on ${v.pathname}`,
+      description: isProtoPollution
+        ? `Sending a ${v.desc} payload was processed by the server. If the application merges user input into objects without sanitization, attackers can modify Object.prototype and gain privilege escalation or RCE.`
+        : `Sending a ${v.desc} payload in the JSON body triggered a database error. The server passes user-supplied objects directly to database queries.`,
       evidence: `Payload: ${JSON.stringify(v.body)}\nEndpoint: ${v.endpoint}\nError pattern: ${v.pattern}\nResponse excerpt: ${v.text.substring(0, 300)}`,
       remediation: "Validate that request body fields are the expected primitive types (string, number). Reject objects/arrays where primitives are expected. Use schema validation (Zod, Joi).",
       cwe: "CWE-943", owasp: "A03:2021",
