@@ -318,6 +318,34 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
           : Math.max((currentIdx === -1 ? 0 : currentIdx) - 1, 0);
         cards[nextIdx]?.scrollIntoView({ behavior: "smooth", block: "center" });
       }
+      // Enter to toggle finding closest to viewport center
+      if (e.key === "Enter") {
+        const cards = Array.from(document.querySelectorAll<HTMLElement>('[id^="finding-"]'));
+        const mid = window.innerHeight / 2;
+        let closest = cards[0];
+        let closestDist = Infinity;
+        for (const c of cards) {
+          const d = Math.abs(c.getBoundingClientRect().top + c.getBoundingClientRect().height / 2 - mid);
+          if (d < closestDist) { closest = c; closestDist = d; }
+        }
+        if (closest) {
+          const fid = closest.id.replace("finding-", "");
+          setOpenFindings((prev) => { const next = new Set(prev); if (next.has(fid)) next.delete(fid); else next.add(fid); return next; });
+        }
+      }
+      // e to expand/collapse all visible findings
+      if (e.key === "e" && !e.metaKey && !e.ctrlKey) {
+        setOpenFindings((prev) => prev.size > 0 ? new Set() : new Set(document.querySelectorAll('[id^="finding-"]').length > 0 ? Array.from(document.querySelectorAll('[id^="finding-"]')).map((el) => el.id.replace("finding-", "")) : []));
+      }
+      // 1-5 to filter by severity
+      if (e.key >= "1" && e.key <= "5" && !e.metaKey && !e.ctrlKey) {
+        const sevMap: Record<string, string> = { "1": "critical", "2": "high", "3": "medium", "4": "low", "5": "info" };
+        setFilter((prev) => prev === sevMap[e.key] ? "all" : sevMap[e.key]);
+      }
+      // 0 to clear all filters
+      if (e.key === "0" && !e.metaKey && !e.ctrlKey) {
+        setFilter("all"); setSearch(""); setModuleFilter("");
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -1643,6 +1671,30 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     {expandAll ? "Collapse all" : "Expand all"}
                   </button>
                 )}
+                <div className="relative group/kb">
+                  <button className="text-[10px] text-zinc-700 hover:text-zinc-500 transition-colors">
+                    <kbd className="border border-zinc-800 rounded px-1 py-0.5">?</kbd>
+                  </button>
+                  <div className="absolute right-0 top-full mt-1 bg-zinc-900 border border-zinc-800 rounded-lg p-3 min-w-[180px] opacity-0 invisible group-hover/kb:opacity-100 group-hover/kb:visible transition-all z-50 shadow-xl">
+                    <div className="text-[10px] font-semibold text-zinc-400 mb-2">Keyboard Shortcuts</div>
+                    <div className="space-y-1 text-[10px] text-zinc-500">
+                      {[
+                        { keys: "j / k", desc: "Navigate findings" },
+                        { keys: "Enter", desc: "Toggle finding" },
+                        { keys: "e", desc: "Expand / collapse all" },
+                        { keys: "/", desc: "Search" },
+                        { keys: "1-5", desc: "Filter by severity" },
+                        { keys: "0", desc: "Clear filters" },
+                        { keys: "Esc", desc: "Clear search" },
+                      ].map((s) => (
+                        <div key={s.keys} className="flex justify-between gap-3">
+                          <kbd className="text-zinc-600 font-mono">{s.keys}</kbd>
+                          <span>{s.desc}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
