@@ -15,6 +15,9 @@ const COMMON_API_PATHS = [
   "/api/cron", "/api/seed", "/api/debug", "/api/test",
   "/api/invite", "/api/billing", "/api/subscription",
   "/api/token", "/api/refresh", "/api/verify",
+  "/api/inngest", "/api/trigger", "/api/uploadthing",
+  "/api/liveblocks-auth", "/api/pusher/auth",
+  "/api/completion", "/api/embedding", "/api/transcribe",
   "/rest/v1", "/auth/v1", "/storage/v1", "/functions/v1", // Supabase
   "/graphql", "/_next/data",
   "/.well-known/openid-configuration", "/.well-known/security.txt",
