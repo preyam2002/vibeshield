@@ -104,89 +104,66 @@ export const supabaseModule: ScanModule = async (target) => {
     }
   }
 
-  // Test write access (INSERT with dummy data)
-  for (const table of ["users", "profiles", "posts", "comments"]) {
-    try {
-      const res = await scanFetch(
-        `${supabaseUrl}/rest/v1/${table}`,
-        {
+  // Test write access, auth settings, and storage in parallel
+  const [writeResults, authResult, storageResult] = await Promise.all([
+    // Write access tests in parallel
+    Promise.allSettled(
+      ["users", "profiles", "posts", "comments"].map(async (table) => {
+        const res = await scanFetch(`${supabaseUrl}/rest/v1/${table}`, {
           method: "POST",
-          headers: {
-            apikey: testKey,
-            Authorization: `Bearer ${testKey}`,
-            "Content-Type": "application/json",
-            Prefer: "return=minimal",
-          },
+          headers: { apikey: testKey, Authorization: `Bearer ${testKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify({ _vibeshield_test: true }),
-        },
-      );
-      // 201 = inserted, 409 = conflict (but accepted), 400 with specific message = table exists but schema mismatch
-      if (res.status === 201 || res.status === 409) {
+        });
+        if (res.status === 201 || res.status === 409) return { table, status: res.status };
+        return null;
+      }),
+    ),
+    // Auth settings
+    scanFetch(`${supabaseUrl}/auth/v1/settings`, { headers: { apikey: testKey } })
+      .then(async (res) => res.ok ? { settings: await res.json() as Record<string, unknown> } : null)
+      .catch(() => null),
+    // Storage buckets
+    scanFetch(`${supabaseUrl}/storage/v1/bucket`, { headers: { apikey: testKey, Authorization: `Bearer ${testKey}` } })
+      .then(async (res) => res.ok ? (await res.json() as { name: string; public: boolean }[]) : null)
+      .catch(() => null),
+  ]);
+
+  for (const r of writeResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { table, status } = r.value;
+    findings.push({
+      id: `supabase-rls-write-${table}`, module: "Supabase", severity: "critical",
+      title: `Table "${table}" allows anonymous INSERT`,
+      description: `The "${table}" table accepts writes with just the anon key.`,
+      evidence: `POST ${supabaseUrl}/rest/v1/${table}\nStatus: ${status}`,
+      remediation: `Add RLS INSERT policies to "${table}" to restrict who can write data.`,
+      cwe: "CWE-862", owasp: "A01:2021",
+    });
+  }
+
+  if (authResult) {
+    findings.push({
+      id: "supabase-auth-settings-exposed", module: "Supabase", severity: "info",
+      title: "Supabase auth settings are readable",
+      description: "Auth configuration is publicly readable.",
+      evidence: `Enabled providers: ${JSON.stringify(authResult.settings.external || {}).substring(0, 200)}`,
+      remediation: "This is expected behavior but review your auth provider configuration.",
+    });
+  }
+
+  if (storageResult) {
+    for (const bucket of storageResult) {
+      if (bucket.public) {
         findings.push({
-          id: `supabase-rls-write-${table}`,
-          module: "Supabase",
-          severity: "critical",
-          title: `Table "${table}" allows anonymous INSERT`,
-          description: `The "${table}" table accepts writes with just the anon key. Anyone can insert data into this table.`,
-          evidence: `POST ${supabaseUrl}/rest/v1/${table}\nStatus: ${res.status}`,
-          remediation: `Add RLS INSERT policies to "${table}" to restrict who can write data.`,
+          id: `supabase-storage-public-${bucket.name}`, module: "Supabase", severity: "medium",
+          title: `Storage bucket "${bucket.name}" is public`,
+          description: `The storage bucket "${bucket.name}" is publicly accessible.`,
+          evidence: `Bucket: ${bucket.name}, Public: true`,
+          remediation: "Make the bucket private and use signed URLs for access.",
           cwe: "CWE-862",
-          owasp: "A01:2021",
         });
       }
-    } catch {
-      // skip
     }
-  }
-
-  // Test if Supabase Auth endpoints are accessible
-  try {
-    const res = await scanFetch(`${supabaseUrl}/auth/v1/settings`, {
-      headers: { apikey: testKey },
-    });
-    if (res.ok) {
-      const settings = await res.json() as Record<string, unknown>;
-      findings.push({
-        id: "supabase-auth-settings-exposed",
-        module: "Supabase",
-        severity: "info",
-        title: "Supabase auth settings are readable",
-        description: "Auth configuration is publicly readable. This reveals enabled auth providers and security settings.",
-        evidence: `Enabled providers: ${JSON.stringify(settings.external || {}).substring(0, 200)}`,
-        remediation: "This is expected behavior but review your auth provider configuration.",
-      });
-    }
-  } catch {
-    // skip
-  }
-
-  // Test Storage bucket access
-  try {
-    const res = await scanFetch(`${supabaseUrl}/storage/v1/bucket`, {
-      headers: {
-        apikey: testKey,
-        Authorization: `Bearer ${testKey}`,
-      },
-    });
-    if (res.ok) {
-      const buckets = await res.json() as { name: string; public: boolean }[];
-      for (const bucket of buckets) {
-        if (bucket.public) {
-          findings.push({
-            id: `supabase-storage-public-${bucket.name}`,
-            module: "Supabase",
-            severity: "medium",
-            title: `Storage bucket "${bucket.name}" is public`,
-            description: `The storage bucket "${bucket.name}" is publicly accessible. Anyone can list and download files.`,
-            evidence: `Bucket: ${bucket.name}, Public: true`,
-            remediation: "Make the bucket private and use signed URLs for access, or add RLS policies.",
-            cwe: "CWE-862",
-          });
-        }
-      }
-    }
-  } catch {
-    // skip
   }
 
   return findings;
