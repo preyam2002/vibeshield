@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { startScan } from "@/lib/scanner";
 
-// Simple in-memory rate limiter: max 3 scans per target per 5 minutes
+// Rate limiting: per-target + global per-IP
 const recentScans = new Map<string, number[]>();
+const globalScans = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW = 5 * 60 * 1000;
-const RATE_LIMIT_MAX = 3;
+const RATE_LIMIT_MAX = 3; // per target per 5 min
+const GLOBAL_RATE_LIMIT_MAX = 20; // per IP per 5 min
 let lastCleanup = Date.now();
 
 const isPrivateHost = (host: string): boolean => {
@@ -29,7 +31,22 @@ const isPrivateHost = (host: string): boolean => {
 export async function POST(req: Request) {
   const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick" };
   const url = typeof body.url === "string" ? body.url.trim() : "";
-  const callbackUrl = typeof body.callbackUrl === "string" ? body.callbackUrl.trim() : undefined;
+  // Validate callback URL — only allow public HTTPS URLs
+  let callbackUrl: string | undefined;
+  if (typeof body.callbackUrl === "string" && body.callbackUrl.trim()) {
+    try {
+      const cbUrl = new URL(body.callbackUrl.trim());
+      if (cbUrl.protocol !== "https:") {
+        return NextResponse.json({ error: "Callback URL must use HTTPS" }, { status: 400 });
+      }
+      if (isPrivateHost(cbUrl.hostname)) {
+        return NextResponse.json({ error: "Callback URL cannot point to private addresses" }, { status: 400 });
+      }
+      callbackUrl = cbUrl.href;
+    } catch {
+      return NextResponse.json({ error: "Invalid callback URL" }, { status: 400 });
+    }
+  }
   const mode = body.mode === "security" ? "security" : body.mode === "quick" ? "quick" : "full";
 
   if (!url) {
@@ -52,17 +69,31 @@ export async function POST(req: Request) {
     );
   }
 
-  // Rate limit per target hostname + periodic cleanup to prevent memory leak
+  // Rate limiting + periodic cleanup
   const targetHost = parsed.hostname;
+  const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown";
   const now = Date.now();
   if (now - lastCleanup > RATE_LIMIT_WINDOW) {
-    for (const [key, ts] of recentScans) {
-      const fresh = ts.filter((t) => now - t < RATE_LIMIT_WINDOW);
-      if (fresh.length === 0) recentScans.delete(key);
-      else recentScans.set(key, fresh);
+    for (const map of [recentScans, globalScans]) {
+      for (const [key, ts] of map) {
+        const fresh = ts.filter((t) => now - t < RATE_LIMIT_WINDOW);
+        if (fresh.length === 0) map.delete(key);
+        else map.set(key, fresh);
+      }
     }
     lastCleanup = now;
   }
+
+  // Global per-IP rate limit
+  const ipTimestamps = (globalScans.get(clientIp) || []).filter((t) => now - t < RATE_LIMIT_WINDOW);
+  if (ipTimestamps.length >= GLOBAL_RATE_LIMIT_MAX) {
+    return NextResponse.json(
+      { error: `Rate limited: max ${GLOBAL_RATE_LIMIT_MAX} scans per 5 minutes. Try again later.` },
+      { status: 429 },
+    );
+  }
+
+  // Per-target rate limit
   const timestamps = (recentScans.get(targetHost) || []).filter((t) => now - t < RATE_LIMIT_WINDOW);
   if (timestamps.length >= RATE_LIMIT_MAX) {
     return NextResponse.json(
@@ -72,6 +103,8 @@ export async function POST(req: Request) {
   }
   timestamps.push(now);
   recentScans.set(targetHost, timestamps);
+  ipTimestamps.push(now);
+  globalScans.set(clientIp, ipTimestamps);
 
   const scanId = crypto.randomUUID();
   startScan(scanId, parsed.href, callbackUrl, mode);

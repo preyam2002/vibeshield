@@ -412,7 +412,8 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     <button onClick={copyAsMarkdown} className="w-full text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">
                       {mdCopied ? "Copied!" : "Copy Markdown"}
                     </button>
-                    <a href={`/api/scan/${id}/report`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">HTML Report</a>
+                    <a href={`/api/scan/${id}/pdf`} target="_blank" rel="noopener" className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">PDF Report</a>
+                    <a href={`/api/scan/${id}/report`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">Markdown</a>
                     <a href={`/api/scan/${id}/export`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">JSON</a>
                     <a href={`/api/scan/${id}/sarif`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">SARIF</a>
                     <a href={`/api/scan/${id}/csv`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">CSV</a>
