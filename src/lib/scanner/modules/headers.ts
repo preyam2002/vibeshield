@@ -117,6 +117,7 @@ export const headersModule: ScanModule = async (target) => {
       evidence: `Server: ${serverHeader}`,
       remediation: "Remove or genericize the Server header to hide version information.",
       cwe: "CWE-200",
+      codeSnippet: `// nginx.conf\nserver_tokens off;\n\n// Express\napp.disable("x-powered-by");`,
     });
   }
 
@@ -131,6 +132,7 @@ export const headersModule: ScanModule = async (target) => {
       evidence: `X-Powered-By: ${poweredBy}`,
       remediation: "Remove the X-Powered-By header.",
       cwe: "CWE-200",
+      codeSnippet: `// next.config.ts\nexport default { poweredByHeader: false };\n\n// Express\napp.disable("x-powered-by");`,
     });
   }
 
