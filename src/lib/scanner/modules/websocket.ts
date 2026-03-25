@@ -278,5 +278,262 @@ export const websocketModule: ScanModule = async (target) => {
     });
   }
 
+  // Phase: WebSocket origin validation (CSWSH on HTTP endpoints)
+  // Tests if WS upgrade endpoints accept connections from arbitrary origins
+  if (wsMatches) {
+    const uniqueWsUrls = [...new Set(wsMatches)].slice(0, 3);
+    const originResults = await Promise.allSettled(
+      uniqueWsUrls.map(async (wsUrl) => {
+        const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://");
+        const [legitimateRes, foreignRes] = await Promise.all([
+          scanFetch(httpUrl, {
+            headers: {
+              Upgrade: "websocket",
+              Connection: "Upgrade",
+              "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+              "Sec-WebSocket-Version": "13",
+              Origin: new URL(target.baseUrl).origin,
+            },
+            timeoutMs: 5000,
+          }),
+          scanFetch(httpUrl, {
+            headers: {
+              Upgrade: "websocket",
+              Connection: "Upgrade",
+              "Sec-WebSocket-Key": "x3JJHMbDL1EzLkh9GBhXDw==",
+              "Sec-WebSocket-Version": "13",
+              Origin: "https://malicious-origin.example.com",
+            },
+            timeoutMs: 5000,
+          }),
+        ]);
+        return {
+          wsUrl,
+          legitimateStatus: legitimateRes.status,
+          foreignStatus: foreignRes.status,
+          foreignUpgrade: foreignRes.headers.get("upgrade"),
+          foreignAccessControl: foreignRes.headers.get("access-control-allow-origin"),
+        };
+      }),
+    );
+    for (const r of originResults) {
+      if (r.status !== "fulfilled") continue;
+      const v = r.value;
+      const foreignAccepted = v.foreignStatus === 101 || v.foreignUpgrade?.toLowerCase() === "websocket";
+      const wildcardCors = v.foreignAccessControl === "*";
+      if (foreignAccepted || wildcardCors) {
+        findings.push({
+          id: "websocket-origin-validation",
+          module: "WebSocket",
+          severity: "high",
+          title: "WebSocket endpoint lacks origin validation (CSWSH)",
+          description: `The endpoint ${v.wsUrl} does not validate the Origin header during the WebSocket handshake. A malicious page on any domain can open a WebSocket connection to this server using the victim's session cookies, enabling Cross-Site WebSocket Hijacking.`,
+          evidence: `Legitimate origin (${new URL(target.baseUrl).origin}) → ${v.legitimateStatus}\nForeign origin (https://malicious-origin.example.com) → ${v.foreignStatus}${wildcardCors ? "\nAccess-Control-Allow-Origin: *" : ""}`,
+          remediation: "Validate the Origin header server-side during the WebSocket upgrade handshake. Reject connections from untrusted origins with a 403 response.",
+          cwe: "CWE-346",
+          owasp: "A07:2021",
+          codeSnippet: `// Validate Origin during WebSocket upgrade\nconst ALLOWED = new Set(["https://yourdomain.com"]);\nserver.on("upgrade", (req, socket, head) => {\n  if (!ALLOWED.has(req.headers.origin ?? "")) {\n    socket.write("HTTP/1.1 403 Forbidden\\r\\n\\r\\n");\n    socket.destroy();\n    return;\n  }\n  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));\n});`,
+        });
+        break;
+      }
+    }
+  }
+
+  // Phase: Unencrypted WebSocket (ws://) deep check
+  // Beyond static detection, verify if the server actually responds on ws:// when wss:// is expected
+  if (wsMatches) {
+    const secureWsUrls = wsMatches.filter((u) => u.startsWith("wss://"));
+    const insecureVariants = secureWsUrls.slice(0, 3).map((u) => u.replace("wss://", "ws://"));
+    if (insecureVariants.length > 0) {
+      const insecureResults = await Promise.allSettled(
+        insecureVariants.map(async (wsUrl) => {
+          const httpUrl = wsUrl.replace(/^ws:\/\//, "http://");
+          const res = await scanFetch(httpUrl, {
+            headers: {
+              Upgrade: "websocket",
+              Connection: "Upgrade",
+              "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+              "Sec-WebSocket-Version": "13",
+            },
+            timeoutMs: 5000,
+          });
+          return { wsUrl, status: res.status, upgrade: res.headers.get("upgrade") };
+        }),
+      );
+      for (const r of insecureResults) {
+        if (r.status !== "fulfilled") continue;
+        const v = r.value;
+        if (v.status === 101 || v.upgrade?.toLowerCase() === "websocket") {
+          findings.push({
+            id: "websocket-insecure-transport-fallback",
+            module: "WebSocket",
+            severity: "high",
+            title: "WebSocket server accepts unencrypted ws:// connections",
+            description: `The server responds to unencrypted ws:// upgrade requests at ${v.wsUrl} even though the app uses wss://. An attacker performing a network downgrade attack (e.g. SSL stripping) can intercept all real-time traffic in plaintext.`,
+            evidence: `ws:// upgrade to ${v.wsUrl} → ${v.status} (accepted)\nUpgrade header: ${v.upgrade}`,
+            remediation: "Disable ws:// listeners in production. Redirect all HTTP traffic to HTTPS and ensure WebSocket endpoints only listen on TLS-enabled ports.",
+            cwe: "CWE-319",
+            owasp: "A02:2021",
+            codeSnippet: `// Only bind WebSocket to HTTPS server\nimport { createServer } from "https";\nconst server = createServer({ cert, key }, app);\nconst wss = new WebSocketServer({ server }); // only wss://\n// Do NOT create a separate http server for WebSocket`,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  // Phase: WebSocket message injection — test message format validation
+  // Sends malformed payloads to WS HTTP endpoints to check for lack of input validation
+  if (wsMatches) {
+    const wsUrls = [...new Set(wsMatches)].slice(0, 2);
+    const malformedPayloads = [
+      { label: "broken JSON", body: '{invalid json "unclosed' },
+      { label: "oversized type field", body: JSON.stringify({ type: "A".repeat(10000) }) },
+      { label: "prototype pollution attempt", body: JSON.stringify({ __proto__: { admin: true }, constructor: { prototype: { admin: true } } }) },
+      { label: "script injection in message", body: JSON.stringify({ message: '<img src=x onerror="alert(1)">', type: "chat" }) },
+    ];
+    const injectionResults = await Promise.allSettled(
+      wsUrls.flatMap((wsUrl) => {
+        const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://");
+        return malformedPayloads.map(async ({ label, body }) => {
+          const res = await scanFetch(httpUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+            timeoutMs: 5000,
+          });
+          const text = await res.text().catch(() => "");
+          return { wsUrl, label, status: res.status, bodySnippet: text.slice(0, 200) };
+        });
+      }),
+    );
+    const accepted: string[] = [];
+    for (const r of injectionResults) {
+      if (r.status !== "fulfilled") continue;
+      const v = r.value;
+      // 2xx responses to malformed data suggest missing validation
+      if (v.status >= 200 && v.status < 300) {
+        accepted.push(`${v.label} → ${v.status}`);
+      }
+    }
+    if (accepted.length > 0) {
+      findings.push({
+        id: "websocket-message-injection",
+        module: "WebSocket",
+        severity: "medium",
+        title: "WebSocket endpoint accepts malformed/malicious payloads",
+        description: "The WebSocket HTTP endpoint accepted payloads that should have been rejected, including broken JSON, oversized fields, prototype pollution attempts, or script injection. This suggests missing server-side message validation.",
+        evidence: `Accepted payloads:\n${accepted.map((a) => `  ${a}`).join("\n")}`,
+        remediation: "Validate all incoming WebSocket messages against a strict schema. Reject malformed JSON, enforce max field lengths, and sanitize user-supplied strings before processing or broadcasting.",
+        cwe: "CWE-20",
+        owasp: "A03:2021",
+        confidence: 55,
+        codeSnippet: `// Validate WebSocket messages with a schema\nimport { z } from "zod";\nconst MessageSchema = z.object({\n  type: z.enum(["chat", "ping", "subscribe"]),\n  payload: z.string().max(1000),\n});\nws.on("message", (raw) => {\n  let data;\n  try { data = MessageSchema.parse(JSON.parse(raw.toString())); }\n  catch { ws.send(JSON.stringify({ error: "Invalid message format" })); return; }\n  handleMessage(data);\n});`,
+      });
+    }
+  }
+
+  // Phase: WebSocket rate limiting — check if rapid connection attempts are throttled
+  if (wsMatches) {
+    const wsUrl = [...new Set(wsMatches)][0];
+    const httpUrl = wsUrl.replace(/^ws(s?):\/\//, "http$1://");
+    const rapidRequests = Array.from({ length: 15 }, () =>
+      scanFetch(httpUrl, {
+        headers: {
+          Upgrade: "websocket",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "Sec-WebSocket-Version": "13",
+        },
+        timeoutMs: 5000,
+      }).then((res) => res.status),
+    );
+    const rateResults = await Promise.allSettled(rapidRequests);
+    const statuses = rateResults
+      .filter((r): r is PromiseFulfilledResult<number> => r.status === "fulfilled")
+      .map((r) => r.value);
+    const hasRateLimit = statuses.some((s) => s === 429 || s === 503);
+    const allAccepted = statuses.length >= 10 && statuses.every((s) => s < 400 || s === 426);
+    if (!hasRateLimit && allAccepted) {
+      findings.push({
+        id: "websocket-no-rate-limit",
+        module: "WebSocket",
+        severity: "medium",
+        title: "WebSocket endpoint has no connection rate limiting",
+        description: `Sent ${statuses.length} rapid WebSocket upgrade requests to ${wsUrl} — all were accepted without throttling. An attacker can exhaust server resources by opening many concurrent connections (WebSocket DoS).`,
+        evidence: `${statuses.length} rapid requests → all returned ${[...new Set(statuses)].join("/")} (no 429 or 503)`,
+        remediation: "Implement rate limiting on WebSocket upgrade requests. Limit connections per IP and enforce a maximum connection count per user.",
+        cwe: "CWE-770",
+        owasp: "A05:2021",
+        confidence: 60,
+        codeSnippet: `// Rate-limit WebSocket connections with express-rate-limit\nimport rateLimit from "express-rate-limit";\nconst wsLimiter = rateLimit({\n  windowMs: 60_000,\n  max: 10, // 10 connections per minute per IP\n  message: "Too many connection attempts",\n});\napp.use("/ws", wsLimiter);\n\n// Also limit in WebSocket server\nconst connPerIp = new Map<string, number>();\nwss.on("connection", (ws, req) => {\n  const ip = req.socket.remoteAddress!;\n  const count = (connPerIp.get(ip) ?? 0) + 1;\n  if (count > 20) { ws.close(1008, "Too many connections"); return; }\n  connPerIp.set(ip, count);\n  ws.on("close", () => connPerIp.set(ip, (connPerIp.get(ip) ?? 1) - 1));\n});`,
+      });
+    }
+  }
+
+  // Phase: Socket.IO / Engine.IO detection — transport polling and version disclosure
+  const socketIoPaths = [
+    "/socket.io/?EIO=4&transport=polling",
+    "/socket.io/?EIO=3&transport=polling",
+    "/engine.io/?EIO=4&transport=polling",
+    "/engine.io/?EIO=3&transport=polling",
+    "/socket.io/socket.io.js",
+    "/socket.io/socket.io.min.js",
+  ];
+  const sioResults = await Promise.allSettled(
+    socketIoPaths.map(async (path) => {
+      const res = await scanFetch(target.baseUrl + path, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text().catch(() => "");
+      return { path, status: res.status, body: text.slice(0, 500) };
+    }),
+  );
+  const sioFindings: { path: string; status: number; body: string }[] = [];
+  for (const r of sioResults) {
+    if (r.status === "fulfilled" && r.value) sioFindings.push(r.value);
+  }
+  if (sioFindings.length > 0) {
+    const versionMatches: string[] = [];
+    for (const f of sioFindings) {
+      const vMatch = f.body.match(/socket\.io[\/@ v]*(\d+\.\d+\.\d+)/i);
+      if (vMatch) versionMatches.push(vMatch[1]);
+      const eioMatch = f.path.match(/EIO=(\d)/);
+      if (eioMatch) versionMatches.push(`Engine.IO v${eioMatch[1]}`);
+    }
+    const pollingPaths = sioFindings.filter((f) => f.path.includes("transport=polling"));
+    const jsPaths = sioFindings.filter((f) => f.path.includes(".js"));
+
+    if (pollingPaths.length > 0) {
+      findings.push({
+        id: "websocket-socketio-polling-exposed",
+        module: "WebSocket",
+        severity: "medium",
+        title: "Socket.IO/Engine.IO polling transport exposed",
+        description: "The Socket.IO long-polling transport endpoint is publicly accessible. This HTTP-based fallback can be abused for session hijacking, connection enumeration, and bypasses WebSocket-specific protections. Polling endpoints often lack the same security controls as WebSocket upgrades.",
+        evidence: `Accessible polling endpoints:\n${pollingPaths.map((p) => `  GET ${target.baseUrl}${p.path} → ${p.status}`).join("\n")}${versionMatches.length > 0 ? `\nVersions detected: ${[...new Set(versionMatches)].join(", ")}` : ""}`,
+        remediation: "Disable the polling transport if not needed (transports: ['websocket']). If polling is required, apply the same authentication and rate limiting as the WebSocket transport.",
+        cwe: "CWE-200",
+        owasp: "A05:2021",
+        codeSnippet: `// Disable polling transport if only WebSocket is needed\nconst io = new Server(httpServer, {\n  transports: ["websocket"], // disable polling fallback\n  allowUpgrades: false,\n});\n\n// If polling is needed, add auth to all transports\nio.use((socket, next) => {\n  const token = socket.handshake.auth.token;\n  if (!verifyToken(token)) return next(new Error("Unauthorized"));\n  next();\n});`,
+      });
+    }
+
+    if (jsPaths.length > 0) {
+      const disclosedVersions = [...new Set(versionMatches)];
+      if (disclosedVersions.length > 0) {
+        findings.push({
+          id: "websocket-socketio-version-disclosure",
+          module: "WebSocket",
+          severity: "low",
+          title: `Socket.IO version disclosed: ${disclosedVersions.join(", ")}`,
+          description: "The Socket.IO client library is served publicly, revealing its version number. Known vulnerabilities in older Socket.IO versions (e.g., < 4.6.2 DoS, < 2.4.0 XSS) can be targeted by attackers who know the exact version.",
+          evidence: `Client JS paths:\n${jsPaths.map((p) => `  ${target.baseUrl}${p.path} → ${p.status}`).join("\n")}\nVersions: ${disclosedVersions.join(", ")}`,
+          remediation: "Keep Socket.IO updated to the latest version. Consider bundling the client library instead of serving it from the Socket.IO default endpoint to reduce information disclosure.",
+          cwe: "CWE-200",
+        });
+      }
+    }
+  }
+
   return findings;
 };
