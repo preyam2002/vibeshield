@@ -53,6 +53,23 @@ export const connectionExhaustionModule: ScanModule = async (target) => {
       description: `${connectionErrors} out of ${N} sustained connections were refused. This suggests the server has limited connection capacity and can be overwhelmed by relatively low traffic.`,
       evidence: `Total connections attempted: ${N}\nConnection failures: ${connectionErrors}\nSuccessful: ${successes}\nAvg response time (successful): ${avgTime}ms`,
       remediation: "Increase server connection limits. For serverless: increase concurrency limits. For traditional servers: tune connection pool sizes and worker processes. Add Cloudflare or similar for connection management.",
+      codeSnippet: `// Tune connection handling and keep-alive
+import { createServer } from "node:http";
+
+const server = createServer(app);
+server.keepAliveTimeout = 65000;  // > ALB's 60s idle timeout
+server.headersTimeout = 66000;
+server.maxConnections = 1024;
+
+// For serverless (vercel.json):
+// { "functions": { "api/**": { "maxDuration": 10, "memory": 1024 } } }
+
+// Connection pool for DB
+const pool = new Pool({
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});`,
       cwe: "CWE-400",
     });
   }
@@ -67,6 +84,20 @@ export const connectionExhaustionModule: ScanModule = async (target) => {
       description: `Under ${N} sustained connections, max response time reached ${(maxTime / 1000).toFixed(1)}s (avg: ${(avgTime / 1000).toFixed(1)}s). The server is struggling to process requests under load.`,
       evidence: `Avg response: ${avgTime}ms\nMax response: ${maxTime}ms\nSuccessful: ${successes}/${N}`,
       remediation: "Profile server performance under load. Check for: blocking I/O, unoptimized database queries, missing caching, or insufficient compute resources.",
+      codeSnippet: `// Add request timeout + keep-alive tuning
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
+// Limit concurrent connections per IP
+const connLimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(50, "10 s"),
+});
+
+// Abort slow requests to free connections
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 10_000);
+const data = await fetch(upstreamUrl, { signal: controller.signal });`,
       cwe: "CWE-400",
     });
   }

@@ -85,6 +85,17 @@ export const costAttackModule: ScanModule = async (target) => {
         description: `Without rate limiting, an attacker hitting ${new URL(est.endpoint).pathname} at ${est.requestRate} req/sec could cost you:\n• ~$${est.costPerHour.toFixed(0)}/hour\n• ~$${est.costPerDay.toFixed(0)}/day\nThis is a "wallet drain" attack — the attacker doesn't need to take your app down, just run up your bill.`,
         evidence: `Service: ${est.service}\nEndpoint: ${est.endpoint}\nEst. cost per request: $${est.costPerRequest.toFixed(6)}\nAt ${est.requestRate} req/sec: $${est.costPerHour.toFixed(2)}/hour`,
         remediation: `1. Add rate limiting to ${new URL(est.endpoint).pathname}\n2. Set billing alerts and hard spending caps on ${est.service}\n3. Add API key rotation capability for emergency shutoff\n4. Consider Cloudflare or similar DDoS protection`,
+        codeSnippet: `// Set a monthly usage cap and alert threshold
+let monthlyUsage = await redis.get("api:usage:monthly");
+const MONTHLY_CAP = 500; // $500 max spend
+
+if (monthlyUsage >= MONTHLY_CAP) {
+  await sendAlert("API budget exhausted — blocking requests");
+  return new Response("Service temporarily unavailable", { status: 503 });
+}
+if (monthlyUsage >= MONTHLY_CAP * 0.8) {
+  await sendAlert(\`API spend at \${monthlyUsage}/\${MONTHLY_CAP}\`);
+}`,
         cwe: "CWE-400",
       });
     }
@@ -103,6 +114,18 @@ export const costAttackModule: ScanModule = async (target) => {
         title: "Serverless deployment with no apparent rate limiting",
         description: "Your app runs on serverless infrastructure with usage-based billing and shows no rate limiting headers. An attacker could intentionally run up your hosting bill by generating high traffic.",
         remediation: "1. Add rate limiting (Upstash, Vercel KV, or middleware-based)\n2. Set spending limits in your hosting dashboard\n3. Configure DDoS protection (Cloudflare free tier works)",
+        codeSnippet: `// vercel.json — set spending and concurrency limits
+{
+  "functions": {
+    "api/**": { "maxDuration": 10 }
+  },
+  "crons": [{
+    "path": "/api/check-billing",
+    "schedule": "0 * * * *"
+  }]
+}
+
+// Also set a Spend Limit in Vercel Dashboard → Settings → Billing`,
         cwe: "CWE-400",
       });
     }

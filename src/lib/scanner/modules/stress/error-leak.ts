@@ -63,6 +63,24 @@ export const errorLeakModule: ScanModule = async (target) => {
               description: "When the server is under stress, error responses contain internal details like stack traces or connection errors. These reveal your infrastructure.",
               evidence: `Endpoint: ${endpoint}\nStatus: ${status}\nMatched: ${pattern.source}\nExcerpt: ${body.substring(0, 400)}`,
               remediation: "Implement a global error handler that catches all errors and returns generic 500 responses in production. Log details server-side only.",
+              codeSnippet: `// app/api/[...route]/route.ts — wrap handlers with error boundary
+function withErrorHandler(handler: Function) {
+  return async (req: Request) => {
+    try {
+      return await handler(req);
+    } catch (err) {
+      console.error("Internal error:", err); // log server-side only
+      return Response.json(
+        { error: "Internal server error" },
+        { status: 500 }
+      );
+    }
+  };
+}
+
+export const POST = withErrorHandler(async (req: Request) => {
+  // your handler logic
+});`,
               cwe: "CWE-209",
             });
             break;
@@ -81,6 +99,15 @@ export const errorLeakModule: ScanModule = async (target) => {
               description: `Under stress, the server leaked a ${type.toLowerCase()} in its error response. This only appears when the server is overloaded, making it hard to catch in testing.`,
               evidence: `Found: ${match[0].substring(0, 100)}...\nStatus: ${status}`,
               remediation: "Add a global error handler that sanitizes all error responses. Never include connection strings or file paths in responses.",
+              codeSnippet: `// Sanitize all error output — strip connection strings and paths
+function sanitizeError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg
+    .replace(/(postgres|mongodb|redis):\\/\\/[^\\s"']+/gi, "[REDACTED_URI]")
+    .replace(/\\/home\\/\\w+\\//g, "[REDACTED_PATH]/")
+    .replace(/\\/var\\/www\\//g, "[REDACTED_PATH]/")
+    .replace(/process\\.env\\.\\w+/g, "[REDACTED_ENV]");
+}`,
               cwe: "CWE-209",
               owasp: "A05:2021",
             });
@@ -120,6 +147,20 @@ export const errorLeakModule: ScanModule = async (target) => {
                   description: `Sending malformed data triggered a verbose error containing ${type.toLowerCase()}.`,
                   evidence: `Payload type: ${payload.length > 1000 ? "large payload" : "malformed data"}\nStatus: ${res.status}`,
                   remediation: "Validate input size and format. Return generic errors for malformed requests.",
+                  codeSnippet: `// Validate request body size and shape early
+export async function POST(req: Request) {
+  const contentLength = Number(req.headers.get("content-length") || 0);
+  if (contentLength > 1_000_000) {
+    return Response.json({ error: "Payload too large" }, { status: 413 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+}`,
                   cwe: "CWE-209",
                 });
                 break;

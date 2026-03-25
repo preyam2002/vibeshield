@@ -61,7 +61,24 @@ export const apiVersioningModule: ScanModule = async (target) => {
           const text = await res.text();
           if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
           if (text.length < 10) return null;
-          return { basePath, version: `v${v}`, knownVersions: versions, text: text.substring(0, 200) };
+
+          // Auth comparison: check if the older version responds without auth
+          // while the current version rejects unauthenticated requests
+          let weakerAuth = false;
+          const currentPath = basePath.replace("VERSION", `v${highestVer}`);
+          const currentUrl = target.baseUrl + currentPath;
+          try {
+            const [noAuthOld, noAuthCurrent] = await Promise.all([
+              scanFetch(testUrl, { timeoutMs: 5000, headers: {} }),
+              scanFetch(currentUrl, { timeoutMs: 5000, headers: {} }),
+            ]);
+            // Old version returns 200 without auth, but current version returns 401/403
+            if (noAuthOld.ok && (noAuthCurrent.status === 401 || noAuthCurrent.status === 403)) {
+              weakerAuth = true;
+            }
+          } catch { /* skip auth comparison */ }
+
+          return { basePath, version: `v${v}`, knownVersions: versions, text: text.substring(0, 200), weakerAuth };
         });
     }),
   );
@@ -78,6 +95,18 @@ export const apiVersioningModule: ScanModule = async (target) => {
         pathname.replace("/api/", "/./api/"),
         pathname + "/",
         pathname + "/..",
+        // URL-encoded dot segments
+        pathname.replace("/api/", "/%2e/api/"),
+        pathname.replace("/api/", "/%2e%2e/api/"),
+        // Double-encoded dot segments
+        pathname.replace("/api/", "/%252e/api/"),
+        pathname.replace("/api/", "/%252e%252e/api/"),
+        // Backslash variants (IIS / reverse-proxy confusion)
+        pathname.replace("/api/", "/api\\/"),
+        pathname.replace("/api/", "\\api/"),
+        // Semicolon path parameter tricks (Tomcat / Spring)
+        pathname.replace("/api/", "/api;/"),
+        pathname + ";.json",
       ];
       return bypasses.map(async (bypassPath) => {
         const testUrl = target.baseUrl + bypassPath;
@@ -113,6 +142,7 @@ export const apiVersioningModule: ScanModule = async (target) => {
       evidence: `Original: GET ${v.original}\nHidden: GET ${v.versioned} (version ${v.ver}) returns different response`,
       remediation: "Explicitly disable or redirect old API versions. Ensure all versions have the same security controls. Return 404 for unsupported versions.",
       cwe: "CWE-284", owasp: "A01:2021",
+      codeSnippet: `// Disable old versions in your router\napp.all('/api/${v.ver}/*', (req, res) => res.status(404).json({ error: 'Version not supported' }));`,
     });
     if (findings.length >= 2) break;
   }
@@ -120,13 +150,20 @@ export const apiVersioningModule: ScanModule = async (target) => {
   for (const r of olderVersionResults) {
     if (r.status !== "fulfilled" || !r.value) continue;
     const v = r.value;
+    const severity = v.weakerAuth ? "critical" as const : "high" as const;
+    const authNote = v.weakerAuth
+      ? `\nAUTH BYPASS: ${v.version} responds without authentication while the current version requires it.`
+      : "";
     findings.push({
-      id: `api-ver-old-${findings.length}`, module: "API Versioning", severity: "high",
-      title: `Accessible older API version: ${v.version} (known: ${v.knownVersions.join(", ")})`,
-      description: `An older API version (${v.version}) is still accessible alongside current versions (${v.knownVersions.join(", ")}). Older versions often lack security patches and may expose deprecated functionality.`,
+      id: `api-ver-old-${findings.length}`, module: "API Versioning", severity,
+      title: `Accessible older API version: ${v.version}${v.weakerAuth ? " (weaker auth)" : ""} (known: ${v.knownVersions.join(", ")})`,
+      description: `An older API version (${v.version}) is still accessible alongside current versions (${v.knownVersions.join(", ")}). Older versions often lack security patches and may expose deprecated functionality.${authNote}`,
       evidence: `GET ${v.basePath.replace("VERSION", v.version)}\nResponse: ${v.text}`,
-      remediation: "Decommission old API versions. If backward compatibility is needed, apply the same security controls to all versions.",
-      cwe: "CWE-284", owasp: "A01:2021",
+      remediation: v.weakerAuth
+        ? "URGENT: The older API version allows unauthenticated access. Decommission it immediately or apply the same auth middleware as the current version."
+        : "Decommission old API versions. If backward compatibility is needed, apply the same security controls to all versions.",
+      cwe: v.weakerAuth ? "CWE-306" : "CWE-284", owasp: "A01:2021",
+      codeSnippet: `// Apply auth middleware to all API versions\napp.use('/api/v:version/*', authMiddleware);\n// Or block old versions entirely\napp.all('/api/${v.version}/*', (req, res) => res.status(410).json({ error: 'Version deprecated' }));`,
     });
     break;
   }
@@ -142,8 +179,9 @@ export const apiVersioningModule: ScanModule = async (target) => {
       title: `Path normalization bypass on ${v.original}`,
       description: `The endpoint responds to a path variation (${v.bypass}) with similar content. If auth middleware only checks exact paths, this could bypass access controls.`,
       evidence: `Original: ${v.original}\nBypass: ${v.bypass}\nBoth return similar responses`,
-      remediation: "Normalize request paths before routing and auth checks. Use framework middleware that handles path normalization. Test with double slashes, dot segments, and case variations.",
+      remediation: "Normalize request paths before routing and auth checks. Use framework middleware that handles path normalization. Test with double slashes, dot segments, URL-encoded dots, backslashes, and semicolons.",
       cwe: "CWE-706", owasp: "A01:2021",
+      codeSnippet: `// Normalize paths before auth checks\napp.use((req, res, next) => {\n  req.url = decodeURIComponent(req.url)\n    .replace(/\\\\/g, '/')\n    .replace(/\\/+/g, '/')\n    .replace(/;[^/]*/g, '')\n    .replace(/\\/(\\.|%2e){1,2}\\//gi, '/');\n  next();\n});`,
     });
     if (bypassPaths.size >= 2) break;
   }

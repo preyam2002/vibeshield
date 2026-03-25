@@ -42,7 +42,8 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
       return NextResponse.json({ error: "Scan not found" }, { status: 404 });
     }
 
-    const hostname = new URL(scan.target).hostname;
+    let hostname = "unknown";
+    try { hostname = new URL(scan.target).hostname; } catch { /* skip */ }
     const s = scan.summary;
     const duration = scan.completedAt
       ? Math.round((new Date(scan.completedAt).getTime() - new Date(scan.startedAt).getTime()) / 1000)
@@ -194,6 +195,7 @@ ${scan.comparison ? `
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Disposition": `inline; filename="vibeshield-${hostname}-report.html"`,
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
       },
     });
   });

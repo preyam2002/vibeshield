@@ -33,10 +33,13 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
       })),
     };
 
+    let hostname = "unknown";
+    try { hostname = new URL(scan.target).hostname; } catch { /* skip */ }
+
     return new NextResponse(JSON.stringify(report, null, 2), {
       headers: {
         "Content-Type": "application/json",
-        "Content-Disposition": `attachment; filename="vibeshield-${new URL(scan.target).hostname}-${scan.grade}.json"`,
+        "Content-Disposition": `attachment; filename="vibeshield-${hostname}-${scan.grade}.json"`,
       },
     });
   });

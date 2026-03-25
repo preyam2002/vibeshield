@@ -43,6 +43,24 @@ export const raceConditionModule: ScanModule = async (target) => {
         description: `Sent ${N} simultaneous POST requests to a state-changing endpoint. ${successes.length} succeeded. If this endpoint handles one-time actions (coupons, transfers, claims), the action may execute multiple times.`,
         evidence: `Endpoint: ${endpoint}\nSimultaneous requests: ${N}\nSuccessful: ${successes.length}`,
         remediation: "Implement idempotency keys or database-level locks (SELECT ... FOR UPDATE) for state-changing operations. Use unique constraints to prevent double-execution.",
+        codeSnippet: `// Use a DB transaction with row-level locking
+const result = await prisma.$transaction(async (tx) => {
+  const coupon = await tx.coupon.findUnique({
+    where: { code: "SAVE20" },
+    select: { id: true, usedAt: true },
+  });
+  if (coupon?.usedAt) throw new Error("Coupon already redeemed");
+
+  return tx.coupon.update({
+    where: { id: coupon.id, usedAt: null }, // optimistic lock
+    data: { usedAt: new Date(), usedBy: userId },
+  });
+});
+
+// Or use an idempotency key
+const idempotencyKey = req.headers["idempotency-key"];
+const existing = await redis.get(\`idempotency:\${idempotencyKey}\`);
+if (existing) return JSON.parse(existing);`,
         cwe: "CWE-362",
         owasp: "A04:2021",
       });
@@ -63,6 +81,15 @@ export const raceConditionModule: ScanModule = async (target) => {
         description: `${uniqueBodies.size} different response bodies from ${bodies.length} concurrent identical requests. This may indicate race conditions in data reads.`,
         evidence: `Concurrent requests: ${N}\nUnique responses: ${uniqueBodies.size}`,
         remediation: "Review transaction isolation levels. Ensure reads within a request are consistent.",
+        codeSnippet: `// Use serializable isolation for consistent reads
+const data = await prisma.$transaction(
+  async (tx) => {
+    const balance = await tx.account.findUnique({ where: { id: userId } });
+    const orders = await tx.order.findMany({ where: { userId } });
+    return { balance, orders };
+  },
+  { isolationLevel: "Serializable" }
+);`,
         cwe: "CWE-362",
       });
     }

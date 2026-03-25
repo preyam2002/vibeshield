@@ -94,6 +94,18 @@ export const rateLimitModule: ScanModule = async (target) => {
           : category === "AI/expensive"
             ? "CRITICAL: Add rate limiting immediately. Without it, attackers can drain your AI API budget. Max 10-20 requests per minute per user."
             : "Add rate limiting. 100 requests per minute per IP is a reasonable starting point.",
+        codeSnippet: `import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(${category === "authentication" ? "5" : category === "AI/expensive" ? "10" : "100"}, "${category === "authentication" ? "1 m" : "1 m"}"),
+  analytics: true,
+});
+
+// In your API route handler:
+const { success } = await ratelimit.limit(ip);
+if (!success) return new Response("Too Many Requests", { status: 429 });`,
         cwe: "CWE-307",
         owasp: "A07:2021",
       });
@@ -109,6 +121,15 @@ export const rateLimitModule: ScanModule = async (target) => {
         remediation: limitAt > 100
           ? "Rate limit is set very high. Consider lowering for auth endpoints (5-10/min)."
           : "Rate limiting is in place.",
+        codeSnippet: `// Fine-tune limits per endpoint type:
+const authLimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(5, "1 m"),
+});
+const apiLimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(30, "1 m"),
+});`,
       });
     }
   }

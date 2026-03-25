@@ -509,34 +509,43 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     )}
                   </div>
                   {scan.comparison && (
-                    <div className="mt-1 space-y-1">
-                      <div className="text-xs text-zinc-500 flex items-center gap-2">
-                        vs previous scan:
-                        <span className={scan.comparison.delta.score > 0 ? "text-green-400" : scan.comparison.delta.score < 0 ? "text-red-400" : "text-zinc-400"}>
-                          {scan.comparison.delta.score > 0 ? "+" : ""}{scan.comparison.delta.score} score
-                        </span>
-                        <span className={scan.comparison.delta.findings < 0 ? "text-green-400" : scan.comparison.delta.findings > 0 ? "text-red-400" : "text-zinc-400"}>
+                    <div className="mt-2 bg-zinc-900/40 border border-zinc-800/40 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">vs previous scan</div>
+                        <a href={`/scan/${scan.comparison.previousId}`} className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors">
+                          View previous →
+                        </a>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className={`text-sm font-bold ${scan.comparison.delta.score > 0 ? "text-green-400" : scan.comparison.delta.score < 0 ? "text-red-400" : "text-zinc-400"}`}>
+                          {scan.comparison.delta.score > 0 ? "↑" : scan.comparison.delta.score < 0 ? "↓" : "="}{" "}
+                          {Math.abs(scan.comparison.delta.score)} pts
+                        </div>
+                        <div className="text-[10px] text-zinc-600">
+                          {scan.comparison.previousGrade} → {scan.grade}
+                        </div>
+                        <div className={`text-xs ${scan.comparison.delta.findings < 0 ? "text-green-400" : scan.comparison.delta.findings > 0 ? "text-red-400" : "text-zinc-500"}`}>
                           {scan.comparison.delta.findings > 0 ? "+" : ""}{scan.comparison.delta.findings} findings
-                        </span>
+                        </div>
                         {scan.comparison.delta.critical !== 0 && (
-                          <span className={scan.comparison.delta.critical < 0 ? "text-green-400" : "text-red-400"}>
+                          <div className={`text-xs ${scan.comparison.delta.critical < 0 ? "text-green-400" : "text-red-400"}`}>
                             {scan.comparison.delta.critical > 0 ? "+" : ""}{scan.comparison.delta.critical} critical
-                          </span>
+                          </div>
                         )}
                       </div>
                       {(scan.comparison.fixedFindings?.length ?? 0) > 0 && (
-                        <div className="text-xs text-green-400/80 flex items-center gap-1.5">
-                          <span>Fixed:</span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-green-500/70 font-medium">FIXED</span>
                           {scan.comparison.fixedFindings!.map((f, i) => (
-                            <span key={i} className="bg-green-500/10 border border-green-500/20 rounded px-1.5 py-0.5">{f.title.length > 40 ? f.title.slice(0, 40) + "…" : f.title}</span>
+                            <span key={i} className="text-[10px] text-green-400/80 bg-green-500/10 border border-green-500/20 rounded px-1.5 py-0.5">{f.title.length > 35 ? f.title.slice(0, 35) + "…" : f.title}</span>
                           ))}
                         </div>
                       )}
                       {(scan.comparison.newFindings?.length ?? 0) > 0 && (
-                        <div className="text-xs text-red-400/80 flex items-center gap-1.5">
-                          <span>New:</span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-red-500/70 font-medium">NEW</span>
                           {scan.comparison.newFindings!.map((f, i) => (
-                            <span key={i} className="bg-red-500/10 border border-red-500/20 rounded px-1.5 py-0.5">{f.title.length > 40 ? f.title.slice(0, 40) + "…" : f.title}</span>
+                            <span key={i} className="text-[10px] text-red-400/80 bg-red-500/10 border border-red-500/20 rounded px-1.5 py-0.5">{f.title.length > 35 ? f.title.slice(0, 35) + "…" : f.title}</span>
                           ))}
                         </div>
                       )}

@@ -8,6 +8,10 @@ const ID_PATH_PATTERNS = [
   /\/\w+\/(\d+)$/,
   /\/api\/\w+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
   /\/api\/v\d\/\w+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  // Composite: /api/org/123/user/456
+  /\/api\/\w+\/\d+\/\w+\/(\d+)$/,
+  // Short hash IDs: /api/user/abc123
+  /\/api\/\w+\/([a-zA-Z0-9]{6,24})$/,
 ];
 
 // Endpoints that naturally serve public content by ID — not IDOR
@@ -28,7 +32,7 @@ export const idorModule: ScanModule = async (target) => {
   const idEndpoints: { base: string; currentId: number }[] = [];
   const seenBases = new Set<string>();
 
-  const stripId = (url: string) => url.replace(/\/(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i, "");
+  const stripId = (url: string) => url.replace(/\/(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-zA-Z0-9]{6,24})$/i, "");
 
   for (const endpoint of target.apiEndpoints) {
     for (const pattern of ID_PATH_PATTERNS) {
@@ -107,7 +111,8 @@ export const idorModule: ScanModule = async (target) => {
     Promise.allSettled(
       target.apiEndpoints.slice(0, 10).map(async (endpoint) => {
         const url = new URL(endpoint);
-        const paramName = url.searchParams.has("id") ? "id" : url.searchParams.has("user_id") ? "user_id" : url.searchParams.has("userId") ? "userId" : null;
+        const ID_PARAM_NAMES = ["id", "user_id", "userId", "uid", "account_id", "accountId", "profile_id", "profileId", "org_id", "orgId", "team_id", "teamId", "order_id", "orderId"];
+        const paramName = ID_PARAM_NAMES.find((p) => url.searchParams.has(p)) || null;
         if (!paramName) return null;
         const originalId = url.searchParams.get(paramName);
         const testIds = ["1", "2", "999"].filter((id) => id !== originalId);

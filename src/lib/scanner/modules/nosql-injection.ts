@@ -16,6 +16,8 @@ const NOSQL_JSON_PAYLOADS = [
   { body: { "$ne": null }, desc: "$ne null in JSON" },
   { body: { "$regex": ".*" }, desc: "$regex wildcard in JSON" },
   { body: { "$where": "1==1" }, desc: "$where always-true" },
+  { body: { "$in": [null, "", 0] }, desc: "$in array injection" },
+  { body: { "$or": [{ "a": 1 }, { "b": 1 }] }, desc: "$or condition injection" },
 ];
 
 const NOSQL_AUTH_BYPASS = [
@@ -239,6 +241,7 @@ export const nosqlInjectionModule: ScanModule = async (target) => {
         evidence: `Endpoint: ${v.endpoint}\nPayload: ${JSON.stringify(v.payload)}\nResponse contains authentication token`,
         remediation: "Validate that email/username/password fields are strings before querying. Use bcrypt/argon2 for password comparison — never query the database with user-supplied password objects.",
         cwe: "CWE-943", owasp: "A07:2021",
+        codeSnippet: `// Validate credential types before querying\nimport { z } from "zod";\nconst LoginSchema = z.object({\n  email: z.string().email(),\n  password: z.string().min(8),\n});\nconst { email, password } = LoginSchema.parse(await req.json());\n// Then use bcrypt.compare(password, user.passwordHash)`,
       });
     }
   }

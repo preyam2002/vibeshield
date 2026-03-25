@@ -261,6 +261,17 @@ export default function ScansPage() {
                       )}
                       <span className="text-zinc-700">·</span>
                       <span className="text-zinc-700">{timeAgo(s.completedAt || s.startedAt)}</span>
+                      {!isRunning && s.completedAt && s.startedAt && (() => {
+                        const dur = new Date(s.completedAt).getTime() - new Date(s.startedAt).getTime();
+                        if (dur <= 0) return null;
+                        const secs = Math.round(dur / 1000);
+                        return (
+                          <>
+                            <span className="text-zinc-700">·</span>
+                            <span className="text-zinc-700">{secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}</span>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                   <div className="hidden sm:flex gap-1.5 shrink-0">

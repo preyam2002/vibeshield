@@ -203,6 +203,7 @@ export const authModule: ScanModule = async (target) => {
       remediation: "Protect admin routes with authentication and authorization checks. Consider IP allowlisting.",
       cwe: "CWE-306",
       owasp: "A07:2021",
+      codeSnippet: `// middleware.ts — protect admin routes\nif (req.nextUrl.pathname.startsWith("/admin")) {\n  const session = await getToken({ req });\n  if (!session || session.role !== "admin") {\n    return NextResponse.redirect(new URL("/login", req.url));\n  }\n}`,
     });
   }
 
@@ -235,14 +236,18 @@ export const authModule: ScanModule = async (target) => {
         remediation: "Validate tokens cryptographically. Use a JWT library that verifies signatures, or validate tokens against your auth provider.",
         cwe: "CWE-287",
         owasp: "A07:2021",
+        codeSnippet: `// Properly validate JWT tokens\nimport jwt from "jsonwebtoken";\ntry {\n  const decoded = jwt.verify(token, process.env.JWT_SECRET!, {\n    algorithms: ["HS256"],\n  });\n} catch (err) {\n  return Response.json({ error: "Invalid token" }, { status: 401 });\n}`,
       });
     }
   }
 
-  // Collect HTTP method findings
+  // Collect HTTP method findings (max 3)
+  let methodCount = 0;
   for (const r of methodResults) {
+    if (methodCount >= 3) break;
     if (r.status !== "fulfilled" || !r.value) continue;
     const { endpoint, method, status, text } = r.value;
+    methodCount++;
     findings.push({
       id: `auth-method-${method.toLowerCase()}-${findings.length}`,
       module: "Authentication",
@@ -253,6 +258,7 @@ export const authModule: ScanModule = async (target) => {
       remediation: `Add authentication checks for ${method} requests on this endpoint.`,
       cwe: "CWE-306",
       owasp: "A07:2021",
+      codeSnippet: `// Protect write methods with auth middleware\nexport async function ${method}(req: Request) {\n  const session = await getServerSession(authOptions);\n  if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  // ... handle ${method} request\n}`,
     });
   }
 

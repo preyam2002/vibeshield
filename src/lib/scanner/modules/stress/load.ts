@@ -75,6 +75,18 @@ export const loadModule: ScanModule = async (target) => {
         description: `${rateLimited}/${concurrency} requests received 429 (Too Many Requests). Rate limiting is properly protecting your app.`,
         evidence: `At ${concurrency} concurrent: ${rateLimited} rate-limited, ${successes} succeeded, ${serverErrors} server errors`,
         remediation: "Rate limiting is working as intended. Review limits if they seem too aggressive for legitimate traffic.",
+        codeSnippet: `// Connection pooling + caching for high-concurrency resilience
+import { Pool } from "pg";
+
+const pool = new Pool({
+  max: 20,                    // max connections
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+
+// Add an LRU cache for hot reads
+import { LRUCache } from "lru-cache";
+const cache = new LRUCache<string, unknown>({ max: 1000, ttl: 60_000 });`,
       });
       break;
     }
@@ -89,6 +101,16 @@ export const loadModule: ScanModule = async (target) => {
         description: `${wafBlocked} requests received 403/503 at just ${concurrency} concurrent requests. Your app appears to have WAF or bot protection (e.g., Cloudflare) which blocks automated scanning.`,
         evidence: `At ${concurrency} concurrent: ${wafBlocked} blocked (403/503), ${rateLimited} rate-limited, ${successes} succeeded`,
         remediation: "WAF protection is working as intended. Load test results may not reflect actual capacity.",
+        codeSnippet: `// WAF is active — ensure your origin is also protected
+// vercel.json or next.config.ts
+export default {
+  headers: [
+    { source: "/api/:path*", headers: [
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "X-Content-Type-Options", value: "nosniff" },
+    ]},
+  ],
+};`,
       });
       return findings; // WAF blocks everything — load test results are meaningless
     }
@@ -124,6 +146,19 @@ export const loadModule: ScanModule = async (target) => {
       remediation: breakPoint.concurrency <= 20
         ? "Your app can't handle basic traffic. Check for: single-threaded processing, missing connection pooling, unoptimized database queries, or insufficient serverless concurrency limits."
         : "Optimize hot paths, add caching, increase serverless concurrency limits, and consider a CDN.",
+      codeSnippet: `// Connection pool + serverless concurrency limits
+import { Pool, neonConfig } from "@neondatabase/serverless";
+neonConfig.poolQueryViaFetch = true;
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+
+// Cache expensive queries
+import { unstable_cache } from "next/cache";
+const getProducts = unstable_cache(
+  async () => pool.query("SELECT * FROM products WHERE active = true"),
+  ["products"],
+  { revalidate: 60 }
+);`,
       cwe: "CWE-400",
     });
   }
@@ -137,6 +172,17 @@ export const loadModule: ScanModule = async (target) => {
       description: `P95 response time exceeds 5 seconds at ${slowPoint.concurrency} concurrent requests. Users will abandon your app.`,
       evidence: summary,
       remediation: "Profile slow endpoints. Add caching, optimize queries, and consider rate limiting.",
+      codeSnippet: `// Add response caching for slow endpoints
+import { NextResponse } from "next/server";
+
+export async function GET() {
+  const data = await getExpensiveData();
+  return NextResponse.json(data, {
+    headers: {
+      "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+    },
+  });
+}`,
       cwe: "CWE-400",
     });
   }
@@ -150,6 +196,23 @@ export const loadModule: ScanModule = async (target) => {
       description: `Your app remained stable up to ${lastGood.concurrency} concurrent users with ${lastGood.avgResponseMs}ms average response time.`,
       evidence: summary,
       remediation: "Good baseline! Consider running extended load tests for sustained traffic patterns.",
+      codeSnippet: `// k6 load test for sustained traffic patterns
+// save as load-test.js, run: k6 run load-test.js
+import http from "k6/http";
+import { check } from "k6";
+
+export const options = {
+  stages: [
+    { duration: "2m", target: 100 },
+    { duration: "5m", target: 100 },
+    { duration: "2m", target: 0 },
+  ],
+};
+
+export default function () {
+  const res = http.get("https://your-app.vercel.app");
+  check(res, { "status 200": (r) => r.status === 200 });
+}`,
     });
   }
 
