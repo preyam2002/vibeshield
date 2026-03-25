@@ -24,7 +24,7 @@ const GRADE_COLORS: Record<string, string> = {
   F: "text-red-400",
 };
 
-type SortKey = "date" | "grade" | "findings";
+type SortKey = "date" | "grade" | "findings" | "domain";
 
 const timeAgo = (dateStr: string) => {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -76,6 +76,8 @@ export default function ScansPage() {
     return true;
   });
 
+  const getHostname = (target: string) => { try { return new URL(target).hostname; } catch { return target; } };
+
   const sorted = [...filtered].sort((a, b) => {
     // Always put running scans first
     const aRunning = a.status === "scanning" || a.status === "queued";
@@ -85,6 +87,10 @@ export default function ScansPage() {
 
     if (sortBy === "grade") return a.score - b.score;
     if (sortBy === "findings") return b.findings - a.findings;
+    if (sortBy === "domain") {
+      const cmp = getHostname(a.target).localeCompare(getHostname(b.target));
+      if (cmp !== 0) return cmp;
+    }
     return (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt);
   });
 
@@ -174,6 +180,7 @@ export default function ScansPage() {
           <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden ml-auto">
             {([
               { key: "date" as SortKey, label: "Recent" },
+              { key: "domain" as SortKey, label: "By domain" },
               { key: "grade" as SortKey, label: "Worst grade" },
               { key: "findings" as SortKey, label: "Most findings" },
             ]).map((s) => (
@@ -205,13 +212,18 @@ export default function ScansPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {sorted.map((s) => {
-              const hostname = (() => { try { return new URL(s.target).hostname; } catch { return s.target; } })();
+            {sorted.map((s, idx) => {
+              const hostname = getHostname(s.target);
+              const prevHostname = idx > 0 ? getHostname(sorted[idx - 1].target) : "";
+              const showDomainHeader = sortBy === "domain" && hostname !== prevHostname;
               const isRunning = s.status === "scanning" || s.status === "queued";
               const isFailed = s.status === "failed";
               return (
+                <div key={s.id}>
+                {showDomainHeader && (
+                  <div className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mt-4 mb-2 first:mt-0">{hostname}</div>
+                )}
                 <a
-                  key={s.id}
                   href={`/scan/${s.id}`}
                   className="flex items-center gap-4 bg-zinc-900/30 border border-zinc-800/30 rounded-xl px-5 py-4 hover:border-zinc-700/50 transition-colors group"
                 >
@@ -290,6 +302,7 @@ export default function ScansPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </a>
+                </div>
               );
             })}
           </div>
