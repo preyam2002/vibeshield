@@ -286,6 +286,7 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/report", desc: "Download Markdown report" },
               { method: "GET", path: "/api/scan/:id/sarif", desc: "Download SARIF file" },
               { method: "GET", path: "/api/scan/:id/csv", desc: "Download CSV report" },
+              { method: "GET", path: "/api/scan/:id/junit", desc: "Download JUnit XML (CI test results)" },
               { method: "GET", path: "/api/scan/:id/pdf", desc: "Printable HTML/PDF report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
               { method: "GET", path: "/api/scan/:id/ci", desc: "CI-friendly results. Query: ?min-score=70&max-critical=0&format=annotations. Returns 422 on fail." },

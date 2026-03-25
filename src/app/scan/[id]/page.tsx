@@ -569,6 +569,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                     <a href={`/api/scan/${id}/export`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">JSON</a>
                     <a href={`/api/scan/${id}/sarif`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">SARIF</a>
                     <a href={`/api/scan/${id}/csv`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">CSV</a>
+                    <a href={`/api/scan/${id}/junit`} download className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">JUnit XML</a>
                     <div className="border-t border-zinc-800 my-1" />
                     <a href={`/api/scan/${id}/github-action`} download="vibeshield-scan.yml" className="block text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 px-3 py-1.5 transition-colors">GitHub Action</a>
                   </div>
