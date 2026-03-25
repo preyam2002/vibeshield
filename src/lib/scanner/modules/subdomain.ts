@@ -15,6 +15,18 @@ const TAKEOVER_FINGERPRINTS: { service: string; cname: string; fingerprint: stri
   { service: "Hugging Face Spaces", cname: "hf.space", fingerprint: "This space is sleeping" },
   { service: "Ngrok", cname: "ngrok.io", fingerprint: "Tunnel .* not found" },
   { service: "Cloudinary", cname: "cloudinary.com", fingerprint: "no such resource" },
+  { service: "Azure", cname: "azurewebsites.net", fingerprint: "404 Web Site not found" },
+  { service: "Azure TrafficManager", cname: "trafficmanager.net", fingerprint: "page not found" },
+  { service: "Shopify", cname: "myshopify.com", fingerprint: "Sorry, this shop is currently unavailable" },
+  { service: "Fastly", cname: "fastly.net", fingerprint: "Fastly error: unknown domain" },
+  { service: "Pantheon", cname: "pantheonsite.io", fingerprint: "404 error unknown site" },
+  { service: "Tumblr", cname: "domains.tumblr.com", fingerprint: "There's nothing here" },
+  { service: "WordPress.com", cname: "wordpress.com", fingerprint: "Do you want to register" },
+  { service: "Zendesk", cname: "zendesk.com", fingerprint: "Help Center Closed" },
+  { service: "Unbounce", cname: "unbouncepages.com", fingerprint: "The requested URL was not found" },
+  { service: "Cargo", cname: "cargocollective.com", fingerprint: "If you're moving your domain away" },
+  { service: "Bitbucket", cname: "bitbucket.io", fingerprint: "Repository not found" },
+  { service: "Ghost", cname: "ghost.io", fingerprint: "404 Ghost" },
 ];
 
 // Some services return HTTP 200 but put "not found" messaging in the body
@@ -185,6 +197,9 @@ export const subdomainModule: ScanModule = async (target) => {
     "admin", "dev", "staging", "test", "api-old", "internal",
     "beta", "demo", "sandbox", "debug", "old", "backup",
     "mail", "vpn", "jenkins", "ci", "grafana", "prometheus",
+    "qa", "uat", "api-dev", "api-staging", "api-test", "preprod",
+    "stage", "development", "testing", "docker", "k8s", "kibana",
+    "elasticsearch", "redis", "mongo", "db", "phpmyadmin", "adminer",
   ].map((s) => `${s}.${baseDomain}`);
 
   const unprobed = commonSubs.filter((s) => !subdomains.includes(s));
@@ -220,6 +235,121 @@ export const subdomainModule: ScanModule = async (target) => {
       remediation: `Restrict access to ${v.sub} using IP allowlists, VPN, or authentication. Internal tools should not be publicly accessible.`,
       cwe: "CWE-668", owasp: "A01:2021",
       confidence: 70,
+    });
+  }
+
+  // ── Phase: SPF/DMARC/DKIM email security checks ──────────────────────
+  // Check DNS TXT records for email authentication via DNS-over-HTTPS
+  const emailDnsChecks = await Promise.allSettled([
+    scanFetch(`https://dns.google/resolve?name=${baseDomain}&type=TXT`, { timeoutMs: 5000, noCache: true }),
+    scanFetch(`https://dns.google/resolve?name=_dmarc.${baseDomain}&type=TXT`, { timeoutMs: 5000, noCache: true }),
+    scanFetch(`https://dns.google/resolve?name=default._domainkey.${baseDomain}&type=TXT`, { timeoutMs: 5000, noCache: true }),
+  ]);
+
+  const missingRecords: string[] = [];
+  let spfFound = false;
+  let dmarcFound = false;
+  let dkimFound = false;
+
+  // Check SPF
+  if (emailDnsChecks[0].status === "fulfilled" && emailDnsChecks[0].value.ok) {
+    try {
+      const data = await emailDnsChecks[0].value.json();
+      const answers: { data: string }[] = data.Answer ?? [];
+      spfFound = answers.some((a: { data: string }) => /v=spf1/i.test(a.data));
+    } catch { /* parse failure */ }
+  }
+  if (!spfFound) missingRecords.push("SPF");
+
+  // Check DMARC
+  if (emailDnsChecks[1].status === "fulfilled" && emailDnsChecks[1].value.ok) {
+    try {
+      const data = await emailDnsChecks[1].value.json();
+      const answers: { data: string }[] = data.Answer ?? [];
+      dmarcFound = answers.some((a: { data: string }) => /v=DMARC1/i.test(a.data));
+    } catch { /* parse failure */ }
+  }
+  if (!dmarcFound) missingRecords.push("DMARC");
+
+  // Check DKIM (default selector)
+  if (emailDnsChecks[2].status === "fulfilled" && emailDnsChecks[2].value.ok) {
+    try {
+      const data = await emailDnsChecks[2].value.json();
+      const answers: { data: string }[] = data.Answer ?? [];
+      dkimFound = answers.some((a: { data: string }) => /v=DKIM1/i.test(a.data));
+    } catch { /* parse failure */ }
+  }
+  if (!dkimFound) missingRecords.push("DKIM");
+
+  if (missingRecords.length > 0) {
+    const severity = missingRecords.includes("SPF") && missingRecords.includes("DMARC") ? "high" as const : "medium" as const;
+    findings.push({
+      id: `subdomain-email-auth-${findings.length}`,
+      module: "subdomain",
+      severity,
+      title: `Missing email security records: ${missingRecords.join(", ")}`,
+      description: `The domain ${baseDomain} is missing ${missingRecords.join(", ")} DNS records. Without these records, attackers can spoof emails from your domain, increasing the risk of phishing attacks against your users and partners.`,
+      evidence: `Domain: ${baseDomain}\nSPF: ${spfFound ? "present" : "MISSING"}\nDMARC: ${dmarcFound ? "present" : "MISSING"}\nDKIM (default selector): ${dkimFound ? "present" : "MISSING"}`,
+      remediation: [
+        missingRecords.includes("SPF") ? `Add an SPF record: ${baseDomain}. IN TXT "v=spf1 include:_spf.google.com ~all" (adjust include for your email provider)` : "",
+        missingRecords.includes("DMARC") ? `Add a DMARC record: _dmarc.${baseDomain}. IN TXT "v=DMARC1; p=reject; rua=mailto:dmarc@${baseDomain}"` : "",
+        missingRecords.includes("DKIM") ? `Configure DKIM signing with your email provider and publish the public key as a TXT record under <selector>._domainkey.${baseDomain}` : "",
+      ].filter(Boolean).join("\n"),
+      cwe: "CWE-290",
+      owasp: "A07:2021",
+    });
+  }
+
+  // ── Phase: Dangling DNS re-check on discovered subdomains ────────────
+  // Re-check subdomains that resolved earlier but may have CNAME targets pointing to unclaimed services
+  const danglingCandidates = subdomains.filter((sub) => {
+    // Skip subdomains already reported
+    return !findings.some((f) => f.evidence?.includes(sub));
+  });
+
+  const danglingResults = await Promise.allSettled(
+    danglingCandidates.slice(0, 15).map(async (sub) => {
+      try {
+        // Query CNAME via DNS-over-HTTPS
+        const dnsRes = await scanFetch(`https://dns.google/resolve?name=${sub}&type=CNAME`, { timeoutMs: 5000, noCache: true });
+        if (!dnsRes.ok) return null;
+        const data = await dnsRes.json();
+        const answers: { data: string }[] = data.Answer ?? [];
+        if (answers.length === 0) return null;
+
+        const cnameTarget = answers[0].data.replace(/\.$/, "").toLowerCase();
+
+        // Check if the CNAME target itself resolves
+        const targetRes = await scanFetch(`https://dns.google/resolve?name=${cnameTarget}&type=A`, { timeoutMs: 5000, noCache: true });
+        if (!targetRes.ok) return null;
+        const targetData = await targetRes.json();
+
+        // NXDOMAIN (Status 3) or SERVFAIL (Status 2) on the CNAME target = dangling
+        if (targetData.Status === 3 || targetData.Status === 2) {
+          return { sub, cnameTarget, status: targetData.Status === 3 ? "NXDOMAIN" : "SERVFAIL" };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  for (const r of danglingResults) {
+    if (findings.length >= MAX_FINDINGS + 5) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `subdomain-dangling-cname-${findings.length}`,
+      module: "subdomain",
+      severity: "high",
+      title: `Dangling CNAME detected: ${v.sub}`,
+      description: `The subdomain ${v.sub} has a CNAME pointing to ${v.cnameTarget}, but the target returns ${v.status}. If an attacker can register ${v.cnameTarget}, they can serve content under your domain.`,
+      evidence: `Subdomain: ${v.sub}\nCNAME target: ${v.cnameTarget}\nTarget DNS status: ${v.status}`,
+      remediation: `Remove the CNAME record for ${v.sub} or re-point it to an active resource. The current target ${v.cnameTarget} is unresolvable and could be claimed by an attacker.`,
+      codeSnippet: dnsCleanupSnippet(v.sub, "CNAME"),
+      cwe: "CWE-672",
+      owasp: "A05:2021",
     });
   }
 

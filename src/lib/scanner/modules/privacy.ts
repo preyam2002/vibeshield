@@ -276,5 +276,224 @@ export const privacyModule: ScanModule = async (target) => {
     }
   }
 
+  // Phase 10-14: Parallel async checks
+  const parallelResults = await Promise.allSettled([
+    // Phase 10: Third-party tracker detection without consent mechanism
+    (async (): Promise<Finding[]> => {
+      const phase10: Finding[] = [];
+      const knownTrackerScripts: { domain: string; name: string }[] = [
+        { domain: "google-analytics.com", name: "Google Analytics" },
+        { domain: "googletagmanager.com", name: "Google Tag Manager" },
+        { domain: "connect.facebook.net", name: "Facebook Pixel" },
+        { domain: "static.hotjar.com", name: "Hotjar" },
+        { domain: "cdn.segment.com", name: "Segment" },
+        { domain: "cdn.mxpnl.com", name: "Mixpanel" },
+      ];
+
+      const loadedWithoutConsent: string[] = [];
+      const consentGatePatterns = /addEventListener\s*\(\s*['"]consent|onConsentChange|cookieconsent.*callback|__tcfapi|__cmp\s*\(|Cookiebot\.consent/i;
+      const hasConsentGating = consentGatePatterns.test(allJs);
+
+      for (const tracker of knownTrackerScripts) {
+        const isInScripts = target.scripts.some((s) => s.includes(tracker.domain));
+        const isInJs = new RegExp(tracker.domain.replace(".", "\\."), "i").test(allJs);
+        if (isInScripts || isInJs) {
+          // Check if the script loading is behind a consent gate
+          const consentWrapped = new RegExp(`consent[\\s\\S]{0,200}${tracker.domain.replace(".", "\\.")}|${tracker.domain.replace(".", "\\.")}[\\s\\S]{0,200}consent`, "i").test(allJs);
+          if (!consentWrapped && !hasConsentGating) {
+            loadedWithoutConsent.push(tracker.name);
+          }
+        }
+      }
+
+      if (loadedWithoutConsent.length > 0) {
+        phase10.push({
+          id: "privacy-trackers-no-consent-gate",
+          module: "Privacy",
+          severity: "medium",
+          title: `${loadedWithoutConsent.length} tracker${loadedWithoutConsent.length > 1 ? "s" : ""} loaded without consent gating: ${loadedWithoutConsent.join(", ")}`,
+          description: `The following tracking scripts appear to be loaded unconditionally without waiting for user consent: ${loadedWithoutConsent.join(", ")}. Under GDPR Article 5(3) and the ePrivacy Directive, non-essential tracking scripts must not execute until the user gives explicit consent.`,
+          evidence: `Trackers loaded without consent mechanism:\n${loadedWithoutConsent.map((t) => `- ${t}`).join("\n")}\nConsent API detected: ${hasConsentGating ? "yes" : "no"}`,
+          remediation: "Wrap all third-party tracking script loads behind a consent check. Use the TCF (Transparency & Consent Framework) API or a CMP like CookieBot/OneTrust to gate script loading. Scripts should be injected dynamically only after opt-in.",
+          cwe: "CWE-359",
+          confidence: 75,
+          codeSnippet: `// Gate tracker loading behind consent\nwindow.addEventListener("CookiebotOnAccept", () => {\n  if (Cookiebot.consent.statistics) {\n    const s = document.createElement("script");\n    s.src = "https://www.googletagmanager.com/gtag/js?id=G-XXXXX";\n    document.head.appendChild(s);\n  }\n});`,
+        });
+      }
+      return phase10;
+    })(),
+
+    // Phase 11: Cookie consent compliance — cookies set before consent
+    (async (): Promise<Finding[]> => {
+      const phase11: Finding[] = [];
+
+      // Check if cookies are already set on the initial page load (before any consent)
+      const res = await scanFetch(target.url, { redirect: "follow" });
+      if (res.ok) {
+        const setCookieHeader = res.headers.get("set-cookie") || "";
+        const nonEssentialCookiePatterns = /_ga|_gid|_fbp|_fbc|hjSession|_hj|mp_|ajs_|_mkto|hubspot|__hs|_uet|_tt_/i;
+        const trackingCookiesOnLoad = setCookieHeader.split(",").filter((c) => nonEssentialCookiePatterns.test(c));
+        const trackingCookiesFromTarget = target.cookies.filter((c) => nonEssentialCookiePatterns.test(c.name));
+
+        const preConsentCookies = [
+          ...trackingCookiesOnLoad.map((c) => c.split("=")[0].trim()),
+          ...trackingCookiesFromTarget.map((c) => c.name),
+        ];
+
+        // Deduplicate
+        const uniquePreConsentCookies = Array.from(new Set(preConsentCookies));
+
+        if (uniquePreConsentCookies.length > 0) {
+          const hasConsentMechanism = /cookie.?consent|cookie.?banner|consent.?manager|onetrust|cookiebot|osano|klaro|tarteaucitron|complianz|__tcfapi|__cmp/i.test(allJs);
+          phase11.push({
+            id: "privacy-cookies-before-consent",
+            module: "Privacy",
+            severity: "high",
+            title: `${uniquePreConsentCookies.length} tracking cookie${uniquePreConsentCookies.length > 1 ? "s" : ""} set before user consent`,
+            description: `The server sets tracking/analytics cookies (${uniquePreConsentCookies.slice(0, 5).join(", ")}) on the initial page load before the user has had a chance to consent. This is a direct GDPR violation — non-essential cookies must not be set until the user explicitly opts in. ${hasConsentMechanism ? "A consent banner was detected, but cookies are still set before interaction." : "No consent mechanism was detected."}`,
+            evidence: `Pre-consent tracking cookies:\n${uniquePreConsentCookies.slice(0, 10).map((c) => `- ${c}`).join("\n")}\nConsent mechanism present: ${hasConsentMechanism ? "yes (but cookies set anyway)" : "no"}`,
+            remediation: "Ensure tracking cookies are only set after explicit user consent. Configure your server and analytics scripts to defer cookie creation. Use a Tag Manager with consent mode (e.g., Google Consent Mode v2) to hold cookies until consent is granted.",
+            cwe: "CWE-359",
+            confidence: 85,
+            codeSnippet: `// Google Analytics with Consent Mode v2\ngtag("consent", "default", {\n  analytics_storage: "denied",\n  ad_storage: "denied",\n});\n\n// After user consents:\ngtag("consent", "update", {\n  analytics_storage: "granted",\n});`,
+          });
+        }
+      }
+      return phase11;
+    })(),
+
+    // Phase 12: Canvas/WebGL fingerprinting library detection
+    (async (): Promise<Finding[]> => {
+      const phase12: Finding[] = [];
+      const fingerprintLibPatterns: { pattern: RegExp; name: string }[] = [
+        { pattern: /fingerprintjs|FingerprintJS|Fingerprint2|fpjs/i, name: "FingerprintJS" },
+        { pattern: /clientjs|ClientJS/i, name: "ClientJS" },
+        { pattern: /imprintjs|ImprintJS/i, name: "ImprintJS" },
+        { pattern: /evercookie|Evercookie/i, name: "Evercookie" },
+        { pattern: /browserfp|BrowserFP/i, name: "BrowserFP" },
+        { pattern: /valve\.fingerprintjs|@fingerprintjs\/fingerprintjs-pro/i, name: "FingerprintJS Pro" },
+        { pattern: /CreepJS|creepjsCfp/i, name: "CreepJS" },
+      ];
+
+      const detectedLibs: string[] = [];
+      for (const lib of fingerprintLibPatterns) {
+        if (lib.pattern.test(allJs)) {
+          detectedLibs.push(lib.name);
+        }
+      }
+
+      // Also check script URLs
+      for (const script of target.scripts) {
+        if (/fingerprintjs|fpjs\.io|fpcdn\.io/i.test(script)) {
+          if (!detectedLibs.includes("FingerprintJS") && !detectedLibs.includes("FingerprintJS Pro")) {
+            detectedLibs.push("FingerprintJS");
+          }
+        }
+      }
+
+      // Check for raw canvas/WebGL fingerprinting code patterns (not just API usage, but collection patterns)
+      const canvasFpPattern = /canvas\.toDataURL\(\)[.\s\S]{0,50}(?:hash|fingerprint|fp|send|post|beacon)/i;
+      const webglFpPattern = /WEBGL_debug_renderer_info[.\s\S]{0,100}(?:hash|fingerprint|fp|send|collect)/i;
+      if (canvasFpPattern.test(allJs)) detectedLibs.push("Custom canvas fingerprinting");
+      if (webglFpPattern.test(allJs)) detectedLibs.push("Custom WebGL fingerprinting");
+
+      if (detectedLibs.length > 0) {
+        phase12.push({
+          id: "privacy-fingerprint-library",
+          module: "Privacy",
+          severity: "high",
+          title: `Fingerprinting library detected: ${detectedLibs.join(", ")}`,
+          description: `The page source includes ${detectedLibs.join(" and ")}, which ${detectedLibs.length > 1 ? "are libraries" : "is a library"} specifically designed to generate persistent browser fingerprints. Unlike cookies, fingerprints cannot be cleared by the user and persist across private browsing sessions. This technique is considered a dark pattern by privacy regulators and is explicitly called out in GDPR recital 30 and the ePrivacy Directive.`,
+          evidence: `Fingerprinting libraries:\n${detectedLibs.map((l) => `- ${l}`).join("\n")}`,
+          remediation: "Remove fingerprinting libraries unless strictly required for fraud detection. If used for bot/fraud detection, disclose it in your privacy policy, obtain consent, and consider server-side alternatives like CAPTCHA or risk-based authentication.",
+          cwe: "CWE-359",
+          confidence: 90,
+        });
+      }
+      return phase12;
+    })(),
+
+    // Phase 13: Referrer-Policy header check
+    (async (): Promise<Finding[]> => {
+      const phase13: Finding[] = [];
+      const res = await scanFetch(target.url);
+      if (res.ok) {
+        const referrerPolicy = res.headers.get("referrer-policy") || target.headers["referrer-policy"] || "";
+        const safeValues = ["no-referrer", "same-origin", "strict-origin", "strict-origin-when-cross-origin"];
+        const unsafeValues = ["unsafe-url", "no-referrer-when-downgrade"];
+
+        if (!referrerPolicy) {
+          phase13.push({
+            id: "privacy-no-referrer-policy",
+            module: "Privacy",
+            severity: "medium",
+            title: "Missing Referrer-Policy header",
+            description: "The server does not set a Referrer-Policy header. Without this header, browsers default to 'strict-origin-when-cross-origin' (modern browsers) or 'no-referrer-when-downgrade' (older browsers). This can leak full URLs — including sensitive path segments and query parameters — to third-party services loaded on the page (analytics, CDNs, ads).",
+            evidence: "Referrer-Policy header: not set",
+            remediation: "Set the Referrer-Policy header to 'strict-origin-when-cross-origin' (recommended default) or 'no-referrer' for maximum privacy. Add it via your web server config or framework middleware.",
+            cwe: "CWE-200",
+            confidence: 100,
+            codeSnippet: `// Next.js — next.config.js\nmodule.exports = {\n  async headers() {\n    return [{\n      source: "/(.*)",\n      headers: [\n        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },\n      ],\n    }];\n  },\n};`,
+          });
+        } else if (unsafeValues.includes(referrerPolicy.toLowerCase().trim())) {
+          phase13.push({
+            id: "privacy-unsafe-referrer-policy",
+            module: "Privacy",
+            severity: "medium",
+            title: `Unsafe Referrer-Policy: ${referrerPolicy}`,
+            description: `The Referrer-Policy is set to '${referrerPolicy}' which sends the full URL (including path and query string) to third-party origins. This can leak sensitive information such as session tokens in URLs, internal path structures, search queries, and user-specific page paths.`,
+            evidence: `Referrer-Policy: ${referrerPolicy}`,
+            remediation: `Change Referrer-Policy from '${referrerPolicy}' to 'strict-origin-when-cross-origin' or 'no-referrer'. Safe values: ${safeValues.join(", ")}.`,
+            cwe: "CWE-200",
+            confidence: 100,
+          });
+        }
+      }
+      return phase13;
+    })(),
+
+    // Phase 14: Privacy policy link detection
+    (async (): Promise<Finding[]> => {
+      const phase14: Finding[] = [];
+      const res = await scanFetch(target.url);
+      if (res.ok) {
+        const html = await res.text();
+
+        // Check for privacy policy links in the HTML
+        const privacyLinkPattern = /<a\s[^>]*href\s*=\s*["'][^"']*(?:privacy|datenschutz|privacidad|confidentialite|cookie-policy)[^"']*["'][^>]*>/i;
+        const privacyTextPattern = /privacy\s*policy|data\s*protection\s*policy|datenschutz|politique\s*de\s*confidentialit/i;
+        const hasPrivacyLink = privacyLinkPattern.test(html);
+        const hasPrivacyText = privacyTextPattern.test(html);
+
+        // Also check target pages for privacy-related URLs
+        const hasPrivacyPage = target.pages.some((p) => /privacy|datenschutz|data-protection|cookie-policy/i.test(p));
+        // Check link URLs
+        const hasPrivacyLinkUrl = target.linkUrls.some((u) => /privacy|datenschutz|data-protection|cookie-policy/i.test(u));
+
+        if (!hasPrivacyLink && !hasPrivacyText && !hasPrivacyPage && !hasPrivacyLinkUrl) {
+          phase14.push({
+            id: "privacy-no-privacy-policy",
+            module: "Privacy",
+            severity: "medium",
+            title: "No privacy policy link detected",
+            description: "The page does not appear to have a link to a privacy policy. A privacy policy is legally required under GDPR (Article 13/14), CCPA, CalOPPA, and most data protection laws worldwide when collecting any user data. This is also required by Google Analytics, Facebook, and most third-party service terms of service.",
+            evidence: "Privacy policy link: not found in page HTML, navigation, or discovered pages",
+            remediation: "Add a visible privacy policy link in your site footer. The privacy policy should cover: what data you collect, why you collect it, who you share it with, how long you retain it, and user rights (access, deletion, opt-out). Consider using a generator like Termly, Iubenda, or consulting a lawyer.",
+            cwe: "CWE-693",
+            confidence: 70,
+          });
+        }
+      }
+      return phase14;
+    })(),
+  ]);
+
+  // Collect findings from all parallel phases
+  for (const result of parallelResults) {
+    if (result.status === "fulfilled") {
+      findings.push(...result.value);
+    }
+  }
+
   return findings;
 };
