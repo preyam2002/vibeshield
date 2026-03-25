@@ -236,7 +236,57 @@ export const csrfModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 7: Referer header validation bypass
+  // Phase 7: SameSite=None without CSRF tokens — critical combination
+  const hasSameSiteNone = target.cookies.some((c) => c.sameSite?.toLowerCase() === "none");
+  if (hasSameSiteNone) {
+    const formsWithoutCsrf = target.forms.filter((f) =>
+      f.method === "POST" && !f.inputs.some((i) => /csrf|xsrf|token|_token|authenticity/i.test(i.name)),
+    );
+    if (formsWithoutCsrf.length > 0) {
+      findings.push({
+        id: "csrf-samesite-none-no-token",
+        module: "CSRF",
+        severity: "high",
+        title: `${formsWithoutCsrf.length} form(s) without CSRF tokens while SameSite=None cookies are set`,
+        description: "Session cookies are set with SameSite=None (sent on cross-origin requests) but forms lack CSRF tokens. This is the worst combination — browsers will send cookies on cross-site form submissions with zero protection.",
+        evidence: `SameSite=None cookies: ${target.cookies.filter((c) => c.sameSite?.toLowerCase() === "none").map((c) => c.name).join(", ")}\nForms without CSRF token: ${formsWithoutCsrf.slice(0, 3).map((f) => f.action).join(", ")}`,
+        remediation: "Either change SameSite to Lax (recommended) or add CSRF tokens to all forms. SameSite=None should only be used when cross-site cookie sending is genuinely needed (e.g., embedded iframes).",
+        cwe: "CWE-352",
+        owasp: "A01:2021",
+        confidence: 95,
+      });
+    }
+  }
+
+  // Phase 7b: CSRF token predictability check
+  const csrfTokenInputs = target.forms.flatMap((f) =>
+    f.inputs.filter((i) => /csrf|xsrf|token|_token|authenticity/i.test(i.name)),
+  );
+  // If we can see token values in form HTML, check quality
+  const allHtml = Array.from(target.jsContents.values()).join("\n");
+  for (const input of csrfTokenInputs.slice(0, 3)) {
+    const valMatch = allHtml.match(new RegExp(`name=["']${input.name}["'][^>]*value=["']([^"']+)["']`, "i"));
+    if (valMatch) {
+      const token = valMatch[1];
+      const isWeak = token.length < 16 || /^\d+$/.test(token) || /^[a-f0-9]{1,8}$/i.test(token);
+      if (isWeak) {
+        findings.push({
+          id: `csrf-weak-token-${findings.length}`,
+          module: "CSRF",
+          severity: "medium",
+          title: `Weak CSRF token in "${input.name}" (${token.length} chars${/^\d+$/.test(token) ? ", numeric-only" : ""})`,
+          description: `The CSRF token appears weak: ${token.length < 16 ? "too short" : "low entropy"}. Weak tokens can be brute-forced or predicted, defeating CSRF protection.`,
+          evidence: `Input: ${input.name}\nToken: ${token.substring(0, 20)}${token.length > 20 ? "..." : ""}\nLength: ${token.length}`,
+          remediation: "Use cryptographically random tokens of at least 32 bytes. In Node.js: crypto.randomBytes(32).toString('hex').",
+          cwe: "CWE-330",
+          confidence: 75,
+        });
+        break;
+      }
+    }
+  }
+
+  // Phase 8: Referer header validation bypass
   // Some apps check Referer but can be bypassed with Referer suppression
   const refererResults = await Promise.allSettled(
     target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
