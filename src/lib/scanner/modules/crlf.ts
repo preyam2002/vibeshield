@@ -167,5 +167,93 @@ res.redirect(encodeURIComponent(userPath));`,
     });
   }
 
+  // Phase 3: Path-based CRLF injection — inject in URL path instead of query params
+  const pathPayloads = [
+    "%0d%0aX-Injected:%20true",
+    "%0d%0aSet-Cookie:%20crlfpath=injected",
+    "%E5%98%8D%E5%98%8AX-Injected:%20true",
+  ];
+
+  const pathEndpoints = [target.url, ...target.pages.slice(0, 3)];
+  const pathResults = await Promise.allSettled(
+    pathEndpoints.flatMap((endpoint) =>
+      pathPayloads.map(async (payload) => {
+        try {
+          const base = new URL(endpoint);
+          const testUrl = `${base.origin}${base.pathname}/${payload}`;
+          const res = await scanFetch(testUrl, { timeoutMs: 5000 });
+          const injected = res.headers.get("x-injected");
+          const cookieInjected = (res.headers.get("set-cookie") || "").includes("crlfpath=injected");
+          if (injected || cookieInjected) {
+            return { pathname: base.pathname, payload, injected: injected ? "header" : "cookie" };
+          }
+        } catch { /* skip */ }
+        return null;
+      }),
+    ),
+  );
+
+  const pathSeen = new Set<string>();
+  for (const r of pathResults) {
+    if (findings.length >= 7) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (pathSeen.has(v.pathname)) continue;
+    pathSeen.add(v.pathname);
+    findings.push({
+      id: `crlf-path-${findings.length}`,
+      module: "CRLF Injection",
+      severity: "high",
+      title: `Path-based CRLF injection on ${v.pathname}`,
+      description: "CRLF characters in the URL path inject HTTP response headers. This is harder to detect than query parameter injection since WAFs often only inspect query strings. Attackers can use this for cache poisoning or session fixation.",
+      evidence: `GET ${v.pathname}/${v.payload}\nInjected: ${v.injected}`,
+      remediation: "URL-decode and sanitize the full request path, not just query parameters. Ensure your reverse proxy or framework rejects paths containing %0d or %0a sequences.",
+      cwe: "CWE-93",
+      owasp: "A03:2021",
+      confidence: 95,
+      codeSnippet: `// Middleware to reject CRLF in paths\nexport function middleware(req: NextRequest) {\n  const decoded = decodeURIComponent(req.nextUrl.pathname);\n  if (/[\\r\\n]/.test(decoded)) {\n    return new NextResponse("Bad Request", { status: 400 });\n  }\n}`,
+    });
+  }
+
+  // Phase 4: CRLF via Cookie header — test if cookie values are reflected in response headers
+  const cookiePayloads = [
+    "test%0d%0aX-Injected: true",
+    "test\r\nX-Injected: true",
+  ];
+
+  const cookieResults = await Promise.allSettled(
+    [target.url, ...target.apiEndpoints.slice(0, 3)].map(async (endpoint) => {
+      for (const payload of cookiePayloads) {
+        try {
+          const res = await scanFetch(endpoint, {
+            headers: { Cookie: `session=${payload}; test=${payload}` },
+            timeoutMs: 5000,
+          });
+          if (res.headers.get("x-injected")) {
+            return { endpoint: new URL(endpoint).pathname };
+          }
+        } catch { /* skip */ }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of cookieResults) {
+    if (findings.length >= 8) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({
+      id: `crlf-cookie-${findings.length}`,
+      module: "CRLF Injection",
+      severity: "high",
+      title: `CRLF injection via Cookie header on ${r.value.endpoint}`,
+      description: "CRLF characters in cookie values inject HTTP response headers. Attackers who control a subdomain cookie or exploit an XSS vulnerability can use this to set arbitrary response headers, enabling cache poisoning or session fixation.",
+      evidence: `Cookie: session=test%0d%0aX-Injected: true → X-Injected header present`,
+      remediation: "Sanitize cookie values before reflecting them in response headers. Most frameworks handle this automatically — ensure you're not manually concatenating cookie values into headers.",
+      cwe: "CWE-113",
+      owasp: "A03:2021",
+      confidence: 95,
+    });
+  }
+
   return findings;
 };

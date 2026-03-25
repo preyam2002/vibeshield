@@ -142,5 +142,74 @@ export const openRedirectModule: ScanModule = async (target) => {
     });
   }
 
+  // Phase 3: Meta refresh / JS-based redirect detection
+  // Some apps use client-side redirects instead of 3xx — test for meta refresh and window.location
+  if (findings.length < MAX_FINDINGS) {
+    const clientRedirectResults = await Promise.allSettled(
+      [...urlsByPath.entries()].slice(0, 5).flatMap(([pathname, baseUrl]) =>
+        REDIRECT_PARAMS.slice(0, 5).map(async (param) => {
+          const url = new URL(baseUrl);
+          url.searchParams.set(param, "https://evil.com");
+          const res = await scanFetch(url.href, { redirect: "follow", timeoutMs: 5000 });
+          if (res.status >= 300 && res.status < 400) return null; // Already caught by Phase 1
+          const text = await res.text();
+          // Check for meta refresh redirect
+          const metaMatch = text.match(/<meta[^>]*http-equiv\s*=\s*["']refresh["'][^>]*content\s*=\s*["']\d+;\s*url\s*=\s*([^"'>\s]+)/i);
+          if (metaMatch && /evil\.com/i.test(metaMatch[1])) {
+            return { param, pathname, type: "meta-refresh", location: metaMatch[1] };
+          }
+          // Check for JS redirect to evil.com
+          if (/(?:window\.location|location\.href|location\.replace|location\.assign)\s*[=(]\s*["']https?:\/\/evil\.com/i.test(text)) {
+            return { param, pathname, type: "js-redirect", location: "evil.com" };
+          }
+          return null;
+        }),
+      ),
+    );
+
+    for (const r of clientRedirectResults) {
+      if (findings.length >= MAX_FINDINGS + 2) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const { param, pathname, type, location } = r.value;
+      if (foundPaths.has(pathname)) continue;
+      foundPaths.add(pathname);
+      findings.push({
+        id: `openredirect-client-${findings.length}`,
+        module: "Open Redirect",
+        severity: "medium",
+        title: `Client-side redirect (${type}) via "${param}" on ${pathname}`,
+        description: type === "meta-refresh"
+          ? `The page uses a <meta http-equiv="refresh"> tag that redirects to user-controlled URLs. This bypasses server-side redirect validation and is harder to detect in security scans.`
+          : `The page sets window.location to a user-controlled URL. Client-side redirects bypass server-side URL validation and CSP navigate-to directives.`,
+        evidence: `GET ${pathname}?${param}=https://evil.com\nRedirect type: ${type}\nTarget: ${location}`,
+        remediation: "Validate redirect targets on the server before rendering. Never insert user input directly into meta refresh tags or window.location assignments.",
+        cwe: "CWE-601",
+        owasp: "A01:2021",
+        confidence: 85,
+        codeSnippet: type === "meta-refresh"
+          ? `// Don't use meta refresh with user input\n// BAD: <meta http-equiv="refresh" content="0;url=\${userInput}" />\n// GOOD: Validate on server, then redirect\nconst allowed = ALLOWED_HOSTS.has(new URL(target, origin).hostname);\nif (!allowed) return Response.redirect("/");`
+          : `// Don't use user input in window.location\n// BAD: window.location.href = params.get("redirect")\n// GOOD: Validate against allowlist\nconst target = new URL(redirectUrl, window.location.origin);\nif (target.origin !== window.location.origin) {\n  window.location.href = "/";\n}`,
+      });
+    }
+  }
+
+  // Phase 4: Fragment-based redirect — #redirect=url patterns in JS
+  const allJs = Array.from(target.jsContents.values()).join("\n");
+  if (/location\.hash.*(?:redirect|url|next|return|goto)/i.test(allJs) || /(?:redirect|url|next|return|goto).*location\.hash/i.test(allJs)) {
+    findings.push({
+      id: "openredirect-fragment",
+      module: "Open Redirect",
+      severity: "low",
+      title: "Potential hash-based open redirect in client-side JavaScript",
+      description: "Client-side JavaScript reads redirect parameters from the URL fragment (location.hash). Fragment values are never sent to the server, so server-side validation cannot protect against this. Attackers can craft links like yourapp.com/#redirect=evil.com.",
+      evidence: "JavaScript contains patterns reading redirect-like values from location.hash",
+      remediation: "Validate any URLs extracted from the fragment against an allowlist before navigating.",
+      cwe: "CWE-601",
+      owasp: "A01:2021",
+      confidence: 50,
+      codeSnippet: `// Validate hash-based redirect targets\nconst hash = new URLSearchParams(location.hash.slice(1));\nconst redirect = hash.get("redirect");\nif (redirect) {\n  const target = new URL(redirect, location.origin);\n  if (target.origin === location.origin) {\n    location.href = target.href;\n  }\n}`,
+    });
+  }
+
   return findings;
 };
