@@ -50,199 +50,193 @@ export const nosqlInjectionModule: ScanModule = async (target) => {
     /mongo|firebase|firestore|dynamo|convex/i.test(t),
   );
 
-  // Collect API endpoints to test
   const apiEndpoints = target.apiEndpoints.slice(0, 15);
-
-  // Phase 1: Operator injection via query parameters
-  const flagged = new Set<string>();
-
-  for (const endpoint of apiEndpoints) {
-    const pathname = new URL(endpoint).pathname;
-    if (flagged.has(pathname)) continue;
-
-    // Get baseline response
-    let baselineText = "";
-    let baselineStatus = 0;
-    try {
-      const res = await scanFetch(endpoint, { timeoutMs: 5000 });
-      baselineStatus = res.status;
-      baselineText = await res.text();
-    } catch { continue; }
-
-    // Skip if baseline already has errors
-    if (NOSQL_ERROR_PATTERNS.some((p) => p.test(baselineText))) continue;
-
-    // Test $ne and $gt operators on query params
-    for (const { param, value, desc } of NOSQL_PAYLOADS_GET) {
-      try {
-        const url = new URL(endpoint);
-        // Inject operator: /api/users?username[$ne]=
-        const existingParams = [...url.searchParams.keys()];
-        const testParams = existingParams.length > 0 ? existingParams : ["id", "email", "username"];
-
-        for (const paramName of testParams.slice(0, 3)) {
-          const testUrl = new URL(endpoint);
-          testUrl.searchParams.delete(paramName);
-          // Append the operator injection
-          const injectedUrl = `${testUrl.href}${testUrl.search ? "&" : "?"}${paramName}${param}=${encodeURIComponent(value)}`;
-
-          const res = await scanFetch(injectedUrl, { timeoutMs: 5000 });
-          const text = await res.text();
-
-          // Check for NoSQL error messages
-          for (const pattern of NOSQL_ERROR_PATTERNS) {
-            if (pattern.test(text) && !pattern.test(baselineText)) {
-              flagged.add(pathname);
-              findings.push({
-                id: `nosql-error-${count++}`,
-                module: "NoSQL Injection",
-                severity: "high",
-                title: `NoSQL error disclosure on ${pathname}`,
-                description: `A NoSQL operator injection (${desc}) triggered a database error message. This reveals the database technology and suggests operator injection may be possible.`,
-                evidence: `URL: ${injectedUrl}\nError pattern: ${pattern.source}\nResponse excerpt: ${text.substring(0, 300)}`,
-                remediation: "Sanitize all query parameters before passing to database queries. Use an ORM/ODM with strict input typing. For MongoDB, reject objects in query parameters — only accept string/number values.",
-                cwe: "CWE-943",
-                owasp: "A03:2021",
-              });
-              break;
-            }
-          }
-          if (flagged.has(pathname)) break;
-
-          // Check for data leak: operator injection returns more data than baseline
-          if (res.status === 200 && baselineStatus === 200) {
-            const ct = res.headers.get("content-type") || "";
-            if (ct.includes("application/json")) {
-              try {
-                const baseData = JSON.parse(baselineText);
-                const injData = JSON.parse(text);
-                const baseCount = Array.isArray(baseData) ? baseData.length : (baseData.data ? (Array.isArray(baseData.data) ? baseData.data.length : 1) : 1);
-                const injCount = Array.isArray(injData) ? injData.length : (injData.data ? (Array.isArray(injData.data) ? injData.data.length : 1) : 1);
-
-                // If operator injection returns significantly more records, it's bypassing filters
-                if (injCount > baseCount * 2 && injCount > 3) {
-                  flagged.add(pathname);
-                  findings.push({
-                    id: `nosql-bypass-${count++}`,
-                    module: "NoSQL Injection",
-                    severity: "critical",
-                    title: `NoSQL injection bypasses filter on ${pathname}`,
-                    description: `A ${desc} injection returned ${injCount} records vs ${baseCount} normally. The operator bypassed the intended query filter, exposing additional data.`,
-                    evidence: `URL: ${injectedUrl}\nBaseline records: ${baseCount}\nInjected records: ${injCount}`,
-                    remediation: "Never pass raw query parameters to MongoDB queries. Use mongoose schema validation or explicitly cast/validate each parameter type before querying.",
-                    cwe: "CWE-943",
-                    owasp: "A03:2021",
-                  });
-                }
-              } catch { /* not parseable JSON */ }
-            }
-          }
-        }
-        if (flagged.has(pathname)) break;
-      } catch { /* skip */ }
-    }
-  }
-
-  // Phase 2: JSON body injection on POST endpoints
   const postEndpoints = apiEndpoints.filter((ep) =>
     /auth|login|signin|signup|register|user|search|query|filter/i.test(ep),
   );
 
-  for (const endpoint of postEndpoints.slice(0, 5)) {
-    const pathname = new URL(endpoint).pathname;
-    if (flagged.has(pathname)) continue;
+  // Run all 3 phases in parallel
+  const [phase1Results, phase2Results, phase3Results] = await Promise.all([
+    // Phase 1: Operator injection via query parameters — parallelize across endpoints
+    Promise.allSettled(
+      apiEndpoints.map(async (endpoint) => {
+        const pathname = new URL(endpoint).pathname;
+        let baselineText = "";
+        let baselineStatus = 0;
+        try {
+          const res = await scanFetch(endpoint, { timeoutMs: 5000 });
+          baselineStatus = res.status;
+          baselineText = await res.text();
+        } catch { return null; }
 
-    // Get baseline with normal JSON body
-    let baselineText = "";
-    try {
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ test: "normal_value" }),
-        timeoutMs: 5000,
-      });
-      baselineText = await res.text();
-    } catch { continue; }
+        if (NOSQL_ERROR_PATTERNS.some((p) => p.test(baselineText))) return null;
 
-    if (NOSQL_ERROR_PATTERNS.some((p) => p.test(baselineText))) continue;
+        for (const { param, value, desc } of NOSQL_PAYLOADS_GET) {
+          const url = new URL(endpoint);
+          const existingParams = [...url.searchParams.keys()];
+          const testParams = existingParams.length > 0 ? existingParams : ["id", "email", "username"];
 
-    for (const { body, desc } of NOSQL_JSON_PAYLOADS) {
-      try {
-        const res = await scanFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value: body }),
-          timeoutMs: 5000,
-        });
-        const text = await res.text();
+          for (const paramName of testParams.slice(0, 3)) {
+            try {
+              const testUrl = new URL(endpoint);
+              testUrl.searchParams.delete(paramName);
+              const injectedUrl = `${testUrl.href}${testUrl.search ? "&" : "?"}${paramName}${param}=${encodeURIComponent(value)}`;
 
-        for (const pattern of NOSQL_ERROR_PATTERNS) {
-          if (pattern.test(text) && !pattern.test(baselineText)) {
-            flagged.add(pathname);
-            findings.push({
-              id: `nosql-json-${count++}`,
-              module: "NoSQL Injection",
-              severity: "high",
-              title: `NoSQL injection via JSON body on ${pathname}`,
-              description: `Sending a ${desc} payload in the JSON body triggered a database error. The server passes user-supplied objects directly to database queries.`,
-              evidence: `Payload: ${JSON.stringify(body)}\nEndpoint: ${endpoint}\nError pattern: ${pattern.source}\nResponse excerpt: ${text.substring(0, 300)}`,
-              remediation: "Validate that request body fields are the expected primitive types (string, number). Reject objects/arrays where primitives are expected. Use schema validation (Zod, Joi).",
-              cwe: "CWE-943",
-              owasp: "A03:2021",
-            });
-            break;
+              const res = await scanFetch(injectedUrl, { timeoutMs: 5000 });
+              const text = await res.text();
+
+              for (const pattern of NOSQL_ERROR_PATTERNS) {
+                if (pattern.test(text) && !pattern.test(baselineText)) {
+                  return { type: "error" as const, pathname, desc, injectedUrl, pattern: pattern.source, text };
+                }
+              }
+
+              if (res.status === 200 && baselineStatus === 200) {
+                const ct = res.headers.get("content-type") || "";
+                if (ct.includes("application/json")) {
+                  try {
+                    const baseData = JSON.parse(baselineText);
+                    const injData = JSON.parse(text);
+                    const bCount = Array.isArray(baseData) ? baseData.length : (baseData.data ? (Array.isArray(baseData.data) ? baseData.data.length : 1) : 1);
+                    const iCount = Array.isArray(injData) ? injData.length : (injData.data ? (Array.isArray(injData.data) ? injData.data.length : 1) : 1);
+                    if (iCount > bCount * 2 && iCount > 3) {
+                      return { type: "bypass" as const, pathname, desc, injectedUrl, baseCount: bCount, injCount: iCount };
+                    }
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* skip */ }
           }
         }
-        if (flagged.has(pathname)) break;
-      } catch { /* skip */ }
-    }
-  }
+        return null;
+      }),
+    ),
 
-  // Phase 3: Auth bypass (only if NoSQL stack detected or auth endpoints found)
-  if (isNoSqlStack || postEndpoints.some((ep) => /auth|login|signin/i.test(ep))) {
-    const authEndpoints = postEndpoints.filter((ep) => /auth|login|signin/i.test(ep));
-
-    for (const endpoint of authEndpoints.slice(0, 3)) {
-      const pathname = new URL(endpoint).pathname;
-      if (flagged.has(pathname)) continue;
-
-      for (const payload of NOSQL_AUTH_BYPASS) {
+    // Phase 2: JSON body injection — parallelize across endpoints
+    Promise.allSettled(
+      postEndpoints.slice(0, 5).map(async (endpoint) => {
+        const pathname = new URL(endpoint).pathname;
+        let baselineText = "";
         try {
           const res = await scanFetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            timeoutMs: 5000,
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ test: "normal_value" }), timeoutMs: 5000,
           });
-          const text = await res.text();
+          baselineText = await res.text();
+        } catch { return null; }
 
-          // Check if we got a successful auth response (token, session, redirect to dashboard)
-          if (res.status === 200 || res.status === 302) {
-            const ct = res.headers.get("content-type") || "";
-            if (ct.includes("application/json")) {
+        if (NOSQL_ERROR_PATTERNS.some((p) => p.test(baselineText))) return null;
+
+        for (const { body, desc } of NOSQL_JSON_PAYLOADS) {
+          try {
+            const res = await scanFetch(endpoint, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ value: body }), timeoutMs: 5000,
+            });
+            const text = await res.text();
+            for (const pattern of NOSQL_ERROR_PATTERNS) {
+              if (pattern.test(text) && !pattern.test(baselineText)) {
+                return { pathname, endpoint, body, desc, pattern: pattern.source, text };
+              }
+            }
+          } catch { /* skip */ }
+        }
+        return null;
+      }),
+    ),
+
+    // Phase 3: Auth bypass — parallelize across endpoints
+    (isNoSqlStack || postEndpoints.some((ep) => /auth|login|signin/i.test(ep)))
+      ? Promise.allSettled(
+          postEndpoints.filter((ep) => /auth|login|signin/i.test(ep)).slice(0, 3).map(async (endpoint) => {
+            const pathname = new URL(endpoint).pathname;
+            for (const payload of NOSQL_AUTH_BYPASS) {
               try {
-                const data = JSON.parse(text);
-                const hasToken = "token" in data || "accessToken" in data || "access_token" in data || "session" in data || "jwt" in data;
-                if (hasToken) {
-                  flagged.add(pathname);
-                  findings.push({
-                    id: `nosql-auth-bypass-${count++}`,
-                    module: "NoSQL Injection",
-                    severity: "critical",
-                    title: `Authentication bypass via NoSQL injection on ${pathname}`,
-                    description: `Sending ${payload.desc || "NoSQL operators"} as credentials returned an authentication token. Attackers can log in as any user without knowing their password.`,
-                    evidence: `Endpoint: ${endpoint}\nPayload: ${JSON.stringify(payload)}\nResponse contains authentication token`,
-                    remediation: "Validate that email/username/password fields are strings before querying. Use bcrypt/argon2 for password comparison — never query the database with user-supplied password objects.",
-                    cwe: "CWE-943",
-                    owasp: "A07:2021",
-                  });
-                  break;
+                const res = await scanFetch(endpoint, {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload), timeoutMs: 5000,
+                });
+                const text = await res.text();
+                if (res.status === 200 || res.status === 302) {
+                  const ct = res.headers.get("content-type") || "";
+                  if (ct.includes("application/json")) {
+                    try {
+                      const data = JSON.parse(text);
+                      if ("token" in data || "accessToken" in data || "access_token" in data || "session" in data || "jwt" in data) {
+                        return { pathname, endpoint, payload };
+                      }
+                    } catch { /* skip */ }
+                  }
                 }
               } catch { /* skip */ }
             }
-          }
-        } catch { /* skip */ }
-      }
+            return null;
+          }),
+        )
+      : Promise.resolve([]),
+  ]);
+
+  const flagged = new Set<string>();
+
+  // Collect Phase 1 findings
+  for (const r of phase1Results) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (flagged.has(v.pathname)) continue;
+    flagged.add(v.pathname);
+
+    if (v.type === "error") {
+      findings.push({
+        id: `nosql-error-${count++}`, module: "NoSQL Injection", severity: "high",
+        title: `NoSQL error disclosure on ${v.pathname}`,
+        description: `A NoSQL operator injection (${v.desc}) triggered a database error message. This reveals the database technology and suggests operator injection may be possible.`,
+        evidence: `URL: ${v.injectedUrl}\nError pattern: ${v.pattern}\nResponse excerpt: ${v.text.substring(0, 300)}`,
+        remediation: "Sanitize all query parameters before passing to database queries. Use an ORM/ODM with strict input typing. For MongoDB, reject objects in query parameters — only accept string/number values.",
+        cwe: "CWE-943", owasp: "A03:2021",
+      });
+    } else {
+      findings.push({
+        id: `nosql-bypass-${count++}`, module: "NoSQL Injection", severity: "critical",
+        title: `NoSQL injection bypasses filter on ${v.pathname}`,
+        description: `A ${v.desc} injection returned ${v.injCount} records vs ${v.baseCount} normally. The operator bypassed the intended query filter, exposing additional data.`,
+        evidence: `URL: ${v.injectedUrl}\nBaseline records: ${v.baseCount}\nInjected records: ${v.injCount}`,
+        remediation: "Never pass raw query parameters to MongoDB queries. Use mongoose schema validation or explicitly cast/validate each parameter type before querying.",
+        cwe: "CWE-943", owasp: "A03:2021",
+      });
+    }
+  }
+
+  // Collect Phase 2 findings
+  for (const r of phase2Results) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (flagged.has(v.pathname)) continue;
+    flagged.add(v.pathname);
+    findings.push({
+      id: `nosql-json-${count++}`, module: "NoSQL Injection", severity: "high",
+      title: `NoSQL injection via JSON body on ${v.pathname}`,
+      description: `Sending a ${v.desc} payload in the JSON body triggered a database error. The server passes user-supplied objects directly to database queries.`,
+      evidence: `Payload: ${JSON.stringify(v.body)}\nEndpoint: ${v.endpoint}\nError pattern: ${v.pattern}\nResponse excerpt: ${v.text.substring(0, 300)}`,
+      remediation: "Validate that request body fields are the expected primitive types (string, number). Reject objects/arrays where primitives are expected. Use schema validation (Zod, Joi).",
+      cwe: "CWE-943", owasp: "A03:2021",
+    });
+  }
+
+  // Collect Phase 3 findings
+  if (Array.isArray(phase3Results)) {
+    for (const r of phase3Results) {
+      if ((r as PromiseSettledResult<unknown>).status !== "fulfilled") continue;
+      const v = (r as PromiseFulfilledResult<{ pathname: string; endpoint: string; payload: typeof NOSQL_AUTH_BYPASS[0] } | null>).value;
+      if (!v || flagged.has(v.pathname)) continue;
+      flagged.add(v.pathname);
+      findings.push({
+        id: `nosql-auth-bypass-${count++}`, module: "NoSQL Injection", severity: "critical",
+        title: `Authentication bypass via NoSQL injection on ${v.pathname}`,
+        description: `Sending ${v.payload.desc || "NoSQL operators"} as credentials returned an authentication token. Attackers can log in as any user without knowing their password.`,
+        evidence: `Endpoint: ${v.endpoint}\nPayload: ${JSON.stringify(v.payload)}\nResponse contains authentication token`,
+        remediation: "Validate that email/username/password fields are strings before querying. Use bcrypt/argon2 for password comparison — never query the database with user-supplied password objects.",
+        cwe: "CWE-943", owasp: "A07:2021",
+      });
     }
   }
 

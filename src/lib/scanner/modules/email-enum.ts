@@ -17,122 +17,126 @@ export const emailEnumModule: ScanModule = async (target) => {
     "admin@" + new URL(target.url).hostname,
   ];
 
-  // Only test paths that exist (discovered by recon or return non-404)
-  const MAX_FINDINGS = 2;
-  for (const path of AUTH_PATHS) {
-    if (findings.length >= MAX_FINDINGS) break;
-    const url = target.baseUrl + path;
-    // Skip paths not discovered by recon (likely don't exist)
-    const discovered = target.apiEndpoints.some((ep) => new URL(ep).pathname === path || ep.endsWith(path));
-    if (!discovered) {
-      // Quick check if the path exists
-      try {
+  // Probe all paths in parallel to find which ones exist
+  const probeResults = await Promise.allSettled(
+    AUTH_PATHS.map(async (path) => {
+      const url = target.baseUrl + path;
+      const discovered = target.apiEndpoints.some((ep) => new URL(ep).pathname === path || ep.endsWith(path));
+      if (!discovered) {
         const probe = await scanFetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", timeoutMs: 3000 });
-        if (probe.status === 404 || probe.status === 405) continue;
+        if (probe.status === 404 || probe.status === 405) return null;
         const probeText = await probe.text();
-        // Skip HTML responses (SPA shell, not a real auth endpoint)
-        if (probeText.includes("<!DOCTYPE") || probeText.includes("<html")) continue;
-      } catch { continue; }
-    }
-    try {
-      // Test with fake email
-      const res1 = await scanFetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: testEmails[0], password: "TestPassword123!" }),
-      });
-      const text1 = await res1.text();
+        if (probeText.includes("<!DOCTYPE") || probeText.includes("<html")) return null;
+      }
+      return path;
+    }),
+  );
 
-      // Test with potentially real email
-      const res2 = await scanFetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: testEmails[1], password: "TestPassword123!" }),
-      });
+  const validPaths = probeResults
+    .filter((r): r is PromiseFulfilledResult<string | null> => r.status === "fulfilled")
+    .map((r) => r.value)
+    .filter((v): v is string => v !== null);
+
+  // Test all valid paths in parallel
+  const enumResults = await Promise.allSettled(
+    validPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+
+      const [res1, res2] = await Promise.all([
+        scanFetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: testEmails[0], password: "TestPassword123!" }), timeoutMs: 5000,
+        }),
+        scanFetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: testEmails[1], password: "TestPassword123!" }), timeoutMs: 5000,
+        }),
+      ]);
+
+      const text1 = await res1.text();
       const text2 = await res2.text();
 
-      // If responses differ, email enumeration is possible
       if (res1.status !== res2.status || text1 !== text2) {
         const differsBy = res1.status !== res2.status ? "status code" : "response body";
-
-        // Check for explicit messages
         const enumPhrases = [
           /user not found/i, /email not found/i, /no account/i,
           /doesn't exist/i, /does not exist/i, /not registered/i,
           /invalid email/i, /unknown email/i, /email already/i,
           /already registered/i, /already exists/i, /account exists/i,
         ];
-
         const hasEnumPhrase = enumPhrases.some((p) => p.test(text1) || p.test(text2));
 
         if (hasEnumPhrase || differsBy === "status code") {
-          findings.push({
-            id: `email-enum-${findings.length}`,
-            module: "Email Enumeration",
-            severity: "medium",
-            title: `Email enumeration possible on ${path}`,
-            description: `Different responses for existing vs non-existing emails allow attackers to determine which email addresses are registered. Differs by: ${differsBy}.`,
-            evidence: `Path: ${path}\nFake email status: ${res1.status}\nReal email status: ${res2.status}\n${hasEnumPhrase ? "Response contains explicit user existence message" : ""}`,
-            remediation: 'Return identical responses for valid and invalid emails. Use a generic message like "If an account exists, we\'ll send a reset link."',
-            cwe: "CWE-204",
-            owasp: "A07:2021",
-          });
+          return { type: "response" as const, path, status1: res1.status, status2: res2.status, differsBy, hasEnumPhrase };
         }
       }
 
-      // Check timing difference with baseline normalization
-      if (findings.length >= MAX_FINDINGS) break;
-      // Measure baseline variance (3 requests with fake email, take median)
-      const baseTimes: number[] = [];
-      for (let i = 0; i < 3; i++) {
-        const bs = Date.now();
-        try {
-          await scanFetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: `nonexistent-timing-test-${i}@test.com`, password: "x" }),
-            timeoutMs: 5000,
-          });
-        } catch { /* skip */ }
-        baseTimes.push(Date.now() - bs);
-      }
-      const sortedBase = [...baseTimes].sort((a, b) => a - b);
+      // Timing test: baseline (3 parallel) vs real (3 parallel)
+      const [baseTimings, realTimings] = await Promise.all([
+        Promise.all(
+          [0, 1, 2].map(async (i) => {
+            const bs = Date.now();
+            try {
+              await scanFetch(url, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: `nonexistent-timing-test-${i}@test.com`, password: "x" }), timeoutMs: 5000,
+              });
+            } catch { /* skip */ }
+            return Date.now() - bs;
+          }),
+        ),
+        Promise.all(
+          [0, 1, 2].map(async () => {
+            const rs = Date.now();
+            try {
+              await scanFetch(url, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: testEmails[1], password: "x" }), timeoutMs: 5000,
+              });
+            } catch { /* skip */ }
+            return Date.now() - rs;
+          }),
+        ),
+      ]);
+
+      const sortedBase = [...baseTimings].sort((a, b) => a - b);
       const baselineMedian = sortedBase[1] || 500;
       const baselineVariance = sortedBase[sortedBase.length - 1] - sortedBase[0];
-
-      // Now measure "real" email timing (3 requests, take median)
-      const realTimes: number[] = [];
-      for (let i = 0; i < 3; i++) {
-        const rs = Date.now();
-        try {
-          await scanFetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: testEmails[1], password: "x" }),
-            timeoutMs: 5000,
-          });
-        } catch { /* skip */ }
-        realTimes.push(Date.now() - rs);
-      }
-      const sortedReal = [...realTimes].sort((a, b) => a - b);
+      const sortedReal = [...realTimings].sort((a, b) => a - b);
       const realMedian = sortedReal[1] || 500;
       const diff = Math.abs(realMedian - baselineMedian);
 
-      // Only flag if: diff > 300ms AND diff > 2x baseline variance AND diff > 50% of baseline
       if (diff > 300 && diff > baselineVariance * 2 && diff > baselineMedian * 0.5) {
-        findings.push({
-          id: `email-enum-timing-${findings.length}`,
-          module: "Email Enumeration",
-          severity: "low",
-          title: `Timing-based email enumeration on ${path}`,
-          description: `Response times differ significantly for existing vs non-existing emails (baseline: ${baselineMedian}ms, real: ${realMedian}ms). Attackers can determine valid emails by measuring response times.`,
-          evidence: `Baseline median: ${baselineMedian}ms (variance: ${baselineVariance}ms)\nReal email median: ${realMedian}ms\nDifference: ${diff}ms`,
-          remediation: "Normalize response times for auth endpoints. Add a consistent delay regardless of whether the user exists.",
-          cwe: "CWE-208",
-        });
+        return { type: "timing" as const, path, baselineMedian, baselineVariance, realMedian, diff };
       }
-    } catch {
-      // endpoint doesn't exist, skip
+
+      return null;
+    }),
+  );
+
+  for (const r of enumResults) {
+    if (findings.length >= 2) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+
+    if (v.type === "response") {
+      findings.push({
+        id: `email-enum-${findings.length}`, module: "Email Enumeration", severity: "medium",
+        title: `Email enumeration possible on ${v.path}`,
+        description: `Different responses for existing vs non-existing emails allow attackers to determine which email addresses are registered. Differs by: ${v.differsBy}.`,
+        evidence: `Path: ${v.path}\nFake email status: ${v.status1}\nReal email status: ${v.status2}\n${v.hasEnumPhrase ? "Response contains explicit user existence message" : ""}`,
+        remediation: 'Return identical responses for valid and invalid emails. Use a generic message like "If an account exists, we\'ll send a reset link."',
+        cwe: "CWE-204", owasp: "A07:2021",
+      });
+    } else {
+      findings.push({
+        id: `email-enum-timing-${findings.length}`, module: "Email Enumeration", severity: "low",
+        title: `Timing-based email enumeration on ${v.path}`,
+        description: `Response times differ significantly for existing vs non-existing emails (baseline: ${v.baselineMedian}ms, real: ${v.realMedian}ms). Attackers can determine valid emails by measuring response times.`,
+        evidence: `Baseline median: ${v.baselineMedian}ms (variance: ${v.baselineVariance}ms)\nReal email median: ${v.realMedian}ms\nDifference: ${v.diff}ms`,
+        remediation: "Normalize response times for auth endpoints. Add a consistent delay regardless of whether the user exists.",
+        cwe: "CWE-208",
+      });
     }
   }
 

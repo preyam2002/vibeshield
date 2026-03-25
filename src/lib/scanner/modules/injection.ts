@@ -121,211 +121,221 @@ export const injectionModule: ScanModule = async (target) => {
     return true;
   });
 
-  // Counters per finding type to avoid ID collisions
-  let sqliCount = 0;
-  let xssCount = 0;
-  let sstiCount = 0;
-
-  // SQL Injection testing — deduplicate by pathname+param
-  const sqliFound = new Set<string>();
-  for (const t of dedupedTargets.slice(0, 15)) {
-    const sqliKey = `${new URL(t.url).pathname}:${t.paramName}`;
-    if (sqliFound.has(sqliKey)) continue;
-    for (const payload of SQLI_PAYLOADS.slice(0, 5)) {
-      try {
-        let res: Response;
-        if (t.method === "GET") {
-          const url = new URL(t.url);
-          url.searchParams.set(t.paramName, payload);
-          res = await scanFetch(url.href);
-        } else {
-          res = await scanFetch(t.url, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: `${t.paramName}=${encodeURIComponent(payload)}`,
-          });
-        }
-
-        const text = await res.text();
-
-        // Check for SQL error messages
-        for (const pattern of SQLI_ERROR_PATTERNS) {
-          if (pattern.test(text)) {
-            sqliFound.add(sqliKey);
-            findings.push({
-              id: `injection-sqli-${sqliCount++}`,
-              module: "SQL Injection",
-              severity: "critical",
-              title: `SQL injection on ${new URL(t.url).pathname} (param: ${t.paramName})`,
-              description: "SQL error messages appeared in the response after injecting SQL syntax. This strongly indicates the input is used in SQL queries without proper parameterization.",
-              evidence: `Payload: ${payload}\nParam: ${t.paramName}\nError pattern: ${pattern.source}\nResponse excerpt: ${text.substring(0, 300)}`,
-              remediation: "Use parameterized queries (prepared statements) instead of string concatenation. With Prisma: use the built-in query methods. With raw SQL: use $1, $2 placeholders.",
-              cwe: "CWE-89",
-              owasp: "A03:2021",
-            });
-            break;
-          }
-        }
-
-        // Time-based detection — compare against baseline to avoid false positives
-        if (payload.includes("SLEEP") || payload.includes("WAITFOR")) {
-          // Measure baseline (3 requests, take median)
-          const baseTimes: number[] = [];
-          for (let i = 0; i < 3; i++) {
-            const bs = Date.now();
-            try {
-              const baseUrl = new URL(t.url);
-              baseUrl.searchParams.set(t.paramName, "baseline_test");
-              await scanFetch(baseUrl.href, { timeoutMs: 10000 });
-            } catch { /* skip */ }
-            baseTimes.push(Date.now() - bs);
-          }
-          const baseline = baseTimes.sort((a, b) => a - b)[1] || 500; // median
-
-          const start = Date.now();
+  // Run SQLi, XSS, and SSTI tests in parallel across all targets
+  const [sqliResults, xssResults, sstiResults] = await Promise.all([
+    // SQLi: parallelize across endpoints (each endpoint tests payloads sequentially for time-based accuracy)
+    Promise.allSettled(
+      dedupedTargets.slice(0, 15).map(async (t) => {
+        const sqliKey = `${new URL(t.url).pathname}:${t.paramName}`;
+        for (const payload of SQLI_PAYLOADS.slice(0, 5)) {
           try {
+            let res: Response;
             if (t.method === "GET") {
               const url = new URL(t.url);
               url.searchParams.set(t.paramName, payload);
-              await scanFetch(url.href, { timeoutMs: 10000 });
+              res = await scanFetch(url.href, { timeoutMs: 5000 });
+            } else {
+              res = await scanFetch(t.url, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: `${t.paramName}=${encodeURIComponent(payload)}`,
+                timeoutMs: 5000,
+              });
+            }
+
+            const text = await res.text();
+
+            for (const pattern of SQLI_ERROR_PATTERNS) {
+              if (pattern.test(text)) {
+                return { type: "error" as const, key: sqliKey, pathname: new URL(t.url).pathname, paramName: t.paramName, payload, pattern: pattern.source, text };
+              }
+            }
+
+            // Time-based detection
+            if (payload.includes("SLEEP") || payload.includes("WAITFOR")) {
+              const baseTimes: number[] = [];
+              for (let i = 0; i < 3; i++) {
+                const bs = Date.now();
+                try {
+                  const baseUrl = new URL(t.url);
+                  baseUrl.searchParams.set(t.paramName, "baseline_test");
+                  await scanFetch(baseUrl.href, { timeoutMs: 10000 });
+                } catch { /* skip */ }
+                baseTimes.push(Date.now() - bs);
+              }
+              const baseline = baseTimes.sort((a, b) => a - b)[1] || 500;
+
+              const start = Date.now();
+              try {
+                if (t.method === "GET") {
+                  const url = new URL(t.url);
+                  url.searchParams.set(t.paramName, payload);
+                  await scanFetch(url.href, { timeoutMs: 10000 });
+                }
+              } catch { /* skip */ }
+              const elapsed = Date.now() - start;
+
+              if (elapsed >= 1800 && elapsed >= baseline * 2) {
+                return { type: "blind" as const, key: sqliKey, pathname: new URL(t.url).pathname, payload, elapsed, baseline };
+              }
             }
           } catch { /* skip */ }
-          const elapsed = Date.now() - start;
+        }
+        return null;
+      }),
+    ),
 
-          // Only flag if: absolute delay > 1800ms AND at least 2x baseline
-          if (elapsed >= 1800 && elapsed >= baseline * 2) {
-            sqliFound.add(sqliKey);
-            findings.push({
-              id: `injection-sqli-blind-${sqliCount++}`,
-              module: "SQL Injection",
-              severity: "critical",
-              title: `Blind SQL injection (time-based) on ${new URL(t.url).pathname}`,
-              description: `The server delayed ${elapsed}ms when injecting a time-delay SQL payload (baseline: ${baseline}ms). This indicates the input is passed directly into SQL queries.`,
-              evidence: `Payload: ${payload}\nResponse time: ${elapsed}ms\nBaseline: ${baseline}ms`,
-              remediation: "Use parameterized queries. Never concatenate user input into SQL strings.",
-              cwe: "CWE-89",
-              owasp: "A03:2021",
-            });
+    // XSS: parallelize across all endpoint+payload combos
+    Promise.allSettled(
+      dedupedTargets.slice(0, 10).flatMap((t) =>
+        XSS_PAYLOADS.slice(0, 4).map(async ({ payload, check }) => {
+          try {
+            let res: Response;
+            if (t.method === "GET") {
+              const url = new URL(t.url);
+              url.searchParams.set(t.paramName, payload);
+              res = await scanFetch(url.href, { timeoutMs: 5000 });
+            } else {
+              res = await scanFetch(t.url, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: `${t.paramName}=${encodeURIComponent(payload)}`,
+                timeoutMs: 5000,
+              });
+            }
+
+            const text = await res.text();
+            const ct = res.headers.get("content-type") || "";
+
+            if (ct.includes("application/json") || ct.includes("text/x-component") || ct.includes("application/rsc")) return null;
+
+            if (check(text)) {
+              const escaped = text.includes("&lt;") && text.includes("&gt;");
+              const inJsonStr = text.includes(JSON.stringify(payload));
+              if (escaped || inJsonStr) return null;
+              return { pathname: new URL(t.url).pathname, paramName: t.paramName, payload, ct, key: `${new URL(t.url).pathname}:${t.paramName}` };
+            }
+          } catch { /* skip */ }
+          return null;
+        }),
+      ),
+    ),
+
+    // SSTI: parallelize across endpoints
+    Promise.allSettled(
+      dedupedTargets.slice(0, 5).map(async (t) => {
+        const pathname = new URL(t.url).pathname;
+
+        let baselineHas49 = false;
+        try {
+          const baseUrl = new URL(t.url);
+          baseUrl.searchParams.set(t.paramName, "harmless_test_value");
+          const baseRes = await scanFetch(baseUrl.href, { timeoutMs: 5000 });
+          const baselineText = await baseRes.text();
+          baselineHas49 = baselineText.includes("49");
+        } catch { /* skip */ }
+
+        if (baselineHas49) return null;
+
+        const url1 = new URL(t.url);
+        url1.searchParams.set(t.paramName, "{{7*7}}");
+        const res1 = await scanFetch(url1.href, { timeoutMs: 5000 });
+        const text1 = await res1.text();
+
+        if (looksLikeHtml(text1) && target.isSpa) return null;
+
+        if (text1.includes("49") && !text1.includes("{{7*7}}")) {
+          const url2 = new URL(t.url);
+          url2.searchParams.set(t.paramName, "{{8*8}}");
+          const res2 = await scanFetch(url2.href, { timeoutMs: 5000 });
+          const text2 = await res2.text();
+
+          if (text2.includes("64") && !text2.includes("{{8*8}}")) {
+            return { pathname };
           }
         }
-      } catch {
-        // skip
-      }
+        return null;
+      }),
+    ),
+  ]);
+
+  // Collect SQLi findings
+  let sqliCount = 0;
+  const sqliFound = new Set<string>();
+  for (const r of sqliResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (sqliFound.has(v.key)) continue;
+    sqliFound.add(v.key);
+
+    if (v.type === "error") {
+      findings.push({
+        id: `injection-sqli-${sqliCount++}`,
+        module: "SQL Injection",
+        severity: "critical",
+        title: `SQL injection on ${v.pathname} (param: ${v.paramName})`,
+        description: "SQL error messages appeared in the response after injecting SQL syntax. This strongly indicates the input is used in SQL queries without proper parameterization.",
+        evidence: `Payload: ${v.payload}\nParam: ${v.paramName}\nError pattern: ${v.pattern}\nResponse excerpt: ${v.text.substring(0, 300)}`,
+        remediation: "Use parameterized queries (prepared statements) instead of string concatenation. With Prisma: use the built-in query methods. With raw SQL: use $1, $2 placeholders.",
+        cwe: "CWE-89",
+        owasp: "A03:2021",
+      });
+    } else {
+      findings.push({
+        id: `injection-sqli-blind-${sqliCount++}`,
+        module: "SQL Injection",
+        severity: "critical",
+        title: `Blind SQL injection (time-based) on ${v.pathname}`,
+        description: `The server delayed ${v.elapsed}ms when injecting a time-delay SQL payload (baseline: ${v.baseline}ms). This indicates the input is passed directly into SQL queries.`,
+        evidence: `Payload: ${v.payload}\nResponse time: ${v.elapsed}ms\nBaseline: ${v.baseline}ms`,
+        remediation: "Use parameterized queries. Never concatenate user input into SQL strings.",
+        cwe: "CWE-89",
+        owasp: "A03:2021",
+      });
     }
   }
 
-  // XSS testing — deduplicate by pathname+param
-  // Only flag when the payload appears as actual unescaped HTML (executable context),
-  // not inside JSON, RSC payloads, or HTML-escaped text
+  // Collect XSS findings (max 3, deduplicate by key)
+  let xssCount = 0;
   const xssFound = new Set<string>();
-  const MAX_XSS = 3;
-  for (const t of dedupedTargets.slice(0, 10)) {
-    const pathname = new URL(t.url).pathname;
-    const key = `${pathname}:${t.paramName}`;
-    if (xssFound.has(key) || xssFound.size >= MAX_XSS) continue;
-
-    for (const { payload, check } of XSS_PAYLOADS.slice(0, 4)) {
-      try {
-        let res: Response;
-        if (t.method === "GET") {
-          const url = new URL(t.url);
-          url.searchParams.set(t.paramName, payload);
-          res = await scanFetch(url.href);
-        } else {
-          res = await scanFetch(t.url, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: `${t.paramName}=${encodeURIComponent(payload)}`,
-          });
-        }
-
-        const text = await res.text();
-        const ct = res.headers.get("content-type") || "";
-
-        // Skip non-HTML responses — JSON, RSC streams, etc. can't execute scripts
-        if (ct.includes("application/json") || ct.includes("text/x-component") || ct.includes("application/rsc")) continue;
-
-        // Check if the payload appears unescaped in the HTML
-        // The check function verifies the actual HTML tag/attribute is present (not escaped)
-        if (check(text)) {
-          // Extra guard: make sure it's not inside a JSON blob or escaped string
-          const escaped = text.includes("&lt;") && text.includes("&gt;");
-          const inJsonStr = text.includes(JSON.stringify(payload));
-          if (escaped || inJsonStr) continue;
-
-          xssFound.add(key);
-          findings.push({
-            id: `injection-xss-${xssCount++}`,
-            module: "XSS",
-            severity: "high",
-            title: `Reflected XSS on ${pathname} (param: ${t.paramName})`,
-            description: "An XSS payload was reflected unescaped in the HTML response. Attackers can inject scripts that steal cookies, redirect users, or perform actions as the victim.",
-            evidence: `Payload: ${payload}\nParam: ${t.paramName}\nContent-Type: ${ct}\nPayload reflected unescaped in response body`,
-            remediation: "Sanitize all user input before rendering. Use framework auto-escaping (React does this by default for JSX, but dangerouslySetInnerHTML bypasses it).",
-            cwe: "CWE-79",
-            owasp: "A03:2021",
-          });
-          break;
-        }
-      } catch {
-        // skip
-      }
-    }
+  for (const r of xssResults) {
+    if (xssFound.size >= 3) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (xssFound.has(v.key)) continue;
+    xssFound.add(v.key);
+    findings.push({
+      id: `injection-xss-${xssCount++}`,
+      module: "XSS",
+      severity: "high",
+      title: `Reflected XSS on ${v.pathname} (param: ${v.paramName})`,
+      description: "An XSS payload was reflected unescaped in the HTML response. Attackers can inject scripts that steal cookies, redirect users, or perform actions as the victim.",
+      evidence: `Payload: ${v.payload}\nParam: ${v.paramName}\nContent-Type: ${v.ct}\nPayload reflected unescaped in response body`,
+      remediation: "Sanitize all user input before rendering. Use framework auto-escaping (React does this by default for JSX, but dangerouslySetInnerHTML bypasses it).",
+      cwe: "CWE-79",
+      owasp: "A03:2021",
+    });
   }
 
-  // SSTI testing — double-check with two different expressions to avoid false positives
+  // Collect SSTI findings
+  let sstiCount = 0;
   const sstiFound = new Set<string>();
-  for (const t of dedupedTargets.slice(0, 5)) {
-    const pathname = new URL(t.url).pathname;
-    if (sstiFound.has(pathname)) continue;
-
-    // Get baseline: fetch with a harmless value and check if "49" exists
-    let baselineHas49 = false;
-    try {
-      const baseUrl = new URL(t.url);
-      baseUrl.searchParams.set(t.paramName, "harmless_test_value");
-      const baseRes = await scanFetch(baseUrl.href);
-      const baselineText = await baseRes.text();
-      baselineHas49 = baselineText.includes("49");
-    } catch { /* skip */ }
-
-    if (baselineHas49) continue; // "49" exists naturally — can't distinguish injection
-
-    // First check: {{7*7}} → should contain "49"
-    try {
-      const url1 = new URL(t.url);
-      url1.searchParams.set(t.paramName, "{{7*7}}");
-      const res1 = await scanFetch(url1.href);
-      const text1 = await res1.text();
-
-      // Skip HTML/SPA shells
-      if (looksLikeHtml(text1) && target.isSpa) continue;
-
-      if (text1.includes("49") && !text1.includes("{{7*7}}")) {
-        // Confirmation: {{8*8}} → should contain "64" to prove evaluation
-        const url2 = new URL(t.url);
-        url2.searchParams.set(t.paramName, "{{8*8}}");
-        const res2 = await scanFetch(url2.href);
-        const text2 = await res2.text();
-
-        if (text2.includes("64") && !text2.includes("{{8*8}}")) {
-          sstiFound.add(pathname);
-          findings.push({
-            id: `injection-ssti-${sstiCount++}`,
-            module: "SSTI",
-            severity: "critical",
-            title: `Server-Side Template Injection on ${pathname}`,
-            description: "Template expressions are evaluated on the server. Attackers can execute arbitrary code on your server.",
-            evidence: `Payload: {{7*7}} → response contains "49"\nPayload: {{8*8}} → response contains "64"\nBoth expressions evaluated — confirmed SSTI`,
-            remediation: "Never pass user input into template engines. Use a logic-less template or sandbox the engine.",
-            cwe: "CWE-1336",
-            owasp: "A03:2021",
-          });
-        }
-      }
-    } catch {
-      // skip
-    }
+  for (const r of sstiResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (sstiFound.has(v.pathname)) continue;
+    sstiFound.add(v.pathname);
+    findings.push({
+      id: `injection-ssti-${sstiCount++}`,
+      module: "SSTI",
+      severity: "critical",
+      title: `Server-Side Template Injection on ${v.pathname}`,
+      description: "Template expressions are evaluated on the server. Attackers can execute arbitrary code on your server.",
+      evidence: `Payload: {{7*7}} → response contains "49"\nPayload: {{8*8}} → response contains "64"\nBoth expressions evaluated — confirmed SSTI`,
+      remediation: "Never pass user input into template engines. Use a logic-less template or sandbox the engine.",
+      cwe: "CWE-1336",
+      owasp: "A03:2021",
+    });
   }
 
   return findings;
