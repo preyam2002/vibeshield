@@ -231,6 +231,7 @@ export const aiSecurityModule: ScanModule = async (target) => {
       evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 300)}`,
       remediation: "Remove or protect AI debug endpoints in production.",
       cwe: "CWE-489", owasp: "A05:2021",
+      codeSnippet: `// middleware.ts — block debug endpoints in production\nif (req.nextUrl.pathname.match(/\\/(debug|config|langsmith|langfuse|tracing)/) && process.env.NODE_ENV === "production") {\n  return new Response(null, { status: 404 });\n}`,
     });
   }
 

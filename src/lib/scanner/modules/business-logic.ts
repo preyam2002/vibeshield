@@ -129,6 +129,7 @@ export const businessLogicModule: ScanModule = async (target) => {
       evidence: `POST ${v.endpoint}\nPayload: ${JSON.stringify(v.body)}\nResponse: ${v.text}`,
       remediation: "Validate all monetary and quantity values server-side. Reject negative values, zero values for required payments, and values outside expected ranges.",
       cwe: "CWE-20", owasp: "A04:2021",
+      codeSnippet: `// Validate monetary values with Zod\nimport { z } from "zod";\nconst OrderSchema = z.object({\n  price: z.number().positive("Price must be positive"),\n  quantity: z.number().int().min(1, "Min 1"),\n  amount: z.number().positive(),\n});\nconst validated = OrderSchema.parse(req.body);`,
     });
     break; // One finding per type
   }
@@ -173,6 +174,7 @@ export const businessLogicModule: ScanModule = async (target) => {
       evidence: `GET ${v.endpoint}?${v.param}=-1\nResponse: ${v.text}`,
       remediation: "Validate all business parameters server-side. Use allowlists for valid ranges. Never trust client-submitted business values.",
       cwe: "CWE-20", owasp: "A04:2021",
+      codeSnippet: `// Validate query params server-side\nconst quantity = Math.max(1, Math.min(100, parseInt(params.quantity) || 1));\nconst price = await db.products.findById(params.id).then(p => p.price);\n// Never use client-submitted price/amount values`,
     });
     break;
   }

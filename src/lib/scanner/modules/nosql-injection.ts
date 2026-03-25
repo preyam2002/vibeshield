@@ -221,6 +221,7 @@ export const nosqlInjectionModule: ScanModule = async (target) => {
       evidence: `Payload: ${JSON.stringify(v.body)}\nEndpoint: ${v.endpoint}\nError pattern: ${v.pattern}\nResponse excerpt: ${v.text.substring(0, 300)}`,
       remediation: "Validate that request body fields are the expected primitive types (string, number). Reject objects/arrays where primitives are expected. Use schema validation (Zod, Joi).",
       cwe: "CWE-943", owasp: "A03:2021",
+      codeSnippet: `// Validate JSON body types with Zod\nimport { z } from "zod";\nconst LoginSchema = z.object({\n  email: z.string().email(),\n  password: z.string().min(1),\n});\n// Rejects {email: {$gt: ""}} automatically\nconst { email, password } = LoginSchema.parse(await req.json());`,
     });
   }
 

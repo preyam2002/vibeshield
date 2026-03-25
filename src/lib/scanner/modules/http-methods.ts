@@ -61,6 +61,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
               evidence: `TRACE ${endpoint} → ${res.status}`,
               remediation: "Disable TRACE in your web server.",
               cwe: "CWE-749",
+              codeSnippet: `// middleware.ts — block TRACE requests\nif (req.method === "TRACE") return new Response(null, { status: 405 });`,
             });
           }
         } catch {

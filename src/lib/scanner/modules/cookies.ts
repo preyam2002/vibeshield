@@ -76,6 +76,7 @@ export const cookiesModule: ScanModule = async (target) => {
       evidence: broadCookies.map((c) => `${c.name} (${c.domain})`).join(", "),
       remediation: "Restrict cookie domains to the specific subdomain that needs them.",
       cwe: "CWE-1275",
+      codeSnippet: `// Set cookies with specific domain scope\nres.cookies.set("session", token, {\n  domain: "app.yourdomain.com", // not ".yourdomain.com"\n  path: "/",\n  httpOnly: true,\n  secure: true,\n  sameSite: "lax",\n});`,
     });
   }
 
