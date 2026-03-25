@@ -1,5 +1,26 @@
 import type { ScanModule, Finding } from "../types";
 import { scanFetch } from "../fetch";
+import * as tls from "tls";
+
+const checkCertificate = (hostname: string): Promise<{ valid: boolean; daysLeft: number; issuer: string; protocol: string; error?: string } | null> => {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 8000);
+    try {
+      const socket = tls.connect(443, hostname, { rejectUnauthorized: false, servername: hostname }, () => {
+        clearTimeout(timer);
+        const cert = socket.getPeerCertificate();
+        const protocol = socket.getProtocol() || "unknown";
+        socket.destroy();
+        if (!cert || !cert.valid_to) { resolve(null); return; }
+        const expiry = new Date(cert.valid_to);
+        const daysLeft = Math.floor((expiry.getTime() - Date.now()) / 86400000);
+        const issuer = String(cert.issuer?.O || cert.issuer?.CN || "unknown");
+        resolve({ valid: !socket.authorizationError, daysLeft, issuer, protocol });
+      });
+      socket.on("error", () => { clearTimeout(timer); resolve(null); });
+    } catch { clearTimeout(timer); resolve(null); }
+  });
+};
 
 export const sslModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
@@ -89,6 +110,76 @@ export const sslModule: ScanModule = async (target) => {
         cwe: "CWE-319",
         codeSnippet: `// next.config.ts headers()\n{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" }`,
       });
+    }
+  }
+
+  // Certificate and TLS version checks
+  if (url.protocol === "https:") {
+    const certInfo = await checkCertificate(url.hostname);
+    if (certInfo) {
+      if (certInfo.daysLeft < 0) {
+        findings.push({
+          id: "ssl-cert-expired",
+          module: "SSL/TLS",
+          severity: "critical",
+          title: "SSL certificate has expired",
+          description: `The certificate expired ${Math.abs(certInfo.daysLeft)} days ago. Browsers will show security warnings and users will be unable to access the site safely.`,
+          evidence: `Issuer: ${certInfo.issuer}\nExpired: ${Math.abs(certInfo.daysLeft)} days ago`,
+          remediation: "Renew your SSL certificate immediately. If using a managed provider (Vercel, Cloudflare), check your domain configuration.",
+          cwe: "CWE-295",
+          owasp: "A02:2021",
+        });
+      } else if (certInfo.daysLeft < 14) {
+        findings.push({
+          id: "ssl-cert-expiring",
+          module: "SSL/TLS",
+          severity: "high",
+          title: `SSL certificate expires in ${certInfo.daysLeft} days`,
+          description: "Your certificate is about to expire. If not renewed, browsers will show security warnings.",
+          evidence: `Issuer: ${certInfo.issuer}\nDays remaining: ${certInfo.daysLeft}`,
+          remediation: "Renew your certificate now. Set up auto-renewal with Let's Encrypt or your hosting provider.",
+          cwe: "CWE-295",
+        });
+      } else if (certInfo.daysLeft < 30) {
+        findings.push({
+          id: "ssl-cert-expiring-soon",
+          module: "SSL/TLS",
+          severity: "low",
+          title: `SSL certificate expires in ${certInfo.daysLeft} days`,
+          description: "Certificate will expire within 30 days. Ensure auto-renewal is configured.",
+          evidence: `Issuer: ${certInfo.issuer}\nDays remaining: ${certInfo.daysLeft}`,
+          remediation: "Verify auto-renewal is set up. Most providers renew certificates automatically.",
+          cwe: "CWE-295",
+        });
+      }
+
+      // TLS version check
+      if (certInfo.protocol === "TLSv1" || certInfo.protocol === "TLSv1.1" || certInfo.protocol === "SSLv3") {
+        findings.push({
+          id: "ssl-weak-tls",
+          module: "SSL/TLS",
+          severity: "high",
+          title: `Weak TLS version: ${certInfo.protocol}`,
+          description: `Server is using ${certInfo.protocol} which has known vulnerabilities. TLS 1.2 or 1.3 should be the minimum supported version.`,
+          evidence: `Negotiated protocol: ${certInfo.protocol}`,
+          remediation: "Configure your server to only accept TLS 1.2 and TLS 1.3. Disable TLS 1.0, TLS 1.1, and SSLv3.",
+          cwe: "CWE-326",
+          owasp: "A02:2021",
+        });
+      }
+
+      if (!certInfo.valid) {
+        findings.push({
+          id: "ssl-cert-invalid",
+          module: "SSL/TLS",
+          severity: "high",
+          title: "SSL certificate validation failed",
+          description: "The certificate could not be validated. It may be self-signed, have an incomplete chain, or the hostname may not match.",
+          evidence: `Issuer: ${certInfo.issuer}\nProtocol: ${certInfo.protocol}`,
+          remediation: "Use a certificate from a trusted CA. Ensure the certificate matches your domain and the full chain is served.",
+          cwe: "CWE-295",
+        });
+      }
     }
   }
 

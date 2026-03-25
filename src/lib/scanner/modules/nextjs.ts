@@ -234,6 +234,46 @@ export const nextjsModule: ScanModule = async (target) => {
     });
   }
 
+  // Check for process.env or config objects leaked in API responses
+  const envLeakResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 8).map(async (endpoint) => {
+      const res = await scanFetch(endpoint, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      // Look for patterns suggesting full env/config dump
+      const envIndicators = [
+        /DATABASE_URL.*postgres/i,
+        /NEXT_PUBLIC_[\s\S]*NEXT_PUBLIC_[\s\S]*NEXT_PUBLIC_/,
+        /NODE_ENV[\s\S]*HOSTNAME[\s\S]*HOME/,
+        /AWS_SECRET_ACCESS_KEY/i,
+        /SUPABASE_SERVICE_ROLE_KEY/i,
+        /process\.env/i,
+      ];
+      const matched = envIndicators.filter((p) => p.test(text));
+      if (matched.length >= 2) {
+        return { pathname: new URL(endpoint).pathname, text: text.substring(0, 300) };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of envLeakResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({
+      id: `nextjs-env-dump-${findings.length}`,
+      module: "Next.js",
+      severity: "critical",
+      title: `Environment variables leaked via ${r.value.pathname}`,
+      description: "An API route appears to return server environment variables. This exposes database credentials, API keys, and other secrets.",
+      evidence: `GET ${r.value.pathname}\nResponse: ${r.value.text}`,
+      remediation: "Never return process.env or config objects from API routes. Only return specific, safe values.",
+      cwe: "CWE-200",
+      owasp: "A01:2021",
+      codeSnippet: `// BAD: returning env in API route\nexport async function GET() {\n  return Response.json(process.env); // NEVER do this\n}\n\n// GOOD: return only what's needed\nexport async function GET() {\n  return Response.json({ version: "1.0.0", env: "production" });\n}`,
+    });
+    break;
+  }
+
   // RSC finding
   if (rscResult) {
     findings.push({

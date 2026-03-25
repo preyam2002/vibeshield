@@ -189,8 +189,12 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
 
   const MODULE_TIMEOUT = 120_000; // 2 minutes per module max
 
+  // Circuit breaker: if too many modules fail with the same error class, abort early
+  let consecutiveFailures = 0;
+  const CIRCUIT_BREAKER_THRESHOLD = 4;
+
   const runModule = async (mod: ScanModuleDefinition) => {
-    if (abortSignal?.aborted) {
+    if (abortSignal?.aborted || consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
       updateModule(scanId, mod.name, { status: "skipped" });
       return;
     }
@@ -213,6 +217,7 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
         findingsCount: findings.length,
         durationMs: Date.now() - start,
       });
+      consecutiveFailures = 0; // Reset on success
     } catch (err) {
       const cancelled = abortSignal?.aborted;
       updateModule(scanId, mod.name, {
@@ -220,7 +225,10 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
         error: cancelled ? undefined : String(err),
         durationMs: Date.now() - start,
       });
-      if (!cancelled) console.error(`Module ${mod.name} failed:`, err);
+      if (!cancelled) {
+        consecutiveFailures++;
+        console.error(`Module ${mod.name} failed:`, err);
+      }
     }
   };
 
@@ -240,6 +248,17 @@ const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full
     if (mode === "full" && !abortSignal?.aborted) {
       await Promise.all(STRESS_MODULES.map(runModule));
     }
+  }
+
+  // If circuit breaker tripped, mark remaining modules as skipped and note the early termination
+  if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+    const scan = getScan(scanId);
+    if (scan) {
+      for (const mod of scan.modules) {
+        if (mod.status === "pending") mod.status = "skipped";
+      }
+    }
+    console.warn(`Scan ${scanId}: circuit breaker tripped after ${CIRCUIT_BREAKER_THRESHOLD} consecutive module failures`);
   }
 
   if (!abortSignal?.aborted) {

@@ -9,8 +9,19 @@ const RATE_LIMIT_MAX = 3; // per target per 5 min
 const GLOBAL_RATE_LIMIT_MAX = 20; // per IP per 5 min
 let lastCleanup = Date.now();
 
+// Hostnames that should never be scanned (cloud metadata, internal services)
+const BLOCKED_HOSTNAMES = new Set([
+  "metadata.google.internal",
+  "metadata.google.com",
+  "kubernetes.default.svc",
+  "kubernetes.default",
+]);
+
 const isPrivateHost = (host: string): boolean => {
   if (host === "localhost" || host === "0.0.0.0" || host === "::1") return true;
+  if (BLOCKED_HOSTNAMES.has(host)) return true;
+  // Block any hostname ending in .internal or .local
+  if (host.endsWith(".internal") || host.endsWith(".local") || host.endsWith(".localhost")) return true;
   // IPv4-mapped IPv6
   if (host.startsWith("::ffff:")) return isPrivateHost(host.slice(7));
   // IPv6 loopback/private
@@ -23,7 +34,7 @@ const isPrivateHost = (host: string): boolean => {
   if (a === 10) return true; // 10.0.0.0/8
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-  if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local)
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local + cloud metadata)
   if (a === 0) return true; // 0.0.0.0/8
   return false;
 };
