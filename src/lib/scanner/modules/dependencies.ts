@@ -241,6 +241,7 @@ export const dependenciesModule: ScanModule = async (target) => {
         remediation: `Update ${lib.name} to the latest version. Run: npm update ${lib.name.toLowerCase()}`,
         cwe: "CWE-1395",
         owasp: "A06:2021",
+        codeSnippet: `# Update vulnerable dependency\nnpm update ${lib.name.toLowerCase()}\n# Or pin to latest safe version:\nnpm install ${lib.name.toLowerCase()}@latest`,
       });
     }
   }

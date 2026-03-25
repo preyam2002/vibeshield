@@ -144,6 +144,13 @@ export const envLeakModule: ScanModule = async (target) => {
       remediation: "Remove this endpoint from production. Environment variables should never be served over HTTP.",
       cwe: "CWE-215",
       owasp: "A05:2021",
+      codeSnippet: `// next.config.ts — restrict env to server-side only
+export default {
+  serverRuntimeConfig: {
+    DATABASE_URL: process.env.DATABASE_URL,
+    API_SECRET: process.env.API_SECRET,
+  },
+};`,
     });
   }
 
@@ -166,6 +173,13 @@ export const envLeakModule: ScanModule = async (target) => {
           remediation: "Remove the NEXT_PUBLIC_ prefix from this variable. Access it only in server-side code (API routes, getServerSideProps, Server Components).",
           cwe: "CWE-215",
           owasp: "A05:2021",
+          codeSnippet: `# .env.local — never prefix secrets with NEXT_PUBLIC_
+DATABASE_URL="postgres://..."   # server-only (correct)
+# NEXT_PUBLIC_DATABASE_URL=...  # exposed to browser (wrong)
+
+# Access in server code only:
+# app/api/route.ts or getServerSideProps
+const url = process.env.DATABASE_URL;`,
         });
       }
     }
@@ -190,6 +204,15 @@ export const envLeakModule: ScanModule = async (target) => {
         remediation: check.remediation,
         cwe: "CWE-215",
         owasp: "A05:2021",
+        codeSnippet: `// Use server-only package to prevent client imports
+// npm install server-only
+import "server-only";
+
+// This file can now safely use secrets
+const secret = process.env.API_SECRET;
+export async function fetchData() {
+  return fetch(url, { headers: { Authorization: secret } });
+}`,
       });
     }
   }
@@ -208,6 +231,18 @@ export const envLeakModule: ScanModule = async (target) => {
         remediation: "Remove debug and environment headers in production. Configure your web server or framework to strip these headers.",
         cwe: "CWE-200",
         owasp: "A05:2021",
+        codeSnippet: `// next.config.ts — strip debug headers in production
+export default {
+  async headers() {
+    return [{
+      source: "/:path*",
+      headers: [
+        { key: "X-Debug", value: "" },
+        { key: "X-Environment", value: "" },
+      ],
+    }];
+  },
+};`,
       });
     }
   }

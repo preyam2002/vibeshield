@@ -169,6 +169,7 @@ export const commandInjectionModule: ScanModule = async (target) => {
         evidence: `Payload: test${v.payload}\nResponse time: ${v.elapsed}ms\nBaseline: ${v.baseline}ms\nConfirmation (1s sleep): ${v.confirmElapsed}ms`,
         remediation: "Never pass user input to system commands (exec, spawn, system, popen). Use language-native libraries instead of shelling out. If unavoidable, use allowlists and strict input validation.",
         cwe: "CWE-78", owasp: "A03:2021",
+        codeSnippet: `// Instead of exec/spawn with user input:\n// BAD: exec(\`ping \${userInput}\`)\n\n// Use execFile with an args array (no shell interpolation)\nimport { execFile } from "child_process";\nexecFile("ping", ["-c", "1", sanitized], callback);\n\n// Or validate against an allowlist\nconst ALLOWED = new Set(["host-a", "host-b"]);\nif (!ALLOWED.has(input)) throw new Error("Invalid host");`,
       });
     } else {
       findings.push({
@@ -178,6 +179,7 @@ export const commandInjectionModule: ScanModule = async (target) => {
         evidence: `Payload: test${v.payload}\nPattern matched: ${v.pattern}\nResponse excerpt: ${v.text}`,
         remediation: "Never pass user input to system commands. Use language-native libraries instead of shelling out. If unavoidable, use strict allowlists.",
         cwe: "CWE-78", owasp: "A03:2021",
+        codeSnippet: `// BAD: passes user input through a shell\n// exec("ls " + userDir)\n\n// GOOD: use execFileSync — no shell, args as array\nimport { execFileSync } from "child_process";\nexecFileSync("ls", [sanitizedDir]);\n\n// Sanitize input: strip shell metacharacters\nconst sanitized = input.replace(/[;&|$\\\`(){}]/g, "");`,
       });
     }
   }

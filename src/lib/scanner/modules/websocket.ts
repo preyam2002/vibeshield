@@ -24,6 +24,7 @@ export const websocketModule: ScanModule = async (target) => {
         evidence: `Insecure WS URLs: ${insecureWs.slice(0, 3).join(", ")}`,
         remediation: "Use wss:// (WebSocket Secure) for all WebSocket connections.",
         cwe: "CWE-319",
+        codeSnippet: `// Always use wss:// in production\nconst wsUrl = process.env.NODE_ENV === "production"\n  ? \`wss://\${window.location.host}/ws\`\n  : \`ws://localhost:3000/ws\`;\nconst socket = new WebSocket(wsUrl);`,
       });
     }
   }
@@ -45,6 +46,7 @@ export const websocketModule: ScanModule = async (target) => {
         evidence: `GET ${target.baseUrl + r.value.path} → ${r.value.status}`,
         remediation: "Add authentication middleware to Socket.IO connections.",
         cwe: "CWE-306",
+        codeSnippet: `// Socket.IO — require auth on connection\nio.use((socket, next) => {\n  const token = socket.handshake.auth.token;\n  try {\n    const user = verifyJWT(token);\n    socket.data.user = user;\n    next();\n  } catch {\n    next(new Error("Unauthorized"));\n  }\n});`,
       });
       break;
     }

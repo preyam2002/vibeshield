@@ -69,6 +69,7 @@ export const cachePoisoningModule: ScanModule = async (target) => {
           remediation: `Ensure your CDN/proxy includes ${header.name} in the cache key, or strip it before reaching your application. Add Vary: ${header.name} to the response.`,
           cwe: "CWE-444",
           owasp: "A05:2021",
+          codeSnippet: `// next.config.ts — add Vary header to prevent cache poisoning\nexport default {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Vary", value: "Accept-Encoding, X-Forwarded-Host" },\n      { key: "Cache-Control", value: "public, max-age=3600, must-revalidate" }\n    ]}];\n  },\n};`,
         });
       }
     }
@@ -92,6 +93,7 @@ export const cachePoisoningModule: ScanModule = async (target) => {
             remediation: `Block or strip ${header.name} headers at your reverse proxy/CDN layer. Most applications should not honor these headers.`,
             cwe: "CWE-444",
             owasp: "A05:2021",
+            codeSnippet: `// middleware.ts — strip URL rewrite headers\nconst STRIPPED = ["x-original-url", "x-rewrite-url"];\nexport function middleware(req) {\n  const headers = new Headers(req.headers);\n  STRIPPED.forEach(h => headers.delete(h));\n  return NextResponse.next({ request: { headers } });\n}`,
           });
         }
       }
@@ -121,6 +123,7 @@ export const cachePoisoningModule: ScanModule = async (target) => {
           evidence: `Cache-Control: ${cacheControl || "(not set)"}\nVary: ${vary || "(not set)"}\n${age ? `Age: ${age}` : ""}${xCache ? `\nX-Cache: ${xCache}` : ""}`,
           remediation: "Add appropriate Vary headers (e.g., Vary: Cookie, Accept-Encoding) to prevent cache poisoning.",
           cwe: "CWE-444",
+          codeSnippet: `// next.config.ts — add Vary header\nexport default {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Vary", value: "Cookie, Accept-Encoding" }\n    ]}];\n  },\n};`,
         });
       }
 
@@ -136,6 +139,7 @@ export const cachePoisoningModule: ScanModule = async (target) => {
           remediation: "Configure your CDN to never cache responses with Set-Cookie headers, or add Cache-Control: no-store to responses that set cookies.",
           cwe: "CWE-524",
           owasp: "A05:2021",
+          codeSnippet: `// API route — prevent caching of authenticated responses\nexport async function GET(req) {\n  const res = NextResponse.json(data);\n  res.headers.set("Cache-Control", "private, no-store, no-cache");\n  return res;\n}`,
         });
       }
     }

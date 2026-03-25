@@ -136,25 +136,29 @@ export const fileUploadModule: ScanModule = async (target) => {
         title: `Stored XSS via HTML file upload on ${v.pathname}`,
         description: "The upload endpoint accepts HTML files and serves them with executable scripts.",
         evidence: `POST ${v.endpoint} with test.html\nUploaded to: ${v.fileUrl}\nHTML with script tag is served and executable`,
-        remediation: "Restrict allowed file types. Never serve user-uploaded HTML files. Use Content-Disposition: attachment.", cwe: "CWE-434", owasp: "A04:2021" });
+        remediation: "Restrict allowed file types. Never serve user-uploaded HTML files. Use Content-Disposition: attachment.", cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];\n\nexport async function POST(req: Request) {\n  const formData = await req.formData();\n  const file = formData.get('file') as File;\n  if (!file || !ALLOWED_TYPES.includes(file.type)) {\n    return Response.json({ error: 'Invalid file type' }, { status: 400 });\n  }\n  // Serve with Content-Disposition: attachment to prevent execution\n  // res.setHeader('Content-Disposition', 'attachment; filename=\"file.pdf\"');\n}` });
     } else if (v.type === "html") {
       findings.push({ id: `file-upload-html-${findings.length}`, module: "File Upload", severity: "high",
         title: `HTML file upload accepted on ${v.pathname}`,
         description: "The upload endpoint accepts HTML files without content-type validation.",
         evidence: `POST ${v.endpoint} with test.html → ${v.status}\nResponse: ${v.text.substring(0, 200)}`,
-        remediation: "Validate file types on the server side. Restrict to expected types (images, PDFs, etc.).", cwe: "CWE-434", owasp: "A04:2021" });
+        remediation: "Validate file types on the server side. Restrict to expected types (images, PDFs, etc.).", cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `import { fileTypeFromBuffer } from 'file-type';\n\nconst buffer = Buffer.from(await file.arrayBuffer());\nconst detected = await fileTypeFromBuffer(buffer);\nif (!detected || !ALLOWED_MIME.includes(detected.mime)) {\n  return Response.json({ error: 'File type not allowed' }, { status: 400 });\n}` });
     } else if (v.type === "svg") {
       findings.push({ id: `file-upload-svg-${findings.length}`, module: "File Upload", severity: "high",
         title: `SVG file upload accepted on ${v.pathname}`,
         description: "The upload endpoint accepts SVG files which can contain embedded JavaScript.",
         evidence: `POST ${v.endpoint} with test.svg (contains <script>) → ${v.status}\nResponse: ${v.text.substring(0, 200)}`,
-        remediation: "Sanitize SVG uploads by stripping script tags. Or reject SVGs entirely.", cwe: "CWE-434", owasp: "A04:2021" });
+        remediation: "Sanitize SVG uploads by stripping script tags. Or reject SVGs entirely.", cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `import { JSDOM } from 'jsdom';\nimport DOMPurify from 'dompurify';\n\nconst window = new JSDOM('').window;\nconst purify = DOMPurify(window);\nconst cleanSvg = purify.sanitize(svgString, {\n  USE_PROFILES: { svg: true, svgFilters: true },\n  ADD_TAGS: ['svg'], FORBID_TAGS: ['script', 'foreignObject'],\n});` });
     } else if (v.type === "traversal") {
       findings.push({ id: `file-upload-traversal-${findings.length}`, module: "File Upload", severity: "critical",
         title: `Path traversal in file upload on ${v.pathname}`,
         description: "The upload endpoint accepted a filename containing path traversal sequences.",
         evidence: `POST ${v.endpoint} with filename="../../../etc/passwd"\nResponse: ${v.text.substring(0, 200)}`,
-        remediation: "Sanitize filenames. Strip path separators and traversal sequences. Generate random filenames.", cwe: "CWE-22", owasp: "A01:2021" });
+        remediation: "Sanitize filenames. Strip path separators and traversal sequences. Generate random filenames.", cwe: "CWE-22", owasp: "A01:2021",
+        codeSnippet: `import path from 'path';\nimport crypto from 'crypto';\n\nconst safeName = crypto.randomUUID() + path.extname(file.name).toLowerCase();\nconst uploadDir = path.resolve('/app/uploads');\nconst dest = path.join(uploadDir, safeName);\nif (!dest.startsWith(uploadDir)) {\n  return Response.json({ error: 'Invalid path' }, { status: 400 });\n}` });
     }
   }
 
@@ -165,7 +169,8 @@ export const fileUploadModule: ScanModule = async (target) => {
       title: `Upload directory listing exposed at ${r.value.dir}`,
       description: "The upload directory has directory listing enabled, exposing all uploaded files.",
       evidence: `GET ${target.baseUrl + r.value.dir} → 200\nDirectory listing detected`,
-      remediation: "Disable directory listing on upload directories.", cwe: "CWE-548" });
+      remediation: "Disable directory listing on upload directories.", cwe: "CWE-548",
+      codeSnippet: `// next.config.js — serve uploads via API route instead of static directory\n// Move uploads outside /public to prevent direct access\n// Use a signed URL or auth-gated API route:\nexport async function GET(req: Request) {\n  const session = await getServerSession();\n  if (!session) return new Response(null, { status: 401 });\n  const file = await fs.readFile(resolvedPath);\n  return new Response(file, {\n    headers: { 'Content-Disposition': 'attachment' },\n  });\n}` });
   }
 
   return findings;

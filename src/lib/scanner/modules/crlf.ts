@@ -87,6 +87,11 @@ export const crlfModule: ScanModule = async (target) => {
         description: "HTTP response headers can be injected via CRLF characters in user input. Attackers can set arbitrary cookies, redirect users, or perform response splitting attacks.",
         evidence: `Payload: ${v.param}=${v.payload}\n${v.injectedHeader ? `Injected header: X-Injected: ${v.injectedHeader}` : `Injected cookie: crlf=injected`}`,
         remediation: "Strip or encode \\r\\n characters from all user input before using it in HTTP headers or redirects. Use framework-provided redirect functions that handle encoding.",
+        codeSnippet: `// Sanitize header values before setting them
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\\r\\n]+/g, "");
+}
+res.setHeader("Location", sanitizeHeaderValue(userInput));`,
         cwe: "CWE-93",
         owasp: "A03:2021",
       });
@@ -99,6 +104,10 @@ export const crlfModule: ScanModule = async (target) => {
         description: "CRLF characters in input cause content injection in the HTTP response body. This indicates the server doesn't strip newline characters from user input.",
         evidence: `Payload: ${v.param}=${v.payload}\nInjected content appears on its own line in response body`,
         remediation: "Strip or encode \\r\\n characters from all user input. Use framework-provided response methods.",
+        codeSnippet: `// Strip CRLF sequences from user-controlled values
+const safe = input.replace(/\\r?\\n|\\r/g, "");
+// Or use encodeURIComponent for redirect targets
+res.redirect(encodeURIComponent(userPath));`,
         cwe: "CWE-113",
         owasp: "A03:2021",
       });

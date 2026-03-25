@@ -16,6 +16,7 @@ export const sslModule: ScanModule = async (target) => {
       remediation: "Enable HTTPS. Most hosting providers (Vercel, Netlify, Cloudflare) provide free SSL certificates.",
       cwe: "CWE-319",
       owasp: "A02:2021",
+      codeSnippet: `// Vercel: automatic HTTPS — just deploy\n// Self-hosted: use Let's Encrypt in next.config.ts\nconst { createServer } = require("https");\nconst { parse } = require("url");\nconst next = require("next");\nconst fs = require("fs");\nconst app = next({ dev: false });\nconst handle = app.getRequestHandler();\napp.prepare().then(() => {\n  createServer({ key: fs.readFileSync("key.pem"), cert: fs.readFileSync("cert.pem") },\n    (req, res) => handle(req, res, parse(req.url!, true))\n  ).listen(443);\n});`,
     });
   }
 
@@ -34,6 +35,7 @@ export const sslModule: ScanModule = async (target) => {
           description: "Visiting the HTTP version of your site does not redirect to HTTPS. Users who type your URL without https:// will get an insecure connection.",
           remediation: "Add a 301 redirect from HTTP to HTTPS.",
           cwe: "CWE-319",
+          codeSnippet: `// next.config.ts\nmodule.exports = {\n  async redirects() {\n    return [{ source: "/:path*", has: [{ type: "header", key: "x-forwarded-proto", value: "http" }],\n      destination: "https://:host/:path*", permanent: true }];\n  },\n};\n// Or in middleware.ts\nimport { NextResponse } from "next/server";\nexport function middleware(req) {\n  if (req.headers.get("x-forwarded-proto") === "http")\n    return NextResponse.redirect(req.url.replace("http://", "https://"), 301);\n}`,
         });
       }
     } catch {
@@ -57,6 +59,7 @@ export const sslModule: ScanModule = async (target) => {
           evidence: `Strict-Transport-Security: ${hsts}`,
           remediation: "Set max-age=31536000 (1 year) and add includeSubDomains and preload directives.",
           cwe: "CWE-319",
+          codeSnippet: `// next.config.ts\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Strict-Transport-Security",\n        value: "max-age=31536000; includeSubDomains; preload" }\n    ]}];\n  },\n};`,
         });
       }
     }
@@ -75,6 +78,7 @@ export const sslModule: ScanModule = async (target) => {
       evidence: httpRefs.slice(0, 3).join("\n"),
       remediation: "Change all resource URLs to use HTTPS or protocol-relative URLs.",
       cwe: "CWE-319",
+      codeSnippet: `// next.config.ts — block mixed content via CSP\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "Content-Security-Policy",\n        value: "upgrade-insecure-requests" }\n    ]}];\n  },\n};\n// Fix in code: replace http:// URLs\n// Before: <img src="http://cdn.example.com/img.png" />\n// After:  <img src="https://cdn.example.com/img.png" />`,
     });
   }
 

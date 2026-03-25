@@ -124,6 +124,9 @@ export const pathTraversalModule: ScanModule = async (target) => {
                 : "A directory traversal payload returned sensitive system file contents. Attackers can read any file on the server.",
               evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
               remediation: "Never use user input directly in file paths. Use path.resolve() and verify the resolved path stays within the intended directory.",
+              codeSnippet: isNullByte
+                ? `// Strip null bytes and validate the resolved path\nimport path from "node:path";\nconst SAFE_DIR = path.resolve("./uploads");\nconst clean = req.query.file.replace(/\\0/g, "");\nconst resolved = path.resolve(SAFE_DIR, clean);\nif (!resolved.startsWith(SAFE_DIR)) {\n  return res.status(403).json({ error: "Forbidden" });\n}`
+                : `// Resolve the path and ensure it stays inside the allowed directory\nimport path from "node:path";\nconst SAFE_DIR = path.resolve("./uploads");\nconst resolved = path.resolve(SAFE_DIR, req.query.file);\nif (!resolved.startsWith(SAFE_DIR + path.sep)) {\n  return res.status(403).json({ error: "Forbidden" });\n}\nconst data = fs.readFileSync(resolved);`,
               cwe: "CWE-22",
               owasp: "A01:2021",
             });
@@ -161,6 +164,7 @@ export const pathTraversalModule: ScanModule = async (target) => {
               description: "Directory traversal sequences in the URL path returned system file contents.",
               evidence: `URL: ${r.value.testUrl}\nResponse excerpt: ${r.value.text.substring(0, 200)}`,
               remediation: "Validate and sanitize URL path segments. Block traversal sequences in middleware.",
+              codeSnippet: `// Middleware: block path traversal sequences in URL segments\nimport { NextResponse } from "next/server";\nexport function middleware(req) {\n  const decoded = decodeURIComponent(req.nextUrl.pathname);\n  if (/\\.\\.[\\/\\\\]/.test(decoded)) {\n    return NextResponse.json({ error: "Invalid path" }, { status: 400 });\n  }\n  return NextResponse.next();\n}\nexport const config = { matcher: "/api/:path*" };`,
               cwe: "CWE-22",
               owasp: "A01:2021",
             });

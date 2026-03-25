@@ -818,9 +818,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                       </svg>
                     )}
                     {mod.status === "failed" && (
-                      <svg className="h-3 w-3 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
+                      <span title={mod.error || "Module failed"}>
+                        <svg className="h-3 w-3 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </span>
                     )}
                     {mod.status === "pending" && (
                       <div className="h-3 w-3 rounded-full border border-zinc-700/50 shrink-0" />
@@ -839,6 +841,11 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                         <span className="text-[10px] text-zinc-700 tabular-nums">{mod.durationMs < 1000 ? `${mod.durationMs}ms` : `${(mod.durationMs / 1000).toFixed(1)}s`}</span>
                       )}
                     </span>
+                    {mod.status === "failed" && mod.error && (
+                      <span className="text-[9px] text-red-500/60 truncate max-w-[120px]" title={mod.error}>
+                        {mod.error.length > 30 ? `${mod.error.slice(0, 30)}…` : mod.error}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>

@@ -65,6 +65,7 @@ export const apiSecurityModule: ScanModule = async (target) => {
                 description: `The API accepted and processed a JSON body containing "${key}". This can lead to prototype pollution, which may allow an attacker to modify application behavior, bypass security checks, or achieve remote code execution.`,
                 evidence: `POST ${endpoint}\nPayload: ${json}\nResponse: ${text.substring(0, 300)}`,
                 remediation: "Sanitize incoming JSON to strip __proto__ and constructor keys. Use Object.create(null) for lookup objects. Consider a library like secure-json-parse.",
+                codeSnippet: `// Use secure-json-parse to reject dangerous keys\nimport sjson from "secure-json-parse";\napp.use(express.json({ reviver: sjson.reviver }));\n\n// Or strip manually in middleware\nfunction stripProto(obj: unknown): unknown {\n  if (typeof obj !== "object" || obj === null) return obj;\n  const clean = Object.create(null);\n  for (const [k, v] of Object.entries(obj)) {\n    if (k === "__proto__" || k === "constructor") continue;\n    clean[k] = stripProto(v);\n  }\n  return clean;\n}`,
                 cwe: "CWE-1321", owasp: "A03:2021",
               };
               break;
@@ -88,6 +89,7 @@ export const apiSecurityModule: ScanModule = async (target) => {
                     description: `This API endpoint returns ${(text.length / 1024).toFixed(1)}KB of data in a single response. This often means the server is returning full database records instead of selecting only needed fields, potentially exposing internal or sensitive fields.`,
                     evidence: `GET ${endpoint}\nResponse size: ${text.length} bytes\nPreview: ${text.substring(0, 200)}...`,
                     remediation: "Implement field selection — only return the fields the client needs. Use DTOs or serializers to control API output shape.",
+                    codeSnippet: `// Select only needed fields instead of returning full records\n// Prisma\nconst users = await prisma.user.findMany({\n  select: { id: true, name: true, email: true },\n});\n\n// Or use a DTO to strip sensitive fields\nfunction toPublicUser(user: User) {\n  const { passwordHash, ssn, ...safe } = user;\n  return safe;\n}`,
                     cwe: "CWE-213", owasp: "A01:2021",
                   };
                 }
@@ -99,6 +101,7 @@ export const apiSecurityModule: ScanModule = async (target) => {
                     description: `This endpoint returns ${arr.length} items in a single response with no apparent pagination. As data grows, this becomes a denial-of-service risk and can leak data an attacker shouldn't see in bulk.`,
                     evidence: `GET ${endpoint}\nItems returned: ${arr.length}\nResponse size: ${text.length} bytes`,
                     remediation: "Implement cursor or offset-based pagination. Enforce a maximum page size (e.g., 50-100 items). Add rate limiting.",
+                    codeSnippet: `// Offset-based pagination\napp.get("/api/items", async (req, res) => {\n  const page = Math.max(1, parseInt(req.query.page as string) || 1);\n  const limit = Math.min(100, parseInt(req.query.limit as string) || 20);\n  const items = await prisma.item.findMany({\n    skip: (page - 1) * limit,\n    take: limit,\n  });\n  res.json({ data: items, page, limit });\n});`,
                     cwe: "CWE-770", owasp: "A04:2021",
                   };
                 }
@@ -130,6 +133,7 @@ export const apiSecurityModule: ScanModule = async (target) => {
                       description: `The API accepted and returned a privileged field "${fieldName}" set to "${fieldVal}". This suggests the endpoint blindly assigns all incoming fields to the data model, which could allow privilege escalation.`,
                       evidence: `POST ${endpoint}\nPayload included: ${JSON.stringify(extraFields)}\nResponse contains "${fieldName}": ${text.substring(0, 300)}`,
                       remediation: "Use an allowlist of accepted fields in your API handlers. Never pass raw request body directly to database create/update operations. Use DTOs or pick() to select only permitted fields.",
+                      codeSnippet: `// Allowlist accepted fields — never spread raw body\nconst ALLOWED_FIELDS = ["name", "email", "bio"] as const;\n\napp.post("/api/users", async (req, res) => {\n  const data: Record<string, unknown> = {};\n  for (const key of ALLOWED_FIELDS) {\n    if (key in req.body) data[key] = req.body[key];\n  }\n  const user = await prisma.user.create({ data });\n  res.json(user);\n});`,
                       cwe: "CWE-915", owasp: "A08:2021",
                     };
                     break;
@@ -157,6 +161,7 @@ export const apiSecurityModule: ScanModule = async (target) => {
       description: "API endpoints return JSON data but with an incorrect Content-Type header. Combined with missing X-Content-Type-Options, this enables MIME-sniffing attacks where browsers may interpret JSON as HTML.",
       evidence: mismatchEndpoints.slice(0, 5).join("\n"),
       remediation: "Set Content-Type: application/json for all JSON API responses. Ensure X-Content-Type-Options: nosniff is set.",
+      codeSnippet: `// Express middleware to fix Content-Type for JSON responses\napp.use("/api", (req, res, next) => {\n  const originalJson = res.json.bind(res);\n  res.json = (body) => {\n    res.setHeader("Content-Type", "application/json");\n    res.setHeader("X-Content-Type-Options", "nosniff");\n    return originalJson(body);\n  };\n  next();\n});`,
       cwe: "CWE-436", owasp: "A05:2021",
     });
   }

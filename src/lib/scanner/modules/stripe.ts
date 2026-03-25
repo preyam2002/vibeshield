@@ -60,6 +60,7 @@ export const stripeModule: ScanModule = async (target) => {
       description: "The webhook endpoint accepted a fake Stripe event without signature verification.",
       evidence: `POST ${target.baseUrl + r.value.path}\nSent fake checkout.session.completed event\nStatus: ${r.value.status}`,
       remediation: "Verify Stripe webhook signatures using stripe.webhooks.constructEvent().",
+      codeSnippet: `// Verify webhook signature before processing\nconst sig = req.headers["stripe-signature"];\nconst event = stripe.webhooks.constructEvent(\n  req.body, // raw body, not parsed JSON\n  sig,\n  process.env.STRIPE_WEBHOOK_SECRET\n);\n\n// Now safe to handle\nif (event.type === "checkout.session.completed") {\n  await fulfillOrder(event.data.object);\n}`,
       cwe: "CWE-345", owasp: "A02:2021",
     });
   }
@@ -73,6 +74,7 @@ export const stripeModule: ScanModule = async (target) => {
       description: "The payment endpoint accepts client-sent price/amount values and returns checkout-related data.",
       evidence: `POST ${v.endpoint} with amount:1 → ${v.status}\nResponse preview: ${v.text}`,
       remediation: "Never accept prices from the client. Look up prices server-side using Stripe Price IDs from your database.",
+      codeSnippet: `// Look up price server-side — never trust client-sent amounts\nconst plan = await db.plan.findUnique({ where: { id: planId } });\n\nconst session = await stripe.checkout.sessions.create({\n  line_items: [{\n    price: plan.stripePriceId, // from your DB, not the request\n    quantity: 1,\n  }],\n  mode: "subscription",\n});`,
       cwe: "CWE-472",
     });
   }
@@ -95,6 +97,7 @@ export const stripeModule: ScanModule = async (target) => {
               description: "The payment success URL can be accessed directly without completing payment. If this page grants access or fulfills orders, users can skip payment entirely.",
               evidence: `Success URL: ${successUrl}\nStatus: ${res.status}`,
               remediation: "Don't rely on the success URL for fulfillment. Use Stripe webhooks to confirm payment, then update the user's access server-side.",
+              codeSnippet: `// In your webhook handler, grant access after confirmed payment\nif (event.type === "checkout.session.completed") {\n  const session = event.data.object;\n  await db.user.update({\n    where: { email: session.customer_email },\n    data: { plan: "pro", paidAt: new Date() },\n  });\n}\n\n// In your success page, check actual payment status\nconst user = await getUser(session);\nif (!user.paidAt) redirect("/pricing");`,
               cwe: "CWE-862",
             });
           }

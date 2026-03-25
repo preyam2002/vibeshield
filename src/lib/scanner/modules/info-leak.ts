@@ -99,6 +99,7 @@ export const infoLeakModule: ScanModule = async (target) => {
         description: `A ${v.tech} stack trace was returned when sending ${v.desc}. Stack traces reveal internal file paths, function names, and application structure.`,
         evidence: `URL: ${v.url}\nTech: ${v.tech}\nResponse excerpt: ${v.text.substring(0, 400)}`,
         remediation: "Implement proper error handling that returns generic error messages in production. Never expose stack traces to users.",
+        codeSnippet: `// app/error.tsx — global error boundary\n"use client";\nexport default function GlobalError({ reset }: { reset: () => void }) {\n  return (\n    <html><body>\n      <h2>Something went wrong</h2>\n      <button onClick={() => reset()}>Try again</button>\n    </body></html>\n  );\n}\n\n// middleware.ts — catch API errors\nimport { NextResponse } from "next/server";\nexport function middleware() {\n  // Never leak stack traces; log server-side only\n}`,
         cwe: "CWE-209",
         owasp: "A05:2021",
       });
@@ -113,6 +114,7 @@ export const infoLeakModule: ScanModule = async (target) => {
           description: `Sensitive information (${v.description}) was found in the response.`,
           evidence: `URL: ${v.url}\nPattern: ${v.description}`,
           remediation: "Sanitize error responses in production. Use a global error handler.",
+          codeSnippet: `// next.config.ts — disable verbose errors in production\nconst nextConfig: NextConfig = {\n  poweredByHeader: false,\n  // Errors are sanitized automatically in production builds\n};\n\n// API route — never expose internals\nexport async function GET() {\n  try {\n    const data = await db.query(...);\n    return NextResponse.json(data);\n  } catch (err) {\n    console.error(err); // log server-side only\n    return NextResponse.json({ error: "Internal error" }, { status: 500 });\n  }\n}`,
           cwe: "CWE-200",
         });
       }
@@ -130,6 +132,7 @@ export const infoLeakModule: ScanModule = async (target) => {
       description: `Sending malformed data triggers detailed error output revealing ${v.tech} internals.`,
       evidence: `POST with malformed JSON\nStatus: ${v.status}\nResponse: ${v.text.substring(0, 300)}`,
       remediation: "Return generic 400/500 errors. Log details server-side only.",
+      codeSnippet: `// API route — validate JSON before processing\nimport { NextRequest, NextResponse } from "next/server";\n\nexport async function POST(req: NextRequest) {\n  let body: unknown;\n  try {\n    body = await req.json();\n  } catch {\n    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });\n  }\n  // process validated body...\n}`,
       cwe: "CWE-209",
     });
   }
@@ -149,6 +152,7 @@ export const infoLeakModule: ScanModule = async (target) => {
       description: `Your React app uses dangerouslySetInnerHTML ${dangerousMatches.length} times and has no Content-Security-Policy header. If any render user-controlled content, it's a direct XSS vulnerability with no CSP mitigation.`,
       evidence: `Found ${dangerousMatches.length} instances of dangerouslySetInnerHTML in JS bundles`,
       remediation: "Audit each dangerouslySetInnerHTML usage. If rendering user content, sanitize with DOMPurify first. Add a CSP header to mitigate XSS risk.",
+      codeSnippet: `// Sanitize before rendering user content\nimport DOMPurify from "isomorphic-dompurify";\n\nconst SafeHTML = ({ html }: { html: string }) => (\n  <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />\n);\n\n// middleware.ts — add CSP header\nimport { NextResponse } from "next/server";\nexport function middleware() {\n  const res = NextResponse.next();\n  res.headers.set("Content-Security-Policy", "default-src 'self'; script-src 'self'");\n  return res;\n}`,
       cwe: "CWE-79",
       owasp: "A03:2021",
     });

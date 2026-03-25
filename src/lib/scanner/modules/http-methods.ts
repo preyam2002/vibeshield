@@ -36,6 +36,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
                 evidence: `OPTIONS ${endpoint}\nAllow: ${allow}`,
                 remediation: `Disable the ${method} method in your web server configuration.`,
                 cwe: "CWE-749",
+                codeSnippet: `// vercel.json — block dangerous methods\n{\n  "headers": [{ "source": "/(.*)", "headers": [{ "key": "Allow", "value": "GET, POST, HEAD" }] }]\n}\n// Or in middleware.ts:\nif (["TRACE", "TRACK", "DEBUG"].includes(req.method)) return new Response(null, { status: 405 });`,
               });
             }
           }
@@ -102,6 +103,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
                   remediation: `Disable HTTP method override headers in production. If needed, restrict to authenticated admin requests only.`,
                   cwe: "CWE-749",
                   owasp: "A01:2021",
+                  codeSnippet: `// middleware.ts — strip method override headers\nconst BLOCKED_HEADERS = ["x-http-method-override", "x-method-override", "x-http-method"];\nexport function middleware(req) {\n  const headers = new Headers(req.headers);\n  BLOCKED_HEADERS.forEach(h => headers.delete(h));\n  return NextResponse.next({ request: { headers } });\n}`,
                 });
                 break;
               }

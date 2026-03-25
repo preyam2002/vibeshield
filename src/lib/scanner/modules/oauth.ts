@@ -170,6 +170,7 @@ export const oauthModule: ScanModule = async (target) => {
         description: `The OpenID Connect discovery endpoint exposes configuration with security concerns: ${v.issues.join("; ")}`,
         evidence: `GET ${target.baseUrl}${v.path}\nIssues: ${v.issues.join(", ")}`,
         remediation: "Disable implicit grant flow. Enforce PKCE for all OAuth flows. Disable dynamic client registration unless specifically needed.",
+        codeSnippet: `// Enforce PKCE in your OAuth client\nconst codeVerifier = crypto.randomBytes(32).toString("base64url");\nconst codeChallenge = crypto\n  .createHash("sha256").update(codeVerifier).digest("base64url");\n\nconst authUrl = new URL(authorizationEndpoint);\nauthUrl.searchParams.set("code_challenge", codeChallenge);\nauthUrl.searchParams.set("code_challenge_method", "S256");\nauthUrl.searchParams.set("response_type", "code"); // never "token"`,
         cwe: "CWE-346", owasp: "A07:2021",
       });
     }
@@ -180,6 +181,7 @@ export const oauthModule: ScanModule = async (target) => {
         description: "The authorization server allows dynamic client registration. Attackers can register arbitrary clients and potentially gain unauthorized access.",
         evidence: `Registration endpoint: ${v.config.registration_endpoint}`,
         remediation: "Disable dynamic client registration or require authentication for it.",
+        codeSnippet: `// Protect the registration endpoint with an access token\napp.post("/oauth/register", requireBearerToken, async (req, res) => {\n  // Only pre-authorized clients can register\n  const client = await registerClient(req.body);\n  res.json(client);\n});`,
         cwe: "CWE-287", owasp: "A07:2021",
       });
     }
@@ -195,6 +197,7 @@ export const oauthModule: ScanModule = async (target) => {
         description: "The OAuth callback accepts arbitrary redirect URIs. Attackers can steal authorization codes by redirecting to their server.",
         evidence: `GET ${target.baseUrl}${v.path}?redirect_uri=https://evil.com/steal\nRedirects to: ${v.location}`,
         remediation: "Strictly validate redirect_uri against a whitelist of pre-registered URLs. Use exact string matching, not prefix or subdomain matching.",
+        codeSnippet: `// Validate redirect_uri with exact match\nconst ALLOWED_REDIRECTS = new Set([\n  "https://yourdomain.com/api/auth/callback",\n  "https://yourdomain.com/oauth/callback",\n]);\n\nconst redirectUri = req.query.redirect_uri;\nif (!ALLOWED_REDIRECTS.has(redirectUri)) {\n  return res.status(400).json({ error: "invalid_redirect_uri" });\n}`,
         cwe: "CWE-601", owasp: "A07:2021",
       });
     }
@@ -210,6 +213,7 @@ export const oauthModule: ScanModule = async (target) => {
         description: "The session endpoint returns user data without proper authentication. This may expose email, name, or tokens to unauthenticated requests.",
         evidence: `GET ${target.baseUrl}${v.path}\nExposed fields: ${v.keys.join(", ")}`,
         remediation: "Ensure session endpoints require valid authentication cookies. Return empty/null for unauthenticated requests.",
+        codeSnippet: `// NextAuth — session endpoint returns null when unauthenticated\n// next-auth.config.ts\nexport const authOptions = {\n  callbacks: {\n    session({ session, token }) {\n      // Only expose minimal fields\n      return { user: { id: token.sub, name: session.user?.name } };\n    },\n  },\n};\n// Protect API: const session = await getServerSession(authOptions);\n// if (!session) return NextResponse.json(null, { status: 401 });`,
         cwe: "CWE-200", owasp: "A01:2021",
       });
     }
@@ -224,6 +228,7 @@ export const oauthModule: ScanModule = async (target) => {
       description: "The OAuth callback processes requests without a valid state parameter. This enables CSRF attacks — an attacker can force a victim to log in with the attacker's account.",
       evidence: `GET ${target.baseUrl}${v.path}?code=test_no_state (no state parameter)\nServer processed the request without error`,
       remediation: "Always validate the state parameter in OAuth callbacks. Generate a unique, unpredictable state value per authorization request and verify it matches on callback.",
+      codeSnippet: `// Generate state before redirect\nconst state = crypto.randomBytes(32).toString("hex");\ncookies().set("oauth_state", state, { httpOnly: true, sameSite: "lax" });\n// Include state in authorization URL\nauthUrl.searchParams.set("state", state);\n\n// Validate state in callback\nconst savedState = cookies().get("oauth_state")?.value;\nif (!savedState || savedState !== req.query.state) {\n  return res.status(403).json({ error: "Invalid state" });\n}`,
       cwe: "CWE-352", owasp: "A07:2021",
     });
     break;
@@ -236,6 +241,7 @@ export const oauthModule: ScanModule = async (target) => {
       description: "The credentials signin endpoint accepts requests without a valid CSRF token. This could allow cross-site login attacks.",
       evidence: "POST /api/auth/signin/credentials without csrfToken succeeded",
       remediation: "Ensure the NextAuth CSRF token is validated on all mutation endpoints. Check your NextAuth configuration.",
+      codeSnippet: `// Include CSRF token in NextAuth signin requests\nimport { getCsrfToken } from "next-auth/react";\n\nconst csrfToken = await getCsrfToken();\nawait fetch("/api/auth/signin/credentials", {\n  method: "POST",\n  headers: { "Content-Type": "application/x-www-form-urlencoded" },\n  body: new URLSearchParams({ csrfToken, email, password }),\n});`,
       cwe: "CWE-352", owasp: "A07:2021",
     });
   }
@@ -256,6 +262,7 @@ export const oauthModule: ScanModule = async (target) => {
           description: "An OAuth client secret is hardcoded in the client-side JavaScript. Attackers can use this to impersonate your application.",
           evidence: `Pattern: ${m[0].substring(0, 50)}...`,
           remediation: "Move OAuth client secrets to server-side environment variables. Never include secrets in client-side code. Use NEXT_PUBLIC_ only for public values.",
+          codeSnippet: `// .env (server-side only — no NEXT_PUBLIC_ prefix)\nGOOGLE_CLIENT_SECRET=your-secret\n\n// app/api/auth/[...nextauth]/route.ts\nimport GoogleProvider from "next-auth/providers/google";\nexport const authOptions = {\n  providers: [\n    GoogleProvider({\n      clientId: process.env.GOOGLE_CLIENT_ID!,\n      clientSecret: process.env.GOOGLE_CLIENT_SECRET!, // server-only\n    }),\n  ],\n};`,
           cwe: "CWE-798", owasp: "A07:2021",
         });
         break;

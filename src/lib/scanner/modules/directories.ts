@@ -124,6 +124,13 @@ export const directoriesModule: ScanModule = async (target) => {
       remediation: check.remediation,
       cwe: "CWE-538",
       owasp: "A05:2021",
+      codeSnippet: check.path.includes(".env")
+        ? `// next.config.ts — block .env files\nexport default {\n  async headers() {\n    return [{ source: "/.env:path*", headers: [{ key: "X-Robots-Tag", value: "noindex" }] }];\n  },\n  async rewrites() {\n    return [{ source: "/.env:path*", destination: "/404" }];\n  },\n};`
+        : check.path.includes(".git")
+        ? `// vercel.json or next.config.ts\n// Block .git directory access\n{ "rewrites": [{ "source": "/.git/:path*", "destination": "/404" }] }\n// Or nginx: location ~ /\\.git { deny all; }`
+        : check.severity === "critical"
+        ? `// Remove sensitive files from web root\n// Add to .gitignore and deployment ignore:\n${check.path}\n// Or block in middleware:\nif (req.nextUrl.pathname.startsWith("${check.path}")) return new Response(null, { status: 404 });`
+        : undefined,
     });
   }
 

@@ -126,6 +126,16 @@ export const emailEnumModule: ScanModule = async (target) => {
         description: `Different responses for existing vs non-existing emails allow attackers to determine which email addresses are registered. Differs by: ${v.differsBy}.`,
         evidence: `Path: ${v.path}\nFake email status: ${v.status1}\nReal email status: ${v.status2}\n${v.hasEnumPhrase ? "Response contains explicit user existence message" : ""}`,
         remediation: 'Return identical responses for valid and invalid emails. Use a generic message like "If an account exists, we\'ll send a reset link."',
+        codeSnippet: `// Return the same response regardless of whether the user exists
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  const user = await db.users.findByEmail(email);
+  if (user) {
+    await sendPasswordResetEmail(user);
+  }
+  // Always return 200 with a generic message
+  res.status(200).json({ message: "If an account with that email exists, a reset link has been sent." });
+});`,
         cwe: "CWE-204", owasp: "A07:2021",
       });
     } else {
@@ -135,6 +145,24 @@ export const emailEnumModule: ScanModule = async (target) => {
         description: `Response times differ significantly for existing vs non-existing emails (baseline: ${v.baselineMedian}ms, real: ${v.realMedian}ms). Attackers can determine valid emails by measuring response times.`,
         evidence: `Baseline median: ${v.baselineMedian}ms (variance: ${v.baselineVariance}ms)\nReal email median: ${v.realMedian}ms\nDifference: ${v.diff}ms`,
         remediation: "Normalize response times for auth endpoints. Add a consistent delay regardless of whether the user exists.",
+        codeSnippet: `// Enforce constant-time responses to prevent timing attacks
+app.post("/api/auth/login", async (req, res) => {
+  const start = Date.now();
+  const MIN_RESPONSE_MS = 500;
+  try {
+    const user = await db.users.findByEmail(req.body.email);
+    // Always run password hash comparison, even for missing users
+    const valid = user
+      ? await bcrypt.compare(req.body.password, user.passwordHash)
+      : await bcrypt.compare(req.body.password, DUMMY_HASH);
+    if (!user || !valid) throw new Error();
+    res.json({ token: signJwt(user) });
+  } catch {
+    const elapsed = Date.now() - start;
+    await new Promise((r) => setTimeout(r, Math.max(0, MIN_RESPONSE_MS - elapsed)));
+    res.status(401).json({ error: "Invalid credentials" });
+  }
+});`,
         cwe: "CWE-208",
       });
     }

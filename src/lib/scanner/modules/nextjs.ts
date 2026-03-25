@@ -109,6 +109,7 @@ export const nextjsModule: ScanModule = async (target) => {
       evidence: `URL: ${v.dataUrl}\nPreview: ${v.text}`,
       remediation: "Only pass necessary data to the client via getServerSideProps.",
       cwe: "CWE-200",
+      codeSnippet: `// Only return what the client needs\nexport const getServerSideProps: GetServerSideProps = async (ctx) => {\n  const user = await getUser(ctx);\n  return { props: { name: user.name } }; // not the full user object\n};`,
     });
   }
 
@@ -122,6 +123,7 @@ export const nextjsModule: ScanModule = async (target) => {
       evidence: `Found ${r.value.count} secret pattern(s) in __NEXT_DATA__`,
       remediation: "Never return secrets in getServerSideProps/getStaticProps.",
       cwe: "CWE-200", owasp: "A01:2021",
+      codeSnippet: `// Move secrets to server-only code\nimport "server-only";\n\n// Use environment variables only on the server\nconst data = await fetch(url, {\n  headers: { Authorization: \`Bearer \${process.env.API_SECRET}\` },\n});\nreturn { props: { items: data.items } }; // never forward the token`,
     });
     break;
   }
@@ -140,6 +142,7 @@ export const nextjsModule: ScanModule = async (target) => {
       evidence: `Without header: ${v.normalStatus}\nWith ${v.header}: ${v.value}: 200`,
       remediation: "Don't rely solely on middleware for authentication.",
       cwe: "CWE-863", owasp: "A01:2021",
+      codeSnippet: `// Verify auth in the route handler, not just middleware\n// app/api/admin/route.ts\nimport { getServerSession } from "next-auth";\n\nexport async function GET(req: Request) {\n  const session = await getServerSession();\n  if (!session?.user) return Response.json({ error: "Unauthorized" }, { status: 401 });\n}`,
     });
   }
 
@@ -153,6 +156,7 @@ export const nextjsModule: ScanModule = async (target) => {
       evidence: `GET ${target.baseUrl + r.value.path} → ${r.value.status}`,
       remediation: "Ensure NODE_ENV=production in your deployment.",
       cwe: "CWE-489",
+      codeSnippet: `// Dockerfile\nENV NODE_ENV=production\nRUN npm run build\nCMD ["npm", "start"]\n\n// next.config.ts — block dev routes in production\nconst nextConfig = { poweredByHeader: false };`,
     });
   }
 
@@ -165,6 +169,7 @@ export const nextjsModule: ScanModule = async (target) => {
       evidence: `RSC payload preview: ${rscResult.text}`,
       remediation: "Audit what data your Server Components pass to Client Components.",
       cwe: "CWE-200",
+      codeSnippet: `// Only pass serializable, non-sensitive props to Client Components\n// app/dashboard/page.tsx (Server Component)\nimport { ClientView } from "./client-view";\n\nexport default async function Page() {\n  const data = await getSecureData();\n  return <ClientView summary={data.publicSummary} />; // not the full object\n}`,
     });
   }
 
