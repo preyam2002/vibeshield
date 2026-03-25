@@ -31,6 +31,12 @@ export const hostHeaderModule: ScanModule = async (target) => {
         { header: "X-Original-Host", value: "evil.com" },
         { header: "X-Forwarded-Proto", value: "http" },
         { header: "X-Host", value: "evil.com" },
+        { header: "X-Real-IP", value: "127.0.0.1" },
+        { header: "X-Client-IP", value: "127.0.0.1" },
+        { header: "X-Forwarded-For", value: "127.0.0.1" },
+        { header: "True-Client-IP", value: "127.0.0.1" },
+        { header: "X-Originating-IP", value: "127.0.0.1" },
+        { header: "CF-Connecting-IP", value: "127.0.0.1" },
       ].map(async ({ header, value }) => {
         const res = await scanFetch(target.url, { headers: { [header]: value }, redirect: "manual", timeoutMs: 5000 });
         const location = res.headers.get("location") || "";
@@ -38,6 +44,19 @@ export const hostHeaderModule: ScanModule = async (target) => {
           return { header, value, location, type: "proto-downgrade" as const };
         }
         if (location.includes("evil.com")) return { header, value, location, type: "redirect" as const };
+        // IP spoofing: check if setting IP to 127.0.0.1 grants access to normally restricted content
+        if (value === "127.0.0.1" && res.ok) {
+          const normalRes = await scanFetch(target.url, { timeoutMs: 5000 });
+          // If response differs significantly (e.g., admin panel or different content)
+          const normalText = await normalRes.text();
+          const spoofText = await res.text();
+          if (spoofText.length > normalText.length * 1.5 && spoofText.length > 500) {
+            return { header, value, location: "", type: "ip-spoof" as const };
+          }
+          if (/admin|dashboard|internal|debug/i.test(spoofText) && !/admin|dashboard|internal|debug/i.test(normalText)) {
+            return { header, value, location: "", type: "ip-spoof" as const };
+          }
+        }
         return null;
       }),
     ),
@@ -97,6 +116,16 @@ export const hostHeaderModule: ScanModule = async (target) => {
         remediation: "Only trust X-Forwarded-Proto from known reverse proxies. Enforce HTTPS at the application level.",
         cwe: "CWE-644", owasp: "A05:2021",
         codeSnippet: `// next.config.ts — force HTTPS redirects\nconst securityHeaders = [\n  { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }\n];\nexport default { async headers() { return [{ source: "/(.*)", headers: securityHeaders }]; } };`,
+      });
+    } else if (v.type === "ip-spoof") {
+      findings.push({
+        id: `host-header-ip-spoof-0`, module: "Host Header Injection", severity: "high",
+        title: `IP-based access control bypass via ${v.header}`,
+        description: `Setting ${v.header}: 127.0.0.1 returns different (possibly privileged) content. The application trusts client-supplied IP headers for access control, allowing attackers to impersonate internal/trusted IPs.`,
+        evidence: `${v.header}: 127.0.0.1\nResponse contains additional content or admin indicators not present in normal response`,
+        remediation: "Never trust client-supplied IP headers for access control. Configure your reverse proxy to overwrite these headers. Use authentication instead of IP-based restrictions.",
+        cwe: "CWE-290", owasp: "A01:2021",
+        codeSnippet: `// Only trust IP from your reverse proxy, not client headers\n// In your reverse proxy (nginx):\n// proxy_set_header X-Real-IP $remote_addr;\n// proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\n// In your app — don't use these for auth:\n// BAD: if (req.headers['x-real-ip'] === '127.0.0.1') { grantAdmin(); }\n// GOOD: Use proper authentication (sessions, JWTs, etc.)`,
       });
     } else {
       findings.push({

@@ -31,7 +31,7 @@ export const nextjsModule: ScanModule = async (target) => {
   ];
 
   // Run all checks in parallel
-  const [ssrResults, nextDataResults, bypassResults, internalResults, rscResult, serverActionResult, imageSSRFResult] = await Promise.all([
+  const [ssrResults, nextDataResults, bypassResults, internalResults, rscResult, serverActionResult, imageSSRFResult, catchAllResult, previewResult, metadataResult] = await Promise.all([
     // SSR data routes
     detectedBuildId ? Promise.allSettled(
       target.pages.slice(0, 10).map(async (page) => {
@@ -101,36 +101,62 @@ export const nextjsModule: ScanModule = async (target) => {
       const actionIdPattern = /["']([a-f0-9]{40})["']/g;
       const actionIds: string[] = [];
       let m;
-      while ((m = actionIdPattern.exec(allJs)) !== null && actionIds.length < 10) {
+      while ((m = actionIdPattern.exec(allJs)) !== null && actionIds.length < 15) {
         if (!actionIds.includes(m[1])) actionIds.push(m[1]);
       }
       if (actionIds.length === 0) return null;
 
+      // Test payloads — empty, proto pollution, and type confusion
+      const payloads = [
+        { body: JSON.stringify([]), desc: "empty args" },
+        { body: JSON.stringify([{ __proto__: { admin: true } }]), desc: "proto pollution" },
+        { body: JSON.stringify([null, null, null]), desc: "null args" },
+      ];
+
       const results = await Promise.allSettled(
-        actionIds.slice(0, 5).map(async (actionId) => {
+        actionIds.slice(0, 8).map(async (actionId) => {
+          // First test: unauthenticated empty call
           const res = await scanFetch(target.url, {
             method: "POST",
             headers: {
               "Content-Type": "text/plain;charset=UTF-8",
               "Next-Action": actionId,
             },
-            body: JSON.stringify([]),
+            body: payloads[0].body,
             timeoutMs: 5000,
           });
-          if (res.status === 200 || res.status === 303) {
-            const text = await res.text();
-            if (text.length > 5) return { actionId, status: res.status, text };
-          }
-          return null;
+          if (res.status !== 200 && res.status !== 303) return null;
+          const text = await res.text();
+          if (text.length <= 5) return null;
+
+          // Check for sensitive data in response
+          const hasSensitive = /password|secret|token|api.?key|private_key|credit|ssn|email.*@/i.test(text);
+
+          // Second test: proto pollution via Server Action
+          let protoVuln = false;
+          try {
+            const protoRes = await scanFetch(target.url, {
+              method: "POST",
+              headers: { "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
+              body: payloads[1].body,
+              timeoutMs: 5000,
+            });
+            if (protoRes.ok) {
+              const protoText = await protoRes.text();
+              if (protoText.includes("admin") && !text.includes("admin")) protoVuln = true;
+            }
+          } catch { /* skip */ }
+
+          return { actionId, status: res.status, text, hasSensitive, protoVuln };
         }),
       );
 
-      const accepted: { actionId: string; status: number; text: string }[] = [];
+      const accepted: { actionId: string; status: number; text: string; hasSensitive: boolean; protoVuln: boolean }[] = [];
       for (const r of results) {
         if (r.status === "fulfilled" && r.value) accepted.push(r.value);
       }
 
-      return accepted.length > 0 ? { count: accepted.length, total: actionIds.length, sample: accepted[0] } : null;
+      return accepted.length > 0 ? { count: accepted.length, total: actionIds.length, sample: accepted[0], hasSensitive: accepted.some((a) => a.hasSensitive), hasProtoVuln: accepted.some((a) => a.protoVuln) } : null;
     })(),
 
     // _next/image SSRF — test if image optimizer accepts arbitrary URLs
@@ -142,6 +168,109 @@ export const nextjsModule: ScanModule = async (target) => {
         }
         return null;
       }).catch(() => null),
+
+    // Catch-all API route exposure — [...slug] routes that accept arbitrary paths
+    (async () => {
+      const catchAllPaths = [
+        "/api/[...slug]", "/api/[...catchAll]", "/api/[...params]",
+        "/api/proxy/test", "/api/webhook/test", "/api/graphql",
+        "/api/trpc/test", "/api/auth/test", "/api/v1/test",
+      ];
+      const results: { path: string; status: number; text: string }[] = [];
+      const settled = await Promise.allSettled(
+        catchAllPaths.map(async (path) => {
+          const res = await scanFetch(`${target.baseUrl}${path}`, { timeoutMs: 5000 });
+          if (res.ok) {
+            const text = await res.text();
+            // Skip if it's a generic 404 page served as 200
+            if (text.length > 50 && !/not found|404/i.test(text.substring(0, 200))) {
+              return { path, status: res.status, text: text.substring(0, 300) };
+            }
+          }
+          return null;
+        }),
+      );
+      for (const r of settled) {
+        if (r.status === "fulfilled" && r.value) results.push(r.value);
+      }
+      return results.length > 0 ? results : null;
+    })(),
+
+    // ISR/Preview mode token leak — check for __prerender_bypass and __next_preview_data cookies
+    (async () => {
+      // Check if preview mode endpoints leak tokens
+      const previewPaths = ["/api/preview", "/api/draft", "/api/enable-preview", "/api/exit-preview"];
+      const results: { path: string; cookies: string[] }[] = [];
+      const settled = await Promise.allSettled(
+        previewPaths.map(async (path) => {
+          const res = await scanFetch(`${target.baseUrl}${path}`, { timeoutMs: 5000 });
+          const setCookies = res.headers.get("set-cookie") || "";
+          const leaked: string[] = [];
+          if (setCookies.includes("__prerender_bypass")) leaked.push("__prerender_bypass");
+          if (setCookies.includes("__next_preview_data")) leaked.push("__next_preview_data");
+          if (leaked.length > 0) return { path, cookies: leaked };
+          return null;
+        }),
+      );
+      for (const r of settled) {
+        if (r.status === "fulfilled" && r.value) results.push(r.value);
+      }
+      // Also check JS bundles for leaked preview tokens
+      const previewBypassMatch = allJs.match(/__prerender_bypass["']\s*[:=]\s*["']([^"']{10,})["']/);
+      const previewDataMatch = allJs.match(/__next_preview_data["']\s*[:=]\s*["']([^"']{10,})["']/);
+      if (previewBypassMatch || previewDataMatch) {
+        results.push({ path: "JS bundle", cookies: [previewBypassMatch ? "__prerender_bypass" : "", previewDataMatch ? "__next_preview_data" : ""].filter(Boolean) });
+      }
+      return results.length > 0 ? results : null;
+    })(),
+
+    // App directory metadata exposure — check for leaked metadata, sitemap, robots with internal paths
+    (async () => {
+      const metaPaths = [
+        "/sitemap.xml", "/robots.txt", "/manifest.json", "/manifest.webmanifest",
+        "/.well-known/openid-configuration", "/opengraph-image", "/twitter-image",
+        "/favicon.ico", "/apple-icon",
+      ];
+      const leaks: { path: string; issue: string }[] = [];
+      const settled = await Promise.allSettled(
+        metaPaths.map(async (path) => {
+          const res = await scanFetch(`${target.baseUrl}${path}`, { timeoutMs: 5000 });
+          if (!res.ok) return null;
+          const text = await res.text();
+          // Check sitemap for internal/staging URLs
+          if (path === "/sitemap.xml") {
+            const internalUrls = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1|staging|dev|internal)[^\s<]*/gi);
+            if (internalUrls && internalUrls.length > 0) {
+              return { path, issue: `Sitemap contains internal URLs: ${internalUrls.slice(0, 3).join(", ")}` };
+            }
+            // Check for admin/internal paths in sitemap
+            const adminPaths = text.match(/<loc>[^<]*(?:admin|internal|debug|test|staging)[^<]*<\/loc>/gi);
+            if (adminPaths && adminPaths.length > 0) {
+              return { path, issue: `Sitemap exposes sensitive paths: ${adminPaths.slice(0, 3).join(", ")}` };
+            }
+          }
+          // Check robots.txt for sensitive Disallow entries
+          if (path === "/robots.txt") {
+            const disallowed = text.match(/Disallow:\s*\/\S+/gi) || [];
+            const sensitive = disallowed.filter((d) => /admin|api|internal|secret|private|dashboard|debug|staging/i.test(d));
+            if (sensitive.length >= 3) {
+              return { path, issue: `robots.txt reveals ${sensitive.length} sensitive paths: ${sensitive.slice(0, 5).join(", ")}` };
+            }
+          }
+          // Check manifest for internal URLs or debug info
+          if (path.includes("manifest")) {
+            if (/localhost|127\.0\.0\.1|staging\.|internal\./i.test(text)) {
+              return { path, issue: "Manifest contains internal/staging URLs" };
+            }
+          }
+          return null;
+        }),
+      );
+      for (const r of settled) {
+        if (r.status === "fulfilled" && r.value) leaks.push(r.value);
+      }
+      return leaks.length > 0 ? leaks : null;
+    })(),
   ]);
 
   // Collect SSR data leak findings
@@ -209,15 +338,19 @@ export const nextjsModule: ScanModule = async (target) => {
 
   // Server Action findings
   if (serverActionResult) {
+    const severity = serverActionResult.hasProtoVuln ? "critical" : serverActionResult.hasSensitive ? "high" : serverActionResult.count >= 3 ? "medium" : "low";
+    const extraInfo = [
+      serverActionResult.hasProtoVuln && "Prototype pollution accepted via Server Action",
+      serverActionResult.hasSensitive && "Sensitive data returned in Server Action response",
+    ].filter(Boolean).join(". ");
     findings.push({
-      id: "nextjs-server-actions-exposed", module: "Next.js",
-      severity: serverActionResult.count >= 3 ? "medium" : "low",
+      id: "nextjs-server-actions-exposed", module: "Next.js", severity,
       title: `${serverActionResult.count}/${serverActionResult.total} Server Actions accept unauthenticated requests`,
-      description: "Next.js Server Actions were found to accept POST requests without authentication. Server Actions are direct function calls from client to server — if they perform sensitive operations (database writes, payments, etc.), they should validate the caller's identity.",
+      description: `Next.js Server Actions were found to accept POST requests without authentication. Server Actions are direct function calls from client to server — if they perform sensitive operations (database writes, payments, etc.), they should validate the caller's identity.${extraInfo ? ` ${extraInfo}.` : ""}`,
       evidence: `Tested ${serverActionResult.total} action IDs found in JS bundle.\n${serverActionResult.count} accepted requests.\nSample action: ${serverActionResult.sample.actionId}\nResponse: ${serverActionResult.sample.text.substring(0, 200)}`,
-      remediation: "Add authentication checks inside each Server Action. Don't rely on middleware alone.",
-      cwe: "CWE-306", owasp: "A07:2021",
-      codeSnippet: `// Always verify auth inside Server Actions\n"use server";\nimport { getServerSession } from "next-auth";\n\nexport async function updateProfile(data: FormData) {\n  const session = await getServerSession();\n  if (!session) throw new Error("Unauthorized");\n  // ... safe to proceed\n}`,
+      remediation: "Add authentication checks inside each Server Action. Don't rely on middleware alone. Validate and sanitize all input — Server Actions are public API endpoints.",
+      cwe: serverActionResult.hasProtoVuln ? "CWE-1321" : "CWE-306", owasp: "A07:2021",
+      codeSnippet: `// Always verify auth inside Server Actions\n"use server";\nimport { getServerSession } from "next-auth";\nimport { z } from "zod";\n\nconst schema = z.object({ name: z.string().max(100) });\n\nexport async function updateProfile(data: FormData) {\n  const session = await getServerSession();\n  if (!session) throw new Error("Unauthorized");\n  const parsed = schema.parse(Object.fromEntries(data));\n  // ... safe to proceed with validated input\n}`,
     });
   }
 
@@ -232,6 +365,56 @@ export const nextjsModule: ScanModule = async (target) => {
       cwe: "CWE-918", owasp: "A10:2021",
       codeSnippet: `// next.config.ts — restrict image optimization to known domains\nconst nextConfig = {\n  images: {\n    remotePatterns: [\n      { protocol: "https", hostname: "your-cdn.com" },\n      { protocol: "https", hostname: "avatars.githubusercontent.com" },\n    ],\n  },\n};`,
     });
+  }
+
+  // Catch-all API route findings
+  if (catchAllResult) {
+    const paths = catchAllResult.map((r) => r.path).join(", ");
+    findings.push({
+      id: "nextjs-catchall-routes", module: "Next.js", severity: "medium",
+      title: `${catchAllResult.length} catch-all API route(s) accepting arbitrary paths`,
+      description: `Catch-all routes (like [...slug]) were found responding to arbitrary path segments. These routes often proxy requests or handle dynamic routing — if they don't validate the path, they can be abused for SSRF, path traversal, or accessing unintended resources.`,
+      evidence: catchAllResult.map((r) => `${r.path} → ${r.status}: ${r.text.substring(0, 100)}`).join("\n"),
+      remediation: "Validate and allowlist accepted path segments in catch-all routes. Don't forward arbitrary paths to backends.",
+      cwe: "CWE-20", owasp: "A01:2021",
+      codeSnippet: `// Validate catch-all route params\nexport async function GET(req: Request, { params }: { params: { slug: string[] } }) {\n  const ALLOWED = new Set(["users", "posts", "products"]);\n  if (!ALLOWED.has(params.slug[0])) {\n    return Response.json({ error: "Not found" }, { status: 404 });\n  }\n  // ... handle known routes only\n}`,
+      confidence: 65,
+    });
+  }
+
+  // Preview/ISR token leak findings
+  if (previewResult) {
+    const leaked = previewResult.flatMap((r) => r.cookies);
+    const paths = previewResult.map((r) => r.path).join(", ");
+    findings.push({
+      id: "nextjs-preview-token-leak", module: "Next.js",
+      severity: previewResult.some((r) => r.path === "JS bundle") ? "high" : "medium",
+      title: "Next.js preview/ISR tokens exposed",
+      description: `Preview mode tokens (${[...new Set(leaked)].join(", ")}) were found ${previewResult.some((r) => r.path === "JS bundle") ? "in client-side JavaScript" : `via unauthenticated requests to ${paths}`}. These tokens allow bypassing ISR cache and viewing draft content. An attacker with these tokens can see unpublished content or bypass caching.`,
+      evidence: previewResult.map((r) => `${r.path}: ${r.cookies.join(", ")}`).join("\n"),
+      remediation: "Protect preview mode endpoints with authentication. Never expose preview tokens in client-side code. Use Next.js Draft Mode with proper auth checks.",
+      cwe: "CWE-200", owasp: "A01:2021",
+      codeSnippet: `// Protect preview endpoint with a secret\nexport async function GET(req: Request) {\n  const { searchParams } = new URL(req.url);\n  if (searchParams.get("secret") !== process.env.PREVIEW_SECRET) {\n    return Response.json({ error: "Invalid token" }, { status: 401 });\n  }\n  // Enable draft mode\n  const draft = await import("next/headers").then((m) => m.draftMode());\n  draft.enable();\n  return Response.redirect("/");\n}`,
+      confidence: 85,
+    });
+  }
+
+  // App directory metadata exposure findings
+  if (metadataResult) {
+    for (const leak of metadataResult.slice(0, 2)) {
+      findings.push({
+        id: `nextjs-metadata-leak-${findings.length}`, module: "Next.js",
+        severity: leak.path === "/sitemap.xml" ? "medium" : "low",
+        title: `Information disclosure via ${leak.path}`,
+        description: leak.issue,
+        evidence: `GET ${target.baseUrl}${leak.path}\n${leak.issue}`,
+        remediation: leak.path === "/robots.txt"
+          ? "Review robots.txt — Disallow entries reveal paths to attackers. Use authentication instead of obscurity."
+          : "Remove internal/staging URLs from public metadata files. Use environment-aware generation.",
+        cwe: "CWE-200",
+        confidence: 90,
+      });
+    }
   }
 
   // Check for process.env or config objects leaked in API responses

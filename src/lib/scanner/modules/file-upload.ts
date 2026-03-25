@@ -139,6 +139,45 @@ export const fileUploadModule: ScanModule = async (target) => {
           }
         }
 
+        // Test 6: Polyglot JPEG/JS — JPEG magic bytes + JS payload
+        const polyglotContent = "\xFF\xD8\xFF\xE0*/=alert(1)//";
+        const { boundary: b6, body: body6 } = buildMultipart("polyglot.jpg", "image/jpeg", polyglotContent);
+        const res6 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b6}` }, body: body6, timeoutMs: 5000,
+        });
+        if (res6.ok) {
+          const text6 = await res6.text();
+          if (!(looksLikeHtml(text6) && (isSoft404(text6, target) || target.isSpa))) {
+            if (text6.length > 10 && /url|path|key|location|filename/i.test(text6)) {
+              // Check if the uploaded file is served as text/html or application/javascript
+              const urlMatch6 = text6.match(/["']((?:https?:\/\/[^"']+|\/[^"']+)\.jpg?)["']/);
+              if (urlMatch6) {
+                try {
+                  const fileUrl = urlMatch6[1].startsWith("http") ? urlMatch6[1] : target.baseUrl + urlMatch6[1];
+                  const fileRes = await scanFetch(fileUrl, { timeoutMs: 5000 });
+                  const ct = fileRes.headers.get("content-type") || "";
+                  if (ct.includes("text/html") || ct.includes("javascript")) {
+                    return { type: "polyglot" as const, endpoint, pathname, fileUrl, contentType: ct };
+                  }
+                } catch { /* skip */ }
+              }
+            }
+          }
+        }
+
+        // Test 7: Oversize filename (255+ chars) — may cause path truncation or errors
+        const longName = "a".repeat(250) + ".jpg";
+        const { boundary: b7, body: body7 } = buildMultipart(longName, "image/jpeg", "test");
+        const res7 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b7}` }, body: body7, timeoutMs: 5000,
+        });
+        if (res7.status >= 500) {
+          const text7 = await res7.text();
+          if (/error|stack|trace|exception/i.test(text7)) {
+            return { type: "oversize-error" as const, endpoint, pathname, text: text7 };
+          }
+        }
+
         return null;
       }),
     ),
@@ -204,6 +243,20 @@ export const fileUploadModule: ScanModule = async (target) => {
         evidence: `POST ${v.endpoint} with filename "test.php%00.jpg"\nResponse: ${v.text.substring(0, 200)}`,
         remediation: "Strip null bytes from filenames. Use content-based type detection, not extensions.", cwe: "CWE-158", owasp: "A03:2021",
         codeSnippet: `// Strip null bytes and validate\nconst safeName = filename.replace(/\\0/g, '').replace(/%00/g, '');\nif (safeName !== filename) {\n  return Response.json({ error: 'Invalid filename' }, { status: 400 });\n}` });
+    } else if (v.type === "polyglot") {
+      findings.push({ id: `file-upload-polyglot-${findings.length}`, module: "File Upload", severity: "high",
+        title: `Polyglot file served with executable MIME type on ${v.pathname}`,
+        description: `A polyglot JPEG/JavaScript file was uploaded and served with Content-Type: ${v.contentType}. This allows XSS attacks — the file is valid as both an image and executable script.`,
+        evidence: `POST ${v.endpoint} with JPEG/JS polyglot → uploaded\nServed at: ${v.fileUrl}\nContent-Type: ${v.contentType}`,
+        remediation: "Validate file content with magic byte detection. Always serve uploads with Content-Type matching the validated type. Set Content-Disposition: attachment.", cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `// Validate content AND force correct Content-Type\nimport { fileTypeFromBuffer } from 'file-type';\n\nconst type = await fileTypeFromBuffer(buffer);\n// Serve with validated Content-Type, not whatever the file claims\nres.setHeader('Content-Type', type?.mime || 'application/octet-stream');\nres.setHeader('Content-Disposition', 'attachment');\nres.setHeader('X-Content-Type-Options', 'nosniff');` });
+    } else if (v.type === "oversize-error") {
+      findings.push({ id: `file-upload-error-${findings.length}`, module: "File Upload", severity: "low",
+        title: `Upload endpoint error disclosure on ${v.pathname}`,
+        description: "An oversized filename caused a server error with stack trace or debug information in the response.",
+        evidence: `POST ${v.endpoint} with 250-char filename\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Handle upload errors gracefully. Don't expose stack traces or internal details in error responses.", cwe: "CWE-209", owasp: "A05:2021",
+        confidence: 80 });
     }
   }
 

