@@ -103,6 +103,29 @@ jobs:
           curl -s "$VIBESHIELD_URL/api/scan/$SCAN_ID/ci?format=annotations" | while IFS= read -r line; do
             echo "$line"
           done
+
+      - name: Download reports
+        if: always()
+        run: |
+          SCAN_ID="\${{ steps.scan.outputs.scan_id }}"
+          curl -s "$VIBESHIELD_URL/api/scan/$SCAN_ID/junit" -o vibeshield-results.xml
+          curl -s "$VIBESHIELD_URL/api/scan/$SCAN_ID/sarif" -o vibeshield-results.sarif
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibeshield-security-results
+          path: |
+            vibeshield-results.xml
+            vibeshield-results.sarif
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: vibeshield-results.sarif
+        continue-on-error: true
 `;
 
   return new NextResponse(workflow, {
