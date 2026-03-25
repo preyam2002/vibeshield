@@ -258,6 +258,70 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Linear API key exposed. Attackers can access your project management data.",
     remediation: "Rotate in Linear settings. Move to server-side.",
   },
+  // Vercel
+  {
+    name: "Vercel Token",
+    pattern: /(?:VERCEL_TOKEN|vercel_token)[\s"':=]+["']([a-zA-Z0-9]{24,})["']/g,
+    severity: "high",
+    description: "Vercel deployment token exposed. Attackers can deploy to and manage your Vercel projects.",
+    remediation: "Rotate in Vercel account settings. Move to server-side.",
+  },
+  // Upstash
+  {
+    name: "Upstash Redis Token",
+    pattern: /UPSTASH_REDIS_REST_TOKEN[\s"':=]+["']([a-zA-Z0-9_-]{40,})["']/g,
+    severity: "high",
+    description: "Upstash Redis token exposed. Attackers can read/write your Redis data.",
+    remediation: "Rotate in Upstash console. Move to server-side environment variables.",
+  },
+  // Neon
+  {
+    name: "Neon Database URL",
+    pattern: /postgres(?:ql)?:\/\/[^:]+:[^@]+@[a-z0-9-]+\.neon\.tech\/[^\s"'`]+/g,
+    severity: "critical",
+    description: "Neon Postgres connection string with credentials exposed. Attackers can directly access your database.",
+    remediation: "Rotate the password in Neon console. Database URLs must never be in client code.",
+  },
+  // Planetscale
+  {
+    name: "PlanetScale Database URL",
+    pattern: /mysql:\/\/[^:]+:[^@]+@[a-z0-9-]+\.connect\.psdb\.cloud\/[^\s"'`]+/g,
+    severity: "critical",
+    description: "PlanetScale database connection string with credentials exposed.",
+    remediation: "Rotate credentials in PlanetScale. Database connections must only be server-side.",
+  },
+  // Turso
+  {
+    name: "Turso Database Token",
+    pattern: /(?:TURSO_AUTH_TOKEN|turso_auth_token)[\s"':=]+["']([a-zA-Z0-9._-]{40,})["']/g,
+    severity: "critical",
+    description: "Turso database authentication token exposed. Attackers can access your LibSQL database.",
+    remediation: "Rotate in Turso dashboard. Move to server-side.",
+  },
+  // Lemon Squeezy
+  {
+    name: "Lemon Squeezy API Key",
+    pattern: /(?:LEMONSQUEEZY_API_KEY|LEMON_SQUEEZY_API_KEY)[\s"':=]+["']([a-zA-Z0-9]{30,})["']/g,
+    severity: "high",
+    description: "Lemon Squeezy API key exposed. Attackers can access your payment and subscription data.",
+    remediation: "Rotate in Lemon Squeezy dashboard. Move to server-side.",
+  },
+  // Resend (already covered but add RESEND_API_KEY env var pattern)
+  {
+    name: "Postmark Server Token",
+    pattern: /(?:POSTMARK_SERVER_TOKEN|postmark.*token)[\s"':=]+["']([a-f0-9-]{36})["']/g,
+    severity: "high",
+    description: "Postmark server token exposed. Attackers can send emails from your domain.",
+    remediation: "Rotate in Postmark. Move to server-side.",
+  },
+  // Supabase URL with service key in query params
+  {
+    name: "Supabase Service Key in URL",
+    pattern: /supabase\.co\/[^\s]*apikey=eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
+    severity: "high",
+    description: "Supabase API key found embedded in a URL. If this is the service role key, it bypasses all RLS.",
+    remediation: "Remove the key from URLs. Use proper header-based authentication.",
+  },
 ];
 
 // Placeholder/test values that look like secrets but aren't

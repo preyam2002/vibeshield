@@ -64,6 +64,24 @@ const CHECKS: DirCheck[] = [
   { path: "/error.log", severity: "high", title: "Error log exposed", description: "Application error log is accessible. May contain stack traces, file paths, and sensitive data.", remediation: "Move logs outside web root." },
   { path: "/access.log", severity: "medium", title: "Access log exposed", description: "Web server access log is accessible.", remediation: "Move logs outside web root." },
   { path: "/debug.log", severity: "high", title: "Debug log exposed", description: "Debug log is publicly accessible.", remediation: "Remove or move outside web root." },
+
+  // Prisma / Drizzle
+  { path: "/prisma/schema.prisma", severity: "medium", title: "Prisma schema exposed", description: "Your Prisma schema reveals database models, relations, and field types.", remediation: "Block access to /prisma/ directory.", contentCheck: /model|datasource|generator/i },
+  { path: "/drizzle", severity: "medium", title: "Drizzle migrations directory", description: "Drizzle migration files may reveal your database schema.", remediation: "Block access to /drizzle/ directory." },
+
+  // Wrangler / Cloudflare
+  { path: "/wrangler.toml", severity: "high", title: "Wrangler config exposed", description: "Cloudflare Workers config may contain secrets, KV namespaces, and D1 database bindings.", remediation: "Block access to wrangler.toml.", contentCheck: /\[|name|compatibility_date/i },
+
+  // Next.js internal
+  { path: "/.next/BUILD_ID", severity: "low", title: ".next directory exposed", description: "Next.js build directory is accessible, revealing build ID and potentially server code.", remediation: "Block access to .next/ directory." },
+  { path: "/.next/server/pages-manifest.json", severity: "medium", title: "Next.js pages manifest exposed", description: "Server-side pages manifest reveals all routes and their compiled file paths.", remediation: "Block access to .next/ directory.", contentCheck: /\// },
+  { path: "/.next/server/middleware-manifest.json", severity: "medium", title: "Next.js middleware manifest exposed", description: "Middleware manifest reveals all middleware matchers and their configuration.", remediation: "Block access to .next/ directory.", contentCheck: /middleware|matchers/i },
+
+  // Turborepo / monorepo
+  { path: "/turbo.json", severity: "low", title: "turbo.json exposed", description: "Turborepo config reveals pipeline structure and dependencies.", remediation: "Block access to turbo.json.", contentCheck: /pipeline|tasks/i },
+
+  // Supabase
+  { path: "/supabase/config.toml", severity: "high", title: "Supabase local config exposed", description: "Supabase local configuration may contain project settings and connection details.", remediation: "Block access to /supabase/ directory.", contentCheck: /\[|project_id|api/i },
 ];
 
 export const directoriesModule: ScanModule = async (target) => {
