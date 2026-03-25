@@ -122,102 +122,13 @@ export const infoLeakModule: ScanModule = async (target) => {
     }
   }
 
-  // Check for path traversal — base URL paths
-  const traversalPaths = [
-    "/../../../etc/passwd",
-    "/..%2f..%2f..%2fetc/passwd",
-    "/....//....//....//etc/passwd",
-  ];
-
-  for (const path of traversalPaths) {
-    try {
-      const res = await scanFetch(target.baseUrl + path);
-      const text = await res.text();
-      if (/root:.*:0:0:|daemon:|bin:\/bin/i.test(text)) {
-        findings.push({
-          id: `infoleak-traversal-${findings.length}`,
-          module: "Information Leakage",
-          severity: "critical",
-          title: "Path traversal vulnerability — /etc/passwd readable",
-          description: "The server is vulnerable to directory traversal. Attackers can read arbitrary files from the server filesystem.",
-          evidence: `GET ${target.baseUrl + path}\nResponse contains /etc/passwd content`,
-          remediation: "Sanitize file paths. Never use user input directly in file system operations. Use a whitelist of allowed paths.",
-          cwe: "CWE-22",
-          owasp: "A01:2021",
-        });
-        break;
-      }
-    } catch {
-      // skip
-    }
-  }
-
-  // Check for path traversal on file-serving API endpoints
-  const fileParams = ["file", "path", "doc", "document", "template", "page", "name", "filename", "src"];
-  const fileEndpoints = target.apiEndpoints.filter((ep) =>
-    /file|document|download|export|template|asset|read|load|view|pdf|report/i.test(ep),
-  );
-  const traversalPayloads = [
-    "../../../../etc/passwd",
-    "..%2f..%2f..%2f..%2fetc/passwd",
-    "....//....//....//....//etc/passwd",
-  ];
-
-  for (const ep of fileEndpoints.slice(0, 5)) {
-    for (const param of fileParams) {
-      for (const payload of traversalPayloads) {
-        try {
-          const url = new URL(ep);
-          url.searchParams.set(param, payload);
-          const res = await scanFetch(url.href, { timeoutMs: 5000 });
-          const text = await res.text();
-          if (/root:.*:0:0:|daemon:|bin:\/bin/i.test(text)) {
-            findings.push({
-              id: `infoleak-api-traversal-${findings.length}`,
-              module: "Information Leakage",
-              severity: "critical",
-              title: `Path traversal on ${new URL(ep).pathname} via "${param}" parameter`,
-              description: "An API endpoint accepts file path parameters and is vulnerable to directory traversal. Attackers can read arbitrary server files.",
-              evidence: `GET ${url.href}\nResponse contains /etc/passwd content`,
-              remediation: "Never use user input in file paths. Use a lookup table mapping IDs to allowed files. Resolve paths and verify they stay within the expected directory.",
-              cwe: "CWE-22",
-              owasp: "A01:2021",
-            });
-            break;
-          }
-        } catch {
-          // skip
-        }
-      }
-    }
-  }
-
-  // Check HTML for target="_blank" links without rel="noopener" (tabnabbing)
-  const allJs = Array.from(target.jsContents.values()).join("\n");
-
-  // Look in HTML and JS bundles for target="_blank" without noopener
-  const blankTargetPattern = /target\s*=\s*["']_blank["']/gi;
-  const noopenerPattern = /rel\s*=\s*["'][^"']*noopener[^"']*["']/gi;
-  const blankCount = (allJs.match(blankTargetPattern) || []).length;
-  const noopenerCount = (allJs.match(noopenerPattern) || []).length;
-  const unsafe = blankCount - noopenerCount;
-  if (unsafe >= 3) {
-    findings.push({
-      id: "infoleak-tabnabbing",
-      module: "Information Leakage",
-      severity: "low",
-      title: `${unsafe} link${unsafe > 1 ? "s" : ""} open in new tab without rel="noopener"`,
-      description: `Found ${blankCount} target="_blank" links but only ${noopenerCount} have rel="noopener". Without noopener, the opened page can access window.opener and redirect the original page (reverse tabnabbing).`,
-      evidence: `target="_blank" occurrences: ${blankCount}\nrel="noopener" occurrences: ${noopenerCount}`,
-      remediation: "Add rel=\"noopener noreferrer\" to all links with target=\"_blank\". Modern browsers handle this by default, but older browsers need it explicitly.",
-      cwe: "CWE-1022",
-    });
-  }
+  // Path traversal is handled by the dedicated path-traversal module
 
   // Check for dangerouslySetInnerHTML — only flag if excessive and no CSP
+  const allJs = Array.from(target.jsContents.values()).join("\n");
   const dangerousMatches = allJs.match(/dangerouslySetInnerHTML/g);
   const hasCSP = !!target.headers["content-security-policy"];
-  if (dangerousMatches && dangerousMatches.length > 10 && !hasCSP) {
+  if (dangerousMatches && dangerousMatches.length > 15 && !hasCSP) {
     findings.push({
       id: "infoleak-dangerous-innerhtml",
       module: "Information Leakage",

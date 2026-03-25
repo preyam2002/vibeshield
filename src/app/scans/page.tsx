@@ -122,6 +122,32 @@ export default function ScansPage() {
           />
         </div>
 
+        {/* Aggregate stats */}
+        {completedCount > 0 && (() => {
+          const completed = scans.filter((s) => s.status === "completed");
+          const avgScore = Math.round(completed.reduce((sum, s) => sum + s.score, 0) / completed.length);
+          const totalFindings = completed.reduce((sum, s) => sum + s.findings, 0);
+          const totalCritical = completed.reduce((sum, s) => sum + s.summary.critical, 0);
+          const totalHigh = completed.reduce((sum, s) => sum + s.summary.high, 0);
+          const uniqueDomains = new Set(completed.map((s) => { try { return new URL(s.target).hostname; } catch { return s.target; } })).size;
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-6">
+              {[
+                { label: "Avg Score", value: `${avgScore}/100`, color: avgScore >= 75 ? "text-green-400" : avgScore >= 50 ? "text-yellow-400" : "text-red-400" },
+                { label: "Domains", value: String(uniqueDomains), color: "text-zinc-300" },
+                { label: "Findings", value: String(totalFindings), color: "text-zinc-300" },
+                { label: "Critical", value: String(totalCritical), color: totalCritical > 0 ? "text-red-400" : "text-emerald-400" },
+                { label: "High", value: String(totalHigh), color: totalHigh > 0 ? "text-orange-400" : "text-emerald-400" },
+              ].map((stat) => (
+                <div key={stat.label} className="bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-3 text-center">
+                  <div className={`text-lg font-bold ${stat.color}`}>{stat.value}</div>
+                  <div className="text-[10px] text-zinc-600">{stat.label}</div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+
         {/* Filters */}
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
