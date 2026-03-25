@@ -19,6 +19,14 @@ const COMMON_API_PATHS = [
   "/v1", "/v2", "/v3", "/gql", "/rpc",
 ];
 
+const OPENAPI_PATHS = [
+  "/openapi.json", "/swagger.json", "/api-docs", "/api/docs",
+  "/api/swagger.json", "/api/openapi.json", "/docs/openapi.json",
+  "/swagger/v1/swagger.json", "/v1/openapi.json", "/v2/openapi.json",
+  "/api/v1/openapi.json", "/api/v2/openapi.json",
+  "/.well-known/openapi.json",
+];
+
 const TECH_SIGNATURES: Record<string, RegExp[]> = {
   "Next.js": [/__next/i, /_next\/static/i, /next-router/i],
   Supabase: [/supabase/i, /\.supabase\.co/i, /supabaseUrl/i],
@@ -314,7 +322,13 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     target.apiEndpoints.push(ep);
   }
 
-  // Run API probing, page crawling, robots/sitemap, and soft404 in parallel
+  // Extract CSP from meta tags (apps that set CSP via <meta> instead of headers)
+  const metaCSP = $('meta[http-equiv="Content-Security-Policy"]').attr("content");
+  if (metaCSP && !target.headers["content-security-policy"]) {
+    target.headers["content-security-policy"] = metaCSP;
+  }
+
+  // Run API probing, page crawling, robots/sitemap, OpenAPI discovery, and soft404 in parallel
   const apiEndpointSet = new Set(apiFromJs);
   const probeCommonPaths = COMMON_API_PATHS.map((p) => baseUrl + p).filter((p) => !apiEndpointSet.has(p));
 
@@ -361,6 +375,65 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
             if (u.startsWith(baseUrl) && !seen.has(u)) { seen.add(u); target.pages.push(u); }
           }
         }));
+      } catch {}
+    })(),
+    // OpenAPI/Swagger spec discovery — extract all API endpoints from exposed specs
+    (async () => {
+      try {
+        const specResults = await Promise.allSettled(
+          OPENAPI_PATHS.map(async (p) => {
+            const res = await scanFetch(baseUrl + p, { timeoutMs: 4000 });
+            if (!res.ok) return null;
+            const ct = res.headers.get("content-type") || "";
+            // Must be JSON — skip HTML responses (common for 200 soft-404s)
+            if (ct.includes("text/html")) return null;
+            const text = await res.text();
+            if (!text.startsWith("{") && !text.startsWith("[")) return null;
+            return { path: p, body: text };
+          }),
+        );
+        for (const r of specResults) {
+          if (r.status !== "fulfilled" || !r.value) continue;
+          try {
+            const spec = JSON.parse(r.value.body);
+            // OpenAPI 3.x: spec.paths or OpenAPI 2.x (Swagger): spec.paths
+            const paths = spec.paths;
+            if (!paths || typeof paths !== "object") continue;
+            const basePath = spec.basePath || "";
+            for (const [path, methods] of Object.entries(paths)) {
+              if (typeof methods !== "object" || !methods) continue;
+              const fullPath = basePath + path;
+              // Replace path parameters: /users/{id} → /users/1
+              const normalized = fullPath.replace(/\{[^}]+\}/g, "1");
+              const ep = baseUrl + normalized;
+              if (!apiEndpointSet.has(ep)) {
+                apiEndpointSet.add(ep);
+                target.apiEndpoints.push(ep);
+              }
+              // Extract parameter names from spec
+              for (const method of Object.values(methods as Record<string, unknown>)) {
+                if (!method || typeof method !== "object") continue;
+                const params = (method as Record<string, unknown>).parameters;
+                if (!Array.isArray(params)) continue;
+                const paramNames: string[] = [];
+                for (const param of params) {
+                  if (param && typeof param === "object" && "name" in param) {
+                    paramNames.push(String((param as { name: unknown }).name));
+                  }
+                }
+                if (paramNames.length > 0) {
+                  const existing = target.apiParams.get(ep) || [];
+                  target.apiParams.set(ep, [...new Set([...existing, ...paramNames])]);
+                }
+              }
+            }
+            // Exposed spec is itself a finding-worthy discovery — flag the path
+            if (!apiEndpointSet.has(baseUrl + r.value.path)) {
+              target.apiEndpoints.push(baseUrl + r.value.path);
+            }
+          } catch { /* malformed JSON */ }
+          break; // Only need one valid spec
+        }
       } catch {}
     })(),
     // Soft 404 detection + SPA detection

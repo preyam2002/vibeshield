@@ -117,6 +117,11 @@ export const cspModule: ScanModule = async (target) => {
     if (r.value.cspRO && !mainCSPRO) mainCSPRO = r.value.cspRO;
   }
 
+  // Fall back to CSP from recon (includes <meta> tag CSP)
+  if (!mainCSP && target.headers["content-security-policy"]) {
+    mainCSP = target.headers["content-security-policy"];
+  }
+
   // No CSP at all
   if (!mainCSP && !mainCSPRO) {
     findings.push({
