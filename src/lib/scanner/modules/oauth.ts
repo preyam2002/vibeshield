@@ -63,21 +63,31 @@ export const oauthModule: ScanModule = async (target) => {
       }),
     ),
 
-    // 2. Test callback endpoints for redirect_uri validation
+    // 2. Test callback endpoints for redirect_uri validation (including subdomain bypass)
     Promise.allSettled(
       AUTH_CALLBACK_PATHS.map(async (path) => {
         const url = target.baseUrl + path;
-        // Test with evil redirect_uri
-        const testUrl = new URL(url);
-        testUrl.searchParams.set("redirect_uri", "https://evil.com/steal");
-        testUrl.searchParams.set("code", "test_code_123");
-        testUrl.searchParams.set("state", "test_state");
+        const targetHost = new URL(target.baseUrl).hostname;
+        const evilRedirects = [
+          "https://evil.com/steal",
+          `https://${targetHost}.evil.com/steal`,           // subdomain of attacker
+          `https://evil.com/${targetHost}`,                 // path-based bypass
+          `https://${targetHost}@evil.com/steal`,           // userinfo bypass
+        ];
 
-        const res = await scanFetch(testUrl.href, { timeoutMs: 5000, redirect: "manual" });
-        const location = res.headers.get("location") || "";
+        for (const evilUri of evilRedirects) {
+          const testUrl = new URL(url);
+          testUrl.searchParams.set("redirect_uri", evilUri);
+          testUrl.searchParams.set("code", "test_code_123");
+          testUrl.searchParams.set("state", "test_state");
 
-        if (location.includes("evil.com")) {
-          return { path, type: "redirect_uri" as const, location };
+          const res = await scanFetch(testUrl.href, { timeoutMs: 5000, redirect: "manual" });
+          const location = res.headers.get("location") || "";
+
+          if (location.includes("evil.com")) {
+            const bypass = evilUri.includes("@") ? "userinfo" : evilUri.includes(targetHost + ".") ? "subdomain" : "direct";
+            return { path, type: "redirect_uri" as const, location, bypass, evilUri };
+          }
         }
 
         // Check if callback exists and accepts arbitrary codes
@@ -191,11 +201,12 @@ export const oauthModule: ScanModule = async (target) => {
     if (r.status !== "fulfilled" || !r.value) continue;
     const v = r.value;
     if (v.type === "redirect_uri") {
+      const bypassDesc = v.bypass === "subdomain" ? " via subdomain spoofing" : v.bypass === "userinfo" ? " via URL userinfo bypass" : "";
       findings.push({
         id: `oauth-redirect-${findings.length}`, module: "OAuth", severity: "critical",
-        title: `OAuth redirect_uri bypass on ${v.path}`,
-        description: "The OAuth callback accepts arbitrary redirect URIs. Attackers can steal authorization codes by redirecting to their server.",
-        evidence: `GET ${target.baseUrl}${v.path}?redirect_uri=https://evil.com/steal\nRedirects to: ${v.location}`,
+        title: `OAuth redirect_uri bypass${bypassDesc} on ${v.path}`,
+        description: `The OAuth callback accepts ${v.bypass === "direct" ? "arbitrary" : "crafted"} redirect URIs${bypassDesc}. Attackers can steal authorization codes by redirecting to their server.`,
+        evidence: `GET ${target.baseUrl}${v.path}?redirect_uri=${v.evilUri}\nRedirects to: ${v.location}`,
         remediation: "Strictly validate redirect_uri against a whitelist of pre-registered URLs. Use exact string matching, not prefix or subdomain matching.",
         codeSnippet: `// Validate redirect_uri with exact match\nconst ALLOWED_REDIRECTS = new Set([\n  "https://yourdomain.com/api/auth/callback",\n  "https://yourdomain.com/oauth/callback",\n]);\n\nconst redirectUri = req.query.redirect_uri;\nif (!ALLOWED_REDIRECTS.has(redirectUri)) {\n  return res.status(400).json({ error: "invalid_redirect_uri" });\n}`,
         cwe: "CWE-601", owasp: "A07:2021",
@@ -244,6 +255,50 @@ export const oauthModule: ScanModule = async (target) => {
       codeSnippet: `// Include CSRF token in NextAuth signin requests\nimport { getCsrfToken } from "next-auth/react";\n\nconst csrfToken = await getCsrfToken();\nawait fetch("/api/auth/signin/credentials", {\n  method: "POST",\n  headers: { "Content-Type": "application/x-www-form-urlencoded" },\n  body: new URLSearchParams({ csrfToken, email, password }),\n});`,
       cwe: "CWE-352", owasp: "A07:2021",
     });
+  }
+
+  // Check for insecure response_type usage in JS bundles (implicit flow token leakage)
+  const implicitFlowPatterns = [
+    /response_type\s*[:=]\s*["'](token|id_token)["']/gi,
+    /response_type=(?:token|id_token)(?:&|["'])/gi,
+  ];
+  let implicitFlagged = false;
+  for (const pat of implicitFlowPatterns) {
+    if (implicitFlagged) break;
+    for (const m of allJs.matchAll(pat)) {
+      if (!implicitFlagged) {
+        implicitFlagged = true;
+        findings.push({
+          id: `oauth-implicit-${findings.length}`, module: "OAuth", severity: "high",
+          title: "OAuth implicit flow (response_type=token) detected in client code",
+          description: "The application uses the OAuth implicit flow which returns tokens in the URL fragment. Tokens are exposed to browser history, referrer headers, and browser extensions.",
+          evidence: `Found in JS bundle: ${m[0]}`,
+          remediation: "Use the Authorization Code flow with PKCE instead of the implicit flow. Set response_type=code and exchange the code for tokens server-side.",
+          codeSnippet: `// Replace implicit flow with authorization code + PKCE\nconst authUrl = new URL(authorizationEndpoint);\nauthUrl.searchParams.set("response_type", "code"); // NOT "token"\nauthUrl.searchParams.set("code_challenge", codeChallenge);\nauthUrl.searchParams.set("code_challenge_method", "S256");`,
+          cwe: "CWE-522", owasp: "A07:2021",
+        });
+      }
+    }
+  }
+
+  // Check if OIDC config requires nonce (replay protection)
+  for (const r of oidcResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (v.config.id_token_signing_alg_values_supported && !v.config.require_nonce) {
+      const hasNonceInJs = /\bnonce\b.*(?:random|crypto|uuid)/i.test(allJs) || /nonce\s*[:=]\s*["'][a-zA-Z0-9]/i.test(allJs);
+      if (!hasNonceInJs) {
+        findings.push({
+          id: `oauth-nonce-${findings.length}`, module: "OAuth", severity: "medium",
+          title: "OIDC nonce parameter not enforced",
+          description: "The OpenID Connect provider does not require a nonce parameter and no nonce usage was detected in client code. Without nonce validation, ID tokens are vulnerable to replay attacks.",
+          evidence: `OIDC config at ${v.path}: id_token signing supported but require_nonce not set\nNo nonce generation detected in JS bundles`,
+          remediation: "Generate a unique nonce per authorization request, include it in the auth URL, and validate it matches the nonce claim in the returned ID token.",
+          codeSnippet: `// Generate and validate nonce\nconst nonce = crypto.randomBytes(16).toString("hex");\ncookies().set("oidc_nonce", nonce, { httpOnly: true });\nauthUrl.searchParams.set("nonce", nonce);\n\n// In callback, verify nonce in ID token\nconst decoded = jwt.decode(idToken);\nif (decoded.nonce !== cookies().get("oidc_nonce")?.value) {\n  throw new Error("Invalid nonce — possible token replay");\n}`,
+          cwe: "CWE-294", owasp: "A07:2021",
+        });
+      }
+    }
   }
 
   // Check JS bundles for hardcoded OAuth client secrets

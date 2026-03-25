@@ -183,7 +183,54 @@ export const corsModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 4: Check for overly permissive Access-Control-Expose-Headers
+  // Phase 4: Null origin and max-age checks
+  const nullAndMaxAgeTests = await Promise.allSettled(
+    endpoints.slice(0, 3).map(async (endpoint) => {
+      const res = await scanFetch(endpoint, { headers: { Origin: "null" }, timeoutMs: 5000 });
+      return {
+        endpoint,
+        acao: res.headers.get("access-control-allow-origin"),
+        acac: res.headers.get("access-control-allow-credentials"),
+        maxAge: res.headers.get("access-control-max-age"),
+      };
+    }),
+  );
+  let nullFlagged = false;
+  let maxAgeFlagged = false;
+  for (const r of nullAndMaxAgeTests) {
+    if (r.status !== "fulfilled") continue;
+    const { endpoint, acao, acac, maxAge } = r.value;
+    if (acao === "null" && !nullFlagged && !reflectFound) {
+      nullFlagged = true;
+      findings.push({
+        id: `cors-null-origin-${findings.length}`,
+        module: "CORS",
+        severity: acac === "true" ? "critical" : "high",
+        title: `CORS accepts null Origin${acac === "true" ? " with credentials" : ""} on ${new URL(endpoint).pathname}`,
+        description: `The server trusts the "null" Origin. Sandboxed iframes, data: URIs, and file:// pages send Origin: null — an attacker can use these to bypass CORS and ${acac === "true" ? "make authenticated requests stealing user data" : "read API responses"}.`,
+        evidence: `Origin: null\nAccess-Control-Allow-Origin: null${acac === "true" ? "\nAccess-Control-Allow-Credentials: true" : ""}`,
+        remediation: 'Never allow "null" as an origin. Use a strict allowlist of specific https:// origins.',
+        cwe: "CWE-942", owasp: "A05:2021",
+        codeSnippet: `// Reject null origin explicitly\nconst origin = req.headers.get("origin") || "";\nif (origin === "null" || !ALLOWED_ORIGINS.includes(origin)) {\n  // Do not set ACAO header — deny the cross-origin request\n  return res;\n}`,
+      });
+    }
+    if (maxAge && parseInt(maxAge) > 86400 && !maxAgeFlagged) {
+      maxAgeFlagged = true;
+      findings.push({
+        id: `cors-max-age-${findings.length}`,
+        module: "CORS",
+        severity: "low",
+        title: `CORS preflight cached for ${Math.round(parseInt(maxAge) / 3600)}h on ${new URL(endpoint).pathname}`,
+        description: `Access-Control-Max-Age is set to ${maxAge} seconds (${Math.round(parseInt(maxAge) / 3600)} hours). Overly long preflight caching means CORS policy changes won't take effect for browsers that cached the old preflight.`,
+        evidence: `Access-Control-Max-Age: ${maxAge}`,
+        remediation: "Set Access-Control-Max-Age to 3600 (1 hour) or less for reasonable cache freshness.",
+        cwe: "CWE-942",
+        codeSnippet: `// Reasonable preflight cache duration\nres.headers.set("Access-Control-Max-Age", "3600"); // 1 hour`,
+      });
+    }
+  }
+
+  // Phase 5: Check for overly permissive Access-Control-Expose-Headers
   const exposeTests = await Promise.allSettled(
     endpoints.slice(0, 3).map(async (endpoint) => {
       const res = await scanFetch(endpoint, { headers: { Origin: `https://${targetHost}` } });
