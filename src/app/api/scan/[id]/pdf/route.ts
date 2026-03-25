@@ -152,6 +152,26 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
   <div class="summary-item"><div class="summary-count" style="color:${severityColor("info")}">${s.info}</div><div class="summary-label">Info</div></div>
 </div>
 
+${(() => {
+      const { critical, high, medium } = s;
+      const parts: string[] = [];
+      if (critical > 0) parts.push(`<strong style="color:#ef4444">${critical} critical</strong>`);
+      if (high > 0) parts.push(`<strong style="color:#f97316">${high} high-severity</strong>`);
+      if (medium > 0) parts.push(`${medium} medium-severity`);
+      const riskLevel = critical > 0 ? "significant risk" : high > 0 ? "moderate risk" : medium > 0 ? "low risk" : "minimal risk";
+      const topModules = [...new Set(scan.findings.filter((f) => f.severity === "critical" || f.severity === "high").map((f) => f.module))].slice(0, 3);
+      return `
+<div style="margin-bottom:16px;padding:12px;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px">
+  <strong style="font-size:12px;color:#92400e">Executive Summary</strong>
+  <p style="margin-top:4px;color:#78350f;font-size:11px">
+    ${escapeHtml(hostname)} was scanned across ${completed.length} security modules and scored <strong>${scan.score}/100 (${scan.grade})</strong>.
+    ${parts.length > 0 ? `The scan identified ${parts.join(", ")} vulnerabilities, indicating ${riskLevel}.` : "No significant vulnerabilities were found."}
+    ${topModules.length > 0 ? `Priority areas: ${topModules.map(escapeHtml).join(", ")}.` : ""}
+    ${critical > 0 ? "Immediate remediation of critical findings is recommended." : high > 0 ? "High-severity findings should be addressed promptly." : "Continue monitoring and maintaining security posture."}
+  </p>
+</div>`;
+    })()}
+
 ${scan.surface ? `
 <div class="meta-grid">
   <div class="meta-item"><div class="meta-label">Pages</div><div class="meta-value">${scan.surface.pages}</div></div>
