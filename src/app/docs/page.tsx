@@ -34,8 +34,11 @@ export default function DocsPage() {
   -H "Content-Type: application/json" \\
   -d '{"url": "https://your-app.vercel.app"}'
 
-# Options: mode "full" (default) or "security" (skip stress tests)
-# -d '{"url": "...", "mode": "security"}'
+# Scan modes:
+#   "quick"    - 12 essential modules, ~15s (headers, SSL, secrets, cookies)
+#   "security" - all 38 security modules, ~45s (default)
+#   "full"     - security + 6 stress tests (load, race, rate limit), ~90s
+# -d '{"url": "...", "mode": "quick"}'
 
 # Response: {"id": "abc-123", "url": "https://your-app.vercel.app"}`}
               </pre>
@@ -183,7 +186,7 @@ echo $R | jq '{grade, score, summary}' && \\
           <h2 className="text-lg font-bold text-zinc-200 mb-4">API Reference</h2>
           <div className="space-y-4">
             {[
-              { method: "POST", path: "/api/scan", desc: "Start a new scan", body: '{"url": "...", "mode?": "full|security", "callbackUrl?": "..."}' },
+              { method: "POST", path: "/api/scan", desc: "Start a new scan", body: '{"url": "...", "mode?": "quick|security|full", "callbackUrl?": "..."}' },
               { method: "GET", path: "/api/scan/:id", desc: "Get scan status and results" },
               { method: "GET", path: "/api/scan/:id/export", desc: "Download JSON report" },
               { method: "GET", path: "/api/scan/:id/report", desc: "Download Markdown report" },

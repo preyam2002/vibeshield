@@ -211,37 +211,82 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     }
   }
 
-  // Probe common API endpoints + JS-discovered ones
-  const allApiPaths = [...new Set([
-    ...COMMON_API_PATHS.map((p) => baseUrl + p),
-    ...apiFromJs,
-  ])];
-  const probeResults = await Promise.allSettled(
-    allApiPaths.slice(0, 60).map(async (testUrl) => {
-      const res = await scanFetch(testUrl, { method: "GET", redirect: "follow", timeoutMs: 5000 });
-      return { path: testUrl, status: res.status, contentType: res.headers.get("content-type") || "" };
-    }),
-  );
+  // JS-discovered endpoints are already confirmed from code — add them directly
+  for (const ep of apiFromJs) {
+    target.apiEndpoints.push(ep);
+  }
+
+  // Run API probing, page crawling, robots/sitemap, and soft404 in parallel
+  const apiEndpointSet = new Set(apiFromJs);
+  const probeCommonPaths = COMMON_API_PATHS.map((p) => baseUrl + p).filter((p) => !apiEndpointSet.has(p));
+
+  const [probeResults, pageResults] = await Promise.all([
+    // Probe common API paths (skip ones already found in JS)
+    Promise.allSettled(
+      probeCommonPaths.slice(0, 50).map(async (testUrl) => {
+        const res = await scanFetch(testUrl, { method: "GET", redirect: "follow", timeoutMs: 4000 });
+        return { path: testUrl, status: res.status, contentType: res.headers.get("content-type") || "" };
+      }),
+    ),
+    // Crawl discovered pages for more endpoints/forms
+    Promise.allSettled(
+      target.pages.slice(0, 10).map(async (pageUrl) => {
+        const res = await scanFetch(pageUrl, { redirect: "follow", timeoutMs: 5000 });
+        return { url: pageUrl, html: await res.text() };
+      }),
+    ),
+    // Robots.txt + sitemap (fire and forget into target.pages)
+    (async () => {
+      try {
+        const robotsRes = await scanFetch(baseUrl + "/robots.txt", { timeoutMs: 4000 });
+        if (robotsRes.status !== 200) return;
+        const robotsTxt = await robotsRes.text();
+        if (robotsTxt.includes("<!DOCTYPE") || robotsTxt.includes("<html")) return;
+        const sitemapUrls: string[] = [];
+        for (const line of robotsTxt.split("\n")) {
+          const disallow = line.match(/^Disallow:\s*(.+)/i)?.[1]?.trim();
+          if (disallow && disallow !== "/" && disallow.startsWith("/")) {
+            const resolved = baseUrl + disallow;
+            if (!seen.has(resolved)) { seen.add(resolved); target.pages.push(resolved); }
+          }
+          const sitemap = line.match(/^Sitemap:\s*(.+)/i)?.[1]?.trim();
+          if (sitemap) sitemapUrls.push(sitemap);
+        }
+        await Promise.allSettled(sitemapUrls.slice(0, 3).map(async (smUrl) => {
+          const smRes = await scanFetch(smUrl, { timeoutMs: 4000 });
+          if (smRes.status !== 200) return;
+          const smText = await smRes.text();
+          let count = 0;
+          for (const m of smText.matchAll(/<loc>([^<]+)<\/loc>/g)) {
+            if (count++ > 50) break;
+            const u = m[1];
+            if (u.startsWith(baseUrl) && !seen.has(u)) { seen.add(u); target.pages.push(u); }
+          }
+        }));
+      } catch {}
+    })(),
+    // Soft 404 detection
+    (async () => {
+      try {
+        const canaryUrl = baseUrl + "/vibeshield-canary-404-test-" + Date.now();
+        const canaryRes = await scanFetch(canaryUrl, { redirect: "follow", timeoutMs: 4000 });
+        if (canaryRes.status === 200) {
+          target.soft404Body = await canaryRes.text();
+          const ratio = target.soft404Body.length / html.length;
+          target.isSpa = ratio > 0.7 && ratio < 1.3;
+        }
+      } catch {}
+    })(),
+  ]);
 
   for (const r of probeResults) {
     if (r.status !== "fulfilled") continue;
     const { status, contentType, path: probePath } = r.value;
     if (status === 404) continue;
-    // Skip SPA catch-all: non-JSON responses from API-like paths are likely the SPA shell
     if (status === 200 && contentType.includes("text/html")) continue;
-    // Skip empty responses (CDN/SPA returning 200 with no body)
     if (status === 200 && !contentType) continue;
     target.apiEndpoints.push(probePath);
   }
-
-  // Crawl discovered pages (up to 10) for more endpoints/forms
-  const pagesToCrawl = target.pages.slice(0, 10);
-  const pageResults = await Promise.allSettled(
-    pagesToCrawl.map(async (pageUrl) => {
-      const res = await scanFetch(pageUrl, { redirect: "follow", timeoutMs: 5000 });
-      return { url: pageUrl, html: await res.text() };
-    }),
-  );
 
   for (const r of pageResults) {
     if (r.status !== "fulfilled") continue;
@@ -264,55 +309,8 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
     });
   }
 
-  // Parse robots.txt and sitemap.xml for more URLs
-  try {
-    const robotsRes = await scanFetch(baseUrl + "/robots.txt", { timeoutMs: 5000 });
-    if (robotsRes.status === 200) {
-      const robotsTxt = await robotsRes.text();
-      if (!robotsTxt.includes("<!DOCTYPE") && !robotsTxt.includes("<html")) {
-        // Extract Disallow and Sitemap entries
-        for (const line of robotsTxt.split("\n")) {
-          const disallow = line.match(/^Disallow:\s*(.+)/i)?.[1]?.trim();
-          if (disallow && disallow !== "/" && disallow.startsWith("/")) {
-            const resolved = baseUrl + disallow;
-            if (!seen.has(resolved)) { seen.add(resolved); target.pages.push(resolved); }
-          }
-          const sitemap = line.match(/^Sitemap:\s*(.+)/i)?.[1]?.trim();
-          if (sitemap) {
-            try {
-              const smRes = await scanFetch(sitemap, { timeoutMs: 5000 });
-              if (smRes.status === 200) {
-                const smText = await smRes.text();
-                const urlMatches = smText.matchAll(/<loc>([^<]+)<\/loc>/g);
-                let count = 0;
-                for (const m of urlMatches) {
-                  if (count++ > 50) break;
-                  const u = m[1];
-                  if (u.startsWith(baseUrl) && !seen.has(u)) { seen.add(u); target.pages.push(u); }
-                }
-              }
-            } catch {}
-          }
-        }
-      }
-    }
-  } catch {}
-
-  // Soft 404 detection: fetch a URL that definitely doesn't exist
-  try {
-    const canaryUrl = baseUrl + "/vibeshield-canary-404-test-" + Date.now();
-    const canaryRes = await scanFetch(canaryUrl, { redirect: "follow", timeoutMs: 5000 });
-    if (canaryRes.status === 200) {
-      target.soft404Body = await canaryRes.text();
-      // If the canary 200 body is very similar to the main page, this is a SPA
-      const mainLen = html.length;
-      const canaryLen = target.soft404Body.length;
-      const ratio = canaryLen / mainLen;
-      target.isSpa = ratio > 0.7 && ratio < 1.3;
-    }
-  } catch {
-    // skip — soft404 detection is best-effort
-  }
+  // Deduplicate API endpoints
+  target.apiEndpoints = [...new Set(target.apiEndpoints)];
 
   return target;
 };

@@ -194,6 +194,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const [groupBy, setGroupBy] = useState<"severity" | "module">("severity");
   const [expandAll, setExpandAll] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [mdCopied, setMdCopied] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchScan = useCallback(async () => {
@@ -278,6 +279,29 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     });
   };
 
+  const copyAsMarkdown = () => {
+    if (!scan) return;
+    const lines = [
+      `# VibeShield Scan: ${scan.target}`,
+      `**Grade:** ${scan.grade} (${scan.score}/100) | **Findings:** ${scan.summary.total}`,
+      `**Critical:** ${scan.summary.critical} | **High:** ${scan.summary.high} | **Medium:** ${scan.summary.medium} | **Low:** ${scan.summary.low}`,
+      "",
+    ];
+    const bySev = ["critical", "high", "medium", "low", "info"] as const;
+    for (const sev of bySev) {
+      const items = scan.findings.filter((f) => f.severity === sev);
+      if (items.length === 0) continue;
+      lines.push(`## ${sev.charAt(0).toUpperCase() + sev.slice(1)} (${items.length})`);
+      for (const f of items) {
+        lines.push(`- **${f.title}** — ${f.description.split(".")[0]}.`);
+      }
+      lines.push("");
+    }
+    navigator.clipboard.writeText(lines.join("\n"));
+    setMdCopied(true);
+    setTimeout(() => setMdCopied(false), 2000);
+  };
+
   const handleRescan = async () => {
     if (!scan) return;
     setRescanning(true);
@@ -285,7 +309,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: scan.target }),
+        body: JSON.stringify({ url: scan.target, mode: scan.mode || "full" }),
       });
       const data = await res.json();
       router.push(`/scan/${data.id}`);
@@ -364,7 +388,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
             <span className="text-sm text-zinc-500 truncate">{scan.target}</span>
             {scan.mode && (
               <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-500 shrink-0">
-                {scan.mode === "full" ? "Full" : "Security only"}
+                {scan.mode === "quick" ? "Quick" : scan.mode === "full" ? "Full" : "Security"}
               </span>
             )}
             {!isRunning && (
@@ -378,6 +402,12 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
                   className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
                 >
                   {copied ? "Copied!" : "Share"}
+                </button>
+                <button
+                  onClick={copyAsMarkdown}
+                  className="text-xs bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  {mdCopied ? "Copied!" : "Copy MD"}
                 </button>
                 <a
                   href={`/api/scan/${id}/report`}
