@@ -187,6 +187,25 @@ export const headersModule: ScanModule = async (target) => {
         owasp: "A05:2021",
       });
     }
+
+    // Check for missing critical CSP directives
+    const missingDirectives: { name: string; why: string }[] = [];
+    if (!csp.includes("base-uri")) missingDirectives.push({ name: "base-uri", why: "allows <base> tag injection to redirect relative URLs" });
+    if (!csp.includes("form-action")) missingDirectives.push({ name: "form-action", why: "allows forms to submit to attacker-controlled URLs" });
+    if (!csp.includes("object-src") && !defaultSrc.includes("'none'")) missingDirectives.push({ name: "object-src", why: "allows Flash/Java plugins that bypass CSP" });
+    if (missingDirectives.length > 0) {
+      findings.push({
+        id: "headers-csp-missing-directives",
+        module: "Security Headers",
+        severity: "low",
+        title: `CSP missing ${missingDirectives.length} recommended directive${missingDirectives.length > 1 ? "s" : ""}`,
+        description: `Your CSP is missing: ${missingDirectives.map((d) => `${d.name} (${d.why})`).join("; ")}.`,
+        evidence: `CSP: ${csp.substring(0, 300)}`,
+        remediation: `Add: ${missingDirectives.map((d) => `${d.name} 'self'`).join("; ")}`,
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+      });
+    }
   }
 
   // SRI check for external scripts

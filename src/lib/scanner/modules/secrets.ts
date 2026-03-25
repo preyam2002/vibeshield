@@ -210,6 +210,54 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Convex deploy key exposed. Attackers can modify your backend functions and data.",
     remediation: "Rotate in Convex dashboard. Deploy keys must never be in client code.",
   },
+  // Mailgun
+  {
+    name: "Mailgun API Key",
+    pattern: /key-[a-f0-9]{32}/g,
+    severity: "high",
+    description: "Mailgun API key exposed. Attackers can send emails from your domain and access logs.",
+    remediation: "Rotate in Mailgun dashboard. Move to server-side.",
+  },
+  // Mapbox
+  {
+    name: "Mapbox Secret Token",
+    pattern: /sk\.eyJ[a-zA-Z0-9_-]{50,}\.[a-zA-Z0-9_-]{20,}/g,
+    severity: "high",
+    description: "Mapbox secret access token exposed. Attackers can manage your Mapbox account and rack up usage.",
+    remediation: "Rotate in Mapbox. Only public tokens (pk.) should be client-side.",
+  },
+  // Algolia
+  {
+    name: "Algolia Admin API Key",
+    pattern: /(?:algolia_admin_key|ALGOLIA_ADMIN_KEY|algoliaAdminKey)[\s"':=]+["']([a-f0-9]{32})["']/g,
+    severity: "critical",
+    description: "Algolia admin API key exposed. Attackers can modify search indices and access all data.",
+    remediation: "Rotate in Algolia. Use search-only API keys on the client.",
+  },
+  // Pinecone
+  {
+    name: "Pinecone API Key",
+    pattern: /pcsk_[a-zA-Z0-9_-]{50,}/g,
+    severity: "critical",
+    description: "Pinecone API key exposed. Attackers can access and modify your vector database.",
+    remediation: "Rotate in Pinecone console. Proxy through your backend.",
+  },
+  // Datadog
+  {
+    name: "Datadog API Key",
+    pattern: /(?:DD_API_KEY|DATADOG_API_KEY|datadog_api_key)[\s"':=]+["']([a-f0-9]{32})["']/g,
+    severity: "high",
+    description: "Datadog API key exposed. Attackers can submit metrics and access monitoring data.",
+    remediation: "Rotate in Datadog. Use client tokens (pub keys) for RUM.",
+  },
+  // Linear
+  {
+    name: "Linear API Key",
+    pattern: /lin_api_[a-zA-Z0-9]{40,}/g,
+    severity: "high",
+    description: "Linear API key exposed. Attackers can access your project management data.",
+    remediation: "Rotate in Linear settings. Move to server-side.",
+  },
 ];
 
 // Placeholder/test values that look like secrets but aren't
