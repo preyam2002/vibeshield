@@ -314,6 +314,11 @@ export const exposedToolsModule: ScanModule = async (target) => {
       remediation: check.remediation,
       cwe: "CWE-489",
       owasp: "A05:2021",
+      codeSnippet: check.severity === "critical"
+        ? `// middleware.ts — block access to dev tools in production\nif (req.nextUrl.pathname.startsWith("${check.path}")) {\n  return new Response(null, { status: 404 });\n}`
+        : check.path.includes("debug") || check.path.includes("actuator")
+        ? `// Remove or protect debug endpoints in production\n// next.config.ts rewrites:\n{ source: "${check.path}", destination: "/404" }`
+        : undefined,
     });
   }
 
