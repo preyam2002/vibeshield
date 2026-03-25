@@ -32,6 +32,7 @@ export const clickjackingModule: ScanModule = async (target) => {
       evidence: `Content-Security-Policy: ...frame-ancestors *...`,
       remediation: "Set frame-ancestors to 'none' or 'self' instead of wildcard.",
       cwe: "CWE-1021",
+      codeSnippet: `// Fix CSP frame-ancestors\n{ key: "Content-Security-Policy", value: "frame-ancestors 'self'" }`,
     });
   }
 
@@ -45,6 +46,7 @@ export const clickjackingModule: ScanModule = async (target) => {
       evidence: `X-Frame-Options: ${xfo}`,
       remediation: "Change to DENY or SAMEORIGIN.",
       cwe: "CWE-1021",
+      codeSnippet: `// next.config.ts headers()\n{ key: "X-Frame-Options", value: "DENY" }`,
     });
   }
 

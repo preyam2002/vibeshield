@@ -72,6 +72,7 @@ export const firebaseModule: ScanModule = async (target) => {
       evidence: `GET ${rtdbUrl}/.json?shallow=true\nCollections: ${rtdbReadResult.join(", ")}`,
       remediation: 'Add security rules: { "rules": { ".read": "auth != null", ".write": "auth != null" } }',
       cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `// firebase-database.rules.json\n{\n  "rules": {\n    ".read": "auth != null",\n    ".write": "auth != null"\n  }\n}`,
     });
   }
   if (rtdbWriteResult && rtdbUrl) {
@@ -82,6 +83,7 @@ export const firebaseModule: ScanModule = async (target) => {
       evidence: `PUT ${rtdbUrl}/_vibeshield_test.json → 200 OK`,
       remediation: 'Set write rules: { "rules": { ".write": "auth != null" } }',
       cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `// firebase-database.rules.json\n{\n  "rules": {\n    ".read": "auth != null",\n    ".write": "auth != null"\n  }\n}`,
     });
   }
   for (const r of firestoreResults) {
@@ -116,6 +118,7 @@ export const firebaseModule: ScanModule = async (target) => {
       evidence: `Bucket: ${projectId}.appspot.com\nFiles: ${storageResult.map((i) => i.name).join(", ")}`,
       remediation: "Add Storage security rules to restrict listing and access.",
       cwe: "CWE-862",
+      codeSnippet: `// storage.rules\nrules_version = '2';\nservice firebase.storage {\n  match /b/{bucket}/o {\n    match /{allPaths=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}`,
     });
   }
 

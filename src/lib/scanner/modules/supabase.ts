@@ -139,6 +139,7 @@ export const supabaseModule: ScanModule = async (target) => {
       evidence: `POST ${supabaseUrl}/rest/v1/${table}\nStatus: ${status}`,
       remediation: `Add RLS INSERT policies to "${table}" to restrict who can write data.`,
       cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `-- Enable RLS and add insert policy\nALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;\nCREATE POLICY "Users can only insert own data"\n  ON "${table}" FOR INSERT\n  WITH CHECK (auth.uid() = user_id);`,
     });
   }
 
@@ -162,6 +163,7 @@ export const supabaseModule: ScanModule = async (target) => {
           evidence: `Bucket: ${bucket.name}, Public: true`,
           remediation: "Make the bucket private and use signed URLs for access.",
           cwe: "CWE-862",
+          codeSnippet: `// Use signed URLs instead of public buckets\nconst { data } = await supabase.storage\n  .from("${bucket.name}")\n  .createSignedUrl("file.pdf", 3600);`,
         });
       }
     }

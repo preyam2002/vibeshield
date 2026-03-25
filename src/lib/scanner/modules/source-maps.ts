@@ -76,6 +76,7 @@ export const sourceMapsModule: ScanModule = async (target) => {
       evidence: `Accessible:\n${conventionMaps.slice(0, 5).join("\n")}${conventionMaps.length > 5 ? `\n...and ${conventionMaps.length - 5} more` : ""}`,
       remediation: "Block access to .map files in production or disable source map generation.",
       cwe: "CWE-540",
+      codeSnippet: `// next.config.ts\nexport default {\n  productionBrowserSourceMaps: false,\n};\n\n// Or block in middleware:\nif (req.nextUrl.pathname.endsWith(".map")) {\n  return new Response(null, { status: 404 });\n}`,
     });
   }
 

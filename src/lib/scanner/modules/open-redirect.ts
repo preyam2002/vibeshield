@@ -120,6 +120,7 @@ export const openRedirectModule: ScanModule = async (target) => {
       evidence: `Original URL had ${r.value.param}=${r.value.val}\nModified to evil.com → redirected`,
       remediation: "Validate redirect targets against a whitelist.",
       cwe: "CWE-601",
+      codeSnippet: `// Validate redirect URLs\nconst ALLOWED_HOSTS = new Set(["yourdomain.com"]);\nconst target = new URL(redirectUrl, req.url);\nif (!ALLOWED_HOSTS.has(target.hostname)) {\n  return Response.redirect("/", 302);\n}`,
     });
   }
 

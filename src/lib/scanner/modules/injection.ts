@@ -391,6 +391,7 @@ export const injectionModule: ScanModule = async (target) => {
       remediation: "Never pass user input into template engines. Use a logic-less template or sandbox the engine.",
       cwe: "CWE-1336",
       owasp: "A03:2021",
+      codeSnippet: `// Never interpolate user input into templates\n// Bad: res.render("page", { title: userInput }) with {{title}} in template\n// Good: Use auto-escaping and avoid user data in template expressions\n\n// If using Nunjucks/Jinja: enable autoescaping\nconst env = nunjucks.configure({ autoescape: true });`,
     });
   }
 

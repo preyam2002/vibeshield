@@ -115,6 +115,7 @@ export const graphqlModule: ScanModule = async (target) => {
             evidence: `Deeply nested query accepted at ${endpoint}`,
             remediation: "Implement query depth limiting (max depth 7-10). Use graphql-depth-limit or similar.",
             cwe: "CWE-400",
+            codeSnippet: `// Install: npm i graphql-depth-limit\nimport depthLimit from "graphql-depth-limit";\nconst server = new ApolloServer({\n  validationRules: [depthLimit(10)],\n});`,
           });
         }
       } catch { /* skip */ }
@@ -133,6 +134,7 @@ export const graphqlModule: ScanModule = async (target) => {
             evidence: `Batch of 20 queries accepted, ${data.length} responses returned`,
             remediation: "Disable or limit batch queries. Set a maximum batch size of 5-10.",
             cwe: "CWE-400",
+            codeSnippet: `// Apollo Server — disable batching\nconst server = new ApolloServer({\n  allowBatchedHttpRequests: false,\n});`,
           });
         }
       } catch { /* skip */ }
@@ -152,6 +154,7 @@ export const graphqlModule: ScanModule = async (target) => {
             evidence: `Query with 50 aliases accepted, ${aliasCount} fields returned at ${endpoint}`,
             remediation: "Implement alias limits or query cost analysis. Libraries like graphql-query-complexity can help.",
             cwe: "CWE-400",
+            codeSnippet: `// Install: npm i graphql-query-complexity\nimport { createComplexityLimitRule } from "graphql-validation-complexity";\nconst server = new ApolloServer({\n  validationRules: [createComplexityLimitRule(1000)],\n});`,
           });
         }
       } catch { /* skip */ }
