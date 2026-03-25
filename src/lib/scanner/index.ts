@@ -57,6 +57,7 @@ import { cachePoisoningModule } from "./modules/cache-poisoning";
 import { businessLogicModule } from "./modules/business-logic";
 import { oauthModule } from "./modules/oauth";
 import { apiVersioningModule } from "./modules/api-versioning";
+import { cspModule } from "./modules/csp";
 
 // Ordered by signal-to-time ratio: fastest/highest-signal modules first
 const SECURITY_MODULES: ScanModuleDefinition[] = [
@@ -65,6 +66,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "SSL/TLS", description: "Check HTTPS and TLS configuration", category: "security", run: sslModule },
   { name: "Cookies", description: "Check cookie security flags", category: "security", run: cookiesModule },
   { name: "Clickjacking", description: "Test clickjacking protection", category: "security", run: clickjackingModule },
+  { name: "CSP Analysis", description: "Deep Content Security Policy analysis for bypasses", category: "security", run: cspModule },
   { name: "Secret Detection", description: "Scan JS bundles for exposed API keys and secrets", category: "security", run: secretsModule },
   { name: "Source Maps", description: "Check for exposed source maps", category: "security", run: sourceMapsModule },
   { name: "Dependencies", description: "Detect vulnerable client-side library versions", category: "security", run: dependenciesModule },
@@ -119,7 +121,7 @@ const ALL_MODULES = [...SECURITY_MODULES, ...STRESS_MODULES];
 // Quick mode: only the fastest, highest-signal modules (~10s total)
 const QUICK_MODULE_NAMES = new Set([
   "Security Headers", "SSL/TLS", "CORS", "Secret Detection", "Source Maps",
-  "Cookies", "Clickjacking", "Directory & File Exposure", "Dependencies",
+  "Cookies", "Clickjacking", "CSP Analysis", "Directory & File Exposure", "Dependencies",
   "JWT Security", "HTTP Methods", "Environment Leak",
 ]);
 const QUICK_MODULES = SECURITY_MODULES.filter((m) => QUICK_MODULE_NAMES.has(m.name));

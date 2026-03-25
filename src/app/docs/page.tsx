@@ -36,7 +36,7 @@ export default function DocsPage() {
 
 # Scan modes:
 #   "quick"    - 12 essential modules, ~15s (headers, SSL, secrets, cookies)
-#   "security" - all 41 security modules, ~45s (default)
+#   "security" - all 42 security modules, ~45s (default)
 #   "full"     - security + 6 stress tests (load, race, rate limit), ~90s
 # -d '{"url": "...", "mode": "quick"}'
 

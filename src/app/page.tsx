@@ -52,6 +52,7 @@ const ATTACK_MODULES = [
   { name: "Business Logic", desc: "Negative values, zero-price bypass, idempotency", icon: "🧮" },
   { name: "OAuth/OIDC", desc: "Redirect URI bypass, state validation, provider leaks", icon: "🔐" },
   { name: "API Versioning", desc: "Hidden versions, path bypass, endpoint shadowing", icon: "🔀" },
+  { name: "CSP Analysis", desc: "Deep CSP bypass analysis, unsafe directives, CDN bypasses", icon: "🛡" },
 ];
 
 interface RecentScan {
