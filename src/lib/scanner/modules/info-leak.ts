@@ -239,6 +239,164 @@ export const infoLeakModule: ScanModule = async (target) => {
     });
   }
 
+  // Version fingerprinting — check for specific software version disclosure in headers
+  const versionHeaders: { name: string; value: string; software: string }[] = [];
+  const versionHeaderChecks: { key: string; name: string; pattern: RegExp }[] = [
+    { key: "server", name: "Server", pattern: /\d+\.\d+/ },
+    { key: "x-powered-by", name: "X-Powered-By", pattern: /.+/ },
+    { key: "x-aspnet-version", name: "X-AspNet-Version", pattern: /.+/ },
+    { key: "x-generator", name: "X-Generator", pattern: /.+/ },
+    { key: "x-drupal-cache", name: "X-Drupal-Cache", pattern: /.+/ },
+  ];
+
+  for (const check of versionHeaderChecks) {
+    const val = headers[check.key];
+    if (val && check.pattern.test(val)) {
+      versionHeaders.push({ name: check.name, value: val, software: val });
+    }
+  }
+
+  if (versionHeaders.length > 0) {
+    findings.push({
+      id: "infoleak-version-fingerprint",
+      module: "Information Leakage",
+      severity: "medium",
+      title: `Software version disclosed via ${versionHeaders.length} header${versionHeaders.length > 1 ? "s" : ""}`,
+      description: `The server discloses specific software versions through response headers: ${versionHeaders.map((h) => `${h.name}: ${h.value}`).join(", ")}. Attackers use version information to find known CVEs and exploits for the exact software version.`,
+      evidence: versionHeaders.map((h) => `${h.name}: ${h.value}`).join("\n"),
+      remediation: "Remove or genericize version-disclosing headers. Configure your web server or reverse proxy to strip these headers in production.",
+      cwe: "CWE-200",
+      owasp: "A05:2021",
+      codeSnippet: `// next.config.ts — remove version headers\nconst nextConfig = {\n  poweredByHeader: false,\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      { key: "X-Powered-By", value: "" },\n      { key: "Server", value: "web" },\n    ]}];\n  },\n};\n\n// nginx — hide version info\nserver_tokens off;\nproxy_hide_header X-Powered-By;\nproxy_hide_header X-AspNet-Version;\nproxy_hide_header X-Generator;`,
+    });
+  }
+
+  // Error page information leak — trigger error pages with malformed requests
+  const errorPagePayloads: { url: string; headers?: Record<string, string>; desc: string }[] = [
+    { url: target.baseUrl + "/%ff", desc: "invalid URL encoding" },
+    { url: target.baseUrl + "/", headers: { Accept: "../../../etc/passwd" }, desc: "path traversal in Accept header" },
+    { url: target.baseUrl + "/", headers: { "Content-Type": "application/x-www-form-urlencoded\r\nX-Injected: true" }, desc: "header injection via Content-Type" },
+  ];
+
+  const errorPageResults = await Promise.allSettled(
+    errorPagePayloads.map(async (payload) => {
+      try {
+        const res = await scanFetch(payload.url, {
+          headers: payload.headers,
+          timeoutMs: 5000,
+        });
+        const text = await res.text();
+        if (text.length < 50) return null;
+
+        // Check for stack traces, file paths, or framework names in error responses
+        const leakPatterns: { pattern: RegExp; label: string }[] = [
+          { pattern: /Traceback \(most recent call last\)/i, label: "Python stack trace" },
+          { pattern: /at [\w.]+\([\w/.]+:\d+:\d+\)/i, label: "Node.js stack trace" },
+          { pattern: /(?:Fatal error|Warning):.*on line \d+/i, label: "PHP error" },
+          { pattern: /Exception in thread/i, label: "Java exception" },
+          { pattern: /panic:.*goroutine/i, label: "Go panic" },
+          { pattern: /\/home\/\w+\/|\/var\/www\/|\/app\/|C:\\Users\\/i, label: "server file path" },
+          { pattern: /django|laravel|express|flask|rails|spring|asp\.net/i, label: "framework name" },
+          { pattern: /node_modules\/|vendor\/|site-packages\//i, label: "dependency path" },
+        ];
+
+        for (const lp of leakPatterns) {
+          if (lp.pattern.test(text)) {
+            return { desc: payload.desc, label: lp.label, url: payload.url, text: text.substring(0, 400) };
+          }
+        }
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
+  for (const r of errorPageResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `infoleak-errorpage-${findings.length}`,
+      module: "Information Leakage",
+      severity: "medium",
+      title: `Error page leaks ${v.label} via ${v.desc}`,
+      description: `Sending a malformed request (${v.desc}) triggered an error page that reveals ${v.label}. Attackers craft invalid requests to extract server internals from verbose error pages.`,
+      evidence: `URL: ${v.url}\nTrigger: ${v.desc}\nLeak: ${v.label}\nResponse excerpt: ${v.text}`,
+      remediation: "Configure custom error pages that return generic messages. Ensure your web server and application framework do not expose internals in any error condition.",
+      cwe: "CWE-209",
+      owasp: "A05:2021",
+      codeSnippet: `// app/not-found.tsx — custom 404\nexport default function NotFound() {\n  return <div><h2>Page not found</h2></div>;\n}\n\n// app/error.tsx — custom error boundary\n"use client";\nexport default function Error({ reset }: { reset: () => void }) {\n  return <div><h2>Something went wrong</h2><button onClick={reset}>Retry</button></div>;\n}`,
+    });
+    break; // One finding is enough
+  }
+
+  // HTML comment leak — scan HTML responses for comments containing sensitive patterns
+  const COMMENT_LEAK_PATTERNS: { pattern: RegExp; label: string }[] = [
+    { pattern: /\bTODO\b/i, label: "TODO" },
+    { pattern: /\bFIXME\b/i, label: "FIXME" },
+    { pattern: /\bHACK\b/i, label: "HACK" },
+    { pattern: /\bpassword\b/i, label: "password" },
+    { pattern: /\btoken\b/i, label: "token" },
+    { pattern: /\bapi[_-]?key\b/i, label: "api_key" },
+    { pattern: /\binternal\b/i, label: "internal" },
+    { pattern: /\bsecret\b/i, label: "secret" },
+  ];
+
+  // Fetch the main page and a few pages to check for HTML comments
+  const pagesToCheck = [target.url, ...target.pages.slice(0, 4)];
+  const commentLeaks: { page: string; comment: string; label: string }[] = [];
+
+  const commentResults = await Promise.allSettled(
+    pagesToCheck.map(async (pageUrl) => {
+      try {
+        const res = await scanFetch(pageUrl, { timeoutMs: 5000 });
+        const text = await res.text();
+        // Extract HTML comments
+        const commentRegex = /<!--([\s\S]*?)-->/g;
+        let match: RegExpExecArray | null;
+        const found: { comment: string; label: string }[] = [];
+        while ((match = commentRegex.exec(text)) !== null && found.length < 5) {
+          const comment = match[1].trim();
+          if (comment.length < 3 || comment.startsWith("[if ") || comment.startsWith("[endif")) continue;
+          for (const lp of COMMENT_LEAK_PATTERNS) {
+            if (lp.pattern.test(comment)) {
+              found.push({ comment: comment.substring(0, 150), label: lp.label });
+              break;
+            }
+          }
+        }
+        return { pageUrl, found };
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
+  for (const r of commentResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    for (const f of v.found) {
+      commentLeaks.push({ page: v.pageUrl, comment: f.comment, label: f.label });
+    }
+  }
+
+  if (commentLeaks.length > 0) {
+    const grouped = new Map<string, string[]>();
+    for (const cl of commentLeaks) {
+      const existing = grouped.get(cl.label) ?? [];
+      existing.push(cl.comment);
+      grouped.set(cl.label, existing);
+    }
+    findings.push({
+      id: "infoleak-html-comments",
+      module: "Information Leakage",
+      severity: "low",
+      title: `Sensitive HTML comments found (${commentLeaks.length} across ${new Set(commentLeaks.map((c) => c.page)).size} page${new Set(commentLeaks.map((c) => c.page)).size > 1 ? "s" : ""})`,
+      description: `HTML comments containing sensitive keywords (${[...grouped.keys()].join(", ")}) were found in page source. These comments may reveal internal notes, credentials, or implementation details to anyone viewing page source.`,
+      evidence: commentLeaks.slice(0, 5).map((c) => `[${c.label}] ${c.comment}`).join("\n"),
+      remediation: "Strip HTML comments from production builds. Use a build step or minifier that removes comments. Never include passwords, tokens, or internal notes in HTML comments.",
+      cwe: "CWE-615",
+      codeSnippet: `// next.config.ts — ensure comments are stripped in production\n// Next.js automatically minifies HTML in production builds.\n// For custom HTML, use a post-processing step:\nconst sanitized = html.replace(/<!--[\\s\\S]*?-->/g, "");\n\n// Or use terser/html-minifier in your build pipeline\n// to strip all comments from production output.`,
+    });
+  }
+
   // Check for dangerouslySetInnerHTML — only flag if excessive and no CSP
   const dangerousMatches = allJs.match(/dangerouslySetInnerHTML/g);
   const hasCSP = !!target.headers["content-security-policy"];

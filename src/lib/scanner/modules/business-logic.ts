@@ -170,6 +170,121 @@ export const businessLogicModule: ScanModule = async (target) => {
     ),
   ]);
 
+  // Test 7: Currency/locale manipulation
+  const currencyLocaleResults = await Promise.allSettled(
+    bizEndpoints.slice(0, 4).map(async (endpoint) => {
+      const manipulations = [
+        { params: { currency: "XXX" }, desc: "invalid currency code" },
+        { params: { currency: "KPW" }, desc: "obscure currency (North Korean Won)" },
+        { params: { locale: "xx-XX" }, desc: "invalid locale" },
+        { params: { locale: "en-US", currency: "IRR" }, desc: "locale with mismatched currency" },
+      ];
+      for (const m of manipulations) {
+        const url = new URL(endpoint);
+        for (const [k, v] of Object.entries(m.params)) url.searchParams.set(k, v);
+        try {
+          const res = await scanFetch(url.href, { timeoutMs: 5000 });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
+          if (text.length < 10) continue;
+          // If the response contains price/amount data without error, the server may be using client-supplied currency
+          if (/price|amount|total|cost/i.test(text) && !/error|invalid|unsupported|not.?found/i.test(text.substring(0, 300))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, desc: m.desc, params: m.params, text: text.substring(0, 200) };
+          }
+        } catch { /* skip */ }
+      }
+      return null;
+    }),
+  );
+
+  // Also test Accept-Language header manipulation on pricing endpoints
+  const langHeaderResults = await Promise.allSettled(
+    bizEndpoints.slice(0, 3).filter((ep) => /checkout|payment|purchase|cart|order|pricing/i.test(ep)).map(async (endpoint) => {
+      try {
+        const [res1, res2] = await Promise.all([
+          scanFetch(endpoint, { headers: { "Accept-Language": "en-US,en;q=0.9" }, timeoutMs: 5000 }),
+          scanFetch(endpoint, { headers: { "Accept-Language": "ja-JP,ja;q=0.9" }, timeoutMs: 5000, noCache: true }),
+        ]);
+        if (!res1.ok || !res2.ok) return null;
+        const [text1, text2] = await Promise.all([res1.text(), res2.text()]);
+        if (looksLikeHtml(text1)) return null;
+        // If responses differ in price-related content, locale affects pricing
+        const priceRegex = /(?:price|amount|total|cost)['":\s]*['"$€£¥]?\s*(\d+[\d,.]*)/gi;
+        const prices1 = [...text1.matchAll(priceRegex)].map((m) => m[1]);
+        const prices2 = [...text2.matchAll(priceRegex)].map((m) => m[1]);
+        if (prices1.length > 0 && prices2.length > 0 && prices1.join(",") !== prices2.join(",")) {
+          return { endpoint, pathname: new URL(endpoint).pathname, prices1, prices2 };
+        }
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
+  // Test 8: Quantity manipulation — negative, very large, and float quantities
+  const qtyManipResults = await Promise.allSettled(
+    bizEndpoints.slice(0, 4).filter((ep) => /cart|order|checkout|purchase|item/i.test(ep)).flatMap((endpoint) =>
+      [
+        { quantity: -1, desc: "negative quantity" },
+        { quantity: 999999, desc: "extremely large quantity" },
+        { quantity: 0.001, desc: "fractional quantity" },
+      ].map(async (test) => {
+        try {
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ quantity: test.quantity, qty: test.quantity }),
+            timeoutMs: 5000,
+          });
+          if (!res.ok) return null;
+          const text = await res.text();
+          if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+          if (text.length < 10) return null;
+          if (/success|created|added|updated|order|cart/i.test(text) && !/error|invalid|must be|minimum|positive|negative|cannot/i.test(text.substring(0, 300))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, quantity: test.quantity, desc: test.desc, text: text.substring(0, 200) };
+          }
+        } catch { /* skip */ }
+        return null;
+      }),
+    ),
+  );
+
+  // Test 9: TOCTOU — two rapid sequential requests to exploit race conditions
+  const toctouEndpoints = bizEndpoints.slice(0, 3).filter((ep) => /checkout|purchase|redeem|transfer|withdraw|order|payment/i.test(ep));
+  const toctouResults = await Promise.allSettled(
+    toctouEndpoints.map(async (endpoint) => {
+      const body = JSON.stringify({ amount: 1, quantity: 1, test: "vibeshield-toctou-check" });
+      const opts = { method: "POST", headers: { "Content-Type": "application/json" }, body, timeoutMs: 5000 };
+      try {
+        // Fire two requests simultaneously to test for race conditions
+        const [res1, res2] = await Promise.all([
+          scanFetch(endpoint, opts),
+          scanFetch(endpoint, { ...opts, noCache: true }),
+        ]);
+        if (!res1.ok || !res2.ok) return null;
+        const [text1, text2] = await Promise.all([res1.text(), res2.text()]);
+        if (looksLikeHtml(text1)) return null;
+        // Both requests succeeded — check if they both created records
+        const successPattern = /success|created|completed|processed|order|confirmation/i;
+        if (successPattern.test(text1) && successPattern.test(text2)) {
+          try {
+            const j1 = JSON.parse(text1);
+            const j2 = JSON.parse(text2);
+            // If both have different IDs, both requests were processed independently
+            if (j1.id && j2.id && j1.id !== j2.id) {
+              return { endpoint, pathname: new URL(endpoint).pathname, text1: text1.substring(0, 150), text2: text2.substring(0, 150) };
+            }
+          } catch { /* not JSON, check raw text */ }
+          // If both contain success indicators without deduplication, flag it
+          if (!/duplicate|already|idempoten|conflict/i.test(text1) && !/duplicate|already|idempoten|conflict/i.test(text2)) {
+            return { endpoint, pathname: new URL(endpoint).pathname, text1: text1.substring(0, 150), text2: text2.substring(0, 150) };
+          }
+        }
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
   // Collect findings
   for (const r of negativeResults) {
     if (r.status !== "fulfilled" || !r.value) continue;

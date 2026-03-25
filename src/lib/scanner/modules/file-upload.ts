@@ -178,6 +178,69 @@ export const fileUploadModule: ScanModule = async (target) => {
           }
         }
 
+        // Test 8: Content-Type mismatch — upload with .jpg extension but text/html Content-Type
+        const htmlInJpg = "<html><body><script>alert('ct-mismatch')</script></body></html>";
+        const { boundary: b8, body: body8 } = buildMultipart("innocent.jpg", "text/html", htmlInJpg);
+        const res8 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b8}` }, body: body8, timeoutMs: 5000,
+        });
+        if (res8.ok) {
+          const text8 = await res8.text();
+          if (!(looksLikeHtml(text8) && (isSoft404(text8, target) || target.isSpa))) {
+            if (text8.length > 10 && /url|path|key|location|filename/i.test(text8)) {
+              // Check if the uploaded file is served with the attacker-controlled Content-Type
+              const urlMatch8 = text8.match(/["']((?:https?:\/\/[^"']+|\/[^"']+)\.jpg?)["']/);
+              if (urlMatch8) {
+                try {
+                  const fileUrl = urlMatch8[1].startsWith("http") ? urlMatch8[1] : target.baseUrl + urlMatch8[1];
+                  const fileRes = await scanFetch(fileUrl, { timeoutMs: 5000 });
+                  const serveCt = fileRes.headers.get("content-type") || "";
+                  if (serveCt.includes("text/html") || serveCt.includes("application/xhtml")) {
+                    return { type: "ct-mismatch" as const, endpoint, pathname, fileUrl, servedContentType: serveCt };
+                  }
+                } catch { /* skip */ }
+              }
+              // Even without URL verification, the server accepted mismatched Content-Type without rejection
+              return { type: "ct-mismatch-accepted" as const, endpoint, pathname, text: text8 };
+            }
+          }
+        }
+
+        // Test 9: Path traversal with URL-encoded sequences
+        const traversalNames = ["..%2f..%2f..%2fetc%2fpasswd", "..\\..\\..\\windows\\win.ini", "....//....//etc/passwd"];
+        for (const travName of traversalNames) {
+          const { boundary: b9, body: body9 } = buildMultipart(travName, "application/octet-stream", "vibeshield-traversal-test");
+          const res9 = await scanFetch(endpoint, {
+            method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b9}` }, body: body9, timeoutMs: 5000,
+          });
+          if (res9.ok) {
+            const text9 = await res9.text();
+            if (!(looksLikeHtml(text9) && (isSoft404(text9, target) || target.isSpa))) {
+              if (text9.length > 10 && /url|path|key|location|filename/i.test(text9) && /etc|passwd|windows|win\.ini|\.\.|%2f/i.test(text9)) {
+                return { type: "encoded-traversal" as const, endpoint, pathname, filename: travName, text: text9 };
+              }
+            }
+          }
+        }
+
+        // Test 10: Large file DoS — send Content-Length for a very large file to check size limit enforcement
+        const { boundary: b10, body: body10 } = buildMultipart("largefile.bin", "application/octet-stream", "x");
+        try {
+          const res10 = await scanFetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": `multipart/form-data; boundary=${b10}`,
+              "Content-Length": "10737418240", // 10GB
+            },
+            body: body10,
+            timeoutMs: 5000,
+          });
+          // If the server accepts a 10GB Content-Length without immediate rejection (413), it may lack size limits
+          if (res10.ok || res10.status === 200 || res10.status === 201) {
+            return { type: "large-file-dos" as const, endpoint, pathname, status: res10.status };
+          }
+        } catch { /* connection reset or timeout is expected/acceptable */ }
+
         return null;
       }),
     ),
