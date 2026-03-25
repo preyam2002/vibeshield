@@ -208,6 +208,69 @@ const TOOL_CHECKS: ToolCheck[] = [
     description: "Webpack Hot Module Replacement is active, indicating the app may be running in development mode in production.",
     remediation: "Ensure NODE_ENV=production in your deployment. Never deploy development builds.",
   },
+  // Inngest dev server
+  {
+    path: "/api/inngest",
+    name: "Inngest Dev Server",
+    contentPatterns: [/inngest/i, /event/i, /function/i, /step/i],
+    severity: "medium",
+    description: "Inngest endpoint is accessible. If the dev server UI is exposed, attackers can trigger background functions.",
+    remediation: "Protect Inngest endpoints with signing keys in production.",
+    requireJson: true,
+  },
+  // tRPC panel
+  {
+    path: "/api/trpc-panel",
+    name: "tRPC Panel",
+    contentPatterns: [/trpc/i, /panel/i, /procedure/i, /router/i],
+    severity: "high",
+    description: "tRPC Panel is publicly accessible, allowing anyone to explore and invoke your tRPC procedures.",
+    remediation: "Remove tRPC Panel from production. Only use it in development.",
+  },
+  // BullMQ / Bull Board
+  {
+    path: "/admin/queues",
+    name: "Bull Board (Job Queue)",
+    contentPatterns: [/bull/i, /queue/i, /job/i, /redis/i],
+    severity: "high",
+    description: "Bull Board job queue dashboard is publicly accessible. Attackers can see job payloads and retry/delete jobs.",
+    remediation: "Protect Bull Board with authentication middleware.",
+  },
+  {
+    path: "/queues",
+    name: "Bull Board (Job Queue)",
+    contentPatterns: [/bull/i, /queue/i, /job/i, /completed/i],
+    severity: "high",
+    description: "Job queue dashboard is publicly accessible.",
+    remediation: "Protect queue dashboards with authentication.",
+  },
+  // Payload CMS
+  {
+    path: "/admin",
+    name: "CMS Admin Panel",
+    contentPatterns: [/payload/i, /strapi/i, /directus/i, /sanity/i, /admin/i],
+    severity: "medium",
+    description: "A CMS admin panel login page is accessible. While login-protected, it confirms the CMS in use and may be brute-forced.",
+    remediation: "Add rate limiting and IP restrictions to admin panels. Consider moving to a separate subdomain.",
+  },
+  // Vite dev server
+  {
+    path: "/@vite/client",
+    name: "Vite Dev Server",
+    contentPatterns: [/vite/i, /hmr/i, /import\.meta/i],
+    severity: "high",
+    description: "Vite development server is running in production. This exposes source code and HMR functionality.",
+    remediation: "Deploy production builds, not the Vite dev server. Run `vite build` for production.",
+  },
+  // Convex dashboard
+  {
+    path: "/.convex",
+    name: "Convex Dashboard",
+    contentPatterns: [/convex/i, /function/i, /table/i, /schema/i],
+    severity: "high",
+    description: "Convex backend dashboard or configuration is accessible.",
+    remediation: "Block access to .convex directory in production.",
+  },
 ];
 
 export const exposedToolsModule: ScanModule = async (target) => {
