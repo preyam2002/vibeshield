@@ -26,9 +26,9 @@ export async function GET(
     ...(scan.completedAt ? [`# Duration: ${Math.round((new Date(scan.completedAt).getTime() - new Date(scan.startedAt).getTime()) / 1000)}s`] : []),
     `# Findings: ${scan.summary.total} (${scan.summary.critical} critical, ${scan.summary.high} high, ${scan.summary.medium} medium, ${scan.summary.low} low)`,
   ];
-  const header = "Severity,Module,Title,Description,Remediation,CWE,OWASP";
+  const header = "Severity,Module,Title,Description,Remediation,CWE,OWASP,Confidence,Endpoint";
   const rows = scan.findings.map((f) =>
-    [f.severity, f.module, f.title, f.description, f.remediation, f.cwe || "", f.owasp || ""]
+    [f.severity, f.module, f.title, f.description, f.remediation, f.cwe || "", f.owasp || "", f.confidence !== undefined ? String(f.confidence) : "", f.endpoint || ""]
       .map(escCsv)
       .join(","),
   );

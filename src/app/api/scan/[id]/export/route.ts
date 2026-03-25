@@ -30,6 +30,8 @@ export const GET = (_req: NextRequest, { params }: { params: Promise<{ id: strin
         remediation: f.remediation,
         cwe: f.cwe,
         owasp: f.owasp,
+        ...(f.confidence !== undefined ? { confidence: f.confidence } : {}),
+        ...(f.endpoint ? { endpoint: f.endpoint } : {}),
       })),
     };
 

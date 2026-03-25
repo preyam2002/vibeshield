@@ -49,8 +49,11 @@ export const GET = async (
         severity: f.severity,
         module: f.module,
         "security-severity": SEVERITY_LEVEL[f.severity] || "0.0",
+        ...(f.confidence !== undefined ? { confidence: f.confidence } : {}),
       },
       ...(f.evidence ? { fingerprints: { evidence: f.evidence.substring(0, 200) } } : {}),
+      ...(f.endpoint ? { locations: [{ physicalLocation: { artifactLocation: { uri: f.endpoint } } }] } : {}),
+      rank: f.confidence ?? 80,
     });
   }
 
