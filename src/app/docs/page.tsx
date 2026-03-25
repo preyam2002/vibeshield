@@ -94,7 +94,7 @@ curl ${baseUrl}/api/scan/abc-123/csv -o findings.csv`}
 #   "score": 78,
 #   "summary": {"critical": 0, "high": 1, "medium": 3, ...},
 #   "gate": {"passed": true},  // if minScore/failOnCritical set
-#   "moduleHealth": {"failed": 0, "skipped": 0, "total": 48}  // if any modules failed/skipped
+#   "moduleHealth": {"failed": 0, "skipped": 0, "total": 53}  // if any modules failed/skipped
 # }
 # Callbacks retry up to 3x with exponential backoff on server errors.
 #
@@ -290,6 +290,7 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
               { method: "GET", path: "/api/scan/:id/ci", desc: "CI-friendly results. Query: ?min-score=70&max-critical=0&format=annotations. Returns 422 on fail." },
               { method: "GET", path: "/api/scan/:id/diff?baseline=:prevId", desc: "Compare two scans. Returns new/fixed findings and score delta. 422 on regression." },
+              { method: "GET", path: "/api/scan/:id/github-action", desc: "Download pre-configured GitHub Actions workflow with quality gates" },
               { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
               { method: "GET", path: "/api/scans", desc: "List recent scans. Filter: ?target=domain&status=completed" },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
