@@ -266,6 +266,50 @@ vercel deploy --prod && \\
           </pre>
         </section>
 
+        {/* Slack/Discord Integration */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Slack & Discord Notifications</h2>
+          <p className="text-sm text-zinc-500 mb-4">Post scan results directly to Slack or Discord channels using the CI endpoint format options:</p>
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Slack (via incoming webhook)</h3>
+              <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Get Slack-formatted results and post to channel
+PAYLOAD=$(curl -s "${baseUrl}/api/scan/SCAN_ID/ci?format=slack&min-score=50")
+curl -X POST "$SLACK_WEBHOOK_URL" \\
+  -H "Content-Type: application/json" \\
+  -d "$PAYLOAD"`}
+              </pre>
+            </div>
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Discord (via webhook)</h3>
+              <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Get Discord-formatted results and post to channel
+PAYLOAD=$(curl -s "${baseUrl}/api/scan/SCAN_ID/ci?format=discord&min-score=50")
+curl -X POST "$DISCORD_WEBHOOK_URL" \\
+  -H "Content-Type: application/json" \\
+  -d "$PAYLOAD"`}
+              </pre>
+            </div>
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Bulk Scanning</h3>
+              <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Scan multiple URLs at once (up to 10)
+curl -X POST ${baseUrl}/api/scan/bulk \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "urls": [
+      "https://app1.vercel.app",
+      "https://app2.vercel.app",
+      "https://app3.vercel.app"
+    ],
+    "mode": "security"
+  }'`}
+              </pre>
+            </div>
+          </div>
+        </section>
+
         {/* Badge */}
         <section className="mb-12">
           <h2 className="text-lg font-bold text-zinc-200 mb-4">README Badge</h2>
@@ -289,7 +333,8 @@ vercel deploy --prod && \\
               { method: "GET", path: "/api/scan/:id/junit", desc: "Download JUnit XML (CI test results)" },
               { method: "GET", path: "/api/scan/:id/pdf", desc: "Printable HTML/PDF report" },
               { method: "GET", path: "/api/scan/:id/badge", desc: "SVG badge image" },
-              { method: "GET", path: "/api/scan/:id/ci", desc: "CI-friendly results. Query: ?min-score=70&max-critical=0&format=annotations. Returns 422 on fail." },
+              { method: "GET", path: "/api/scan/:id/ci", desc: "CI-friendly results. Query: ?min-score=70&max-critical=0&format=annotations|slack|discord. Returns 422 on fail." },
+              { method: "POST", path: "/api/scan/bulk", desc: "Bulk scan up to 10 URLs", body: '{"urls": ["..."], "mode?": "quick|security|full", "callbackUrl?": "..."}' },
               { method: "GET", path: "/api/scan/:id/diff?baseline=:prevId", desc: "Compare two scans. Returns new/fixed findings and score delta. 422 on regression." },
               { method: "GET", path: "/api/scan/:id/github-action", desc: "Download pre-configured GitHub Actions workflow with quality gates" },
               { method: "DELETE", path: "/api/scan/:id", desc: "Cancel a running scan" },
