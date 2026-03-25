@@ -142,5 +142,49 @@ export const httpMethodsModule: ScanModule = async (target) => {
   }
 
   await Promise.allSettled(tests);
+
+  // Test for unintended PUT/PATCH/DELETE on API endpoints (should require auth)
+  const writeMethods = ["PUT", "PATCH", "DELETE"] as const;
+  const writeResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 5).flatMap((endpoint) =>
+      writeMethods.map(async (method) => {
+        const res = await scanFetch(endpoint, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: method !== "DELETE" ? JSON.stringify({ test: true }) : undefined,
+          timeoutMs: 5000,
+        });
+        // If write method succeeds without auth headers, it's concerning
+        if (res.ok && res.status !== 404) {
+          const text = await res.text();
+          if (text.length > 5 && !/unauthorized|unauthenticated|forbidden|login|sign.?in/i.test(text.substring(0, 300))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, method, status: res.status, text: text.substring(0, 200) };
+          }
+        }
+        return null;
+      }),
+    ),
+  );
+
+  const writeSeen = new Set<string>();
+  for (const r of writeResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const key = `${v.pathname}:${v.method}`;
+    if (writeSeen.has(key)) continue;
+    writeSeen.add(key);
+    findings.push({
+      id: `http-methods-write-no-auth-${findings.length}`,
+      module: "HTTP Methods",
+      severity: "medium",
+      title: `${v.method} accepted without authentication on ${v.pathname}`,
+      description: `The ${v.method} method is accepted without authentication on this endpoint. Write methods (PUT, PATCH, DELETE) should require authentication to prevent unauthorized data modification.`,
+      evidence: `${v.method} ${v.endpoint}\nStatus: ${v.status}\nResponse: ${v.text}`,
+      remediation: `Require authentication for ${v.method} requests. Return 401 for unauthenticated write attempts.`,
+      cwe: "CWE-306", owasp: "A07:2021",
+      codeSnippet: `// Protect write methods in API routes\nexport async function ${v.method}(req: Request) {\n  const session = await auth();\n  if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });\n  // ... handle authenticated ${v.method}\n}`,
+    });
+  }
+
   return findings;
 };

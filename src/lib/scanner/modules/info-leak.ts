@@ -180,8 +180,66 @@ export const infoLeakModule: ScanModule = async (target) => {
     });
   }
 
-  // Check for dangerouslySetInnerHTML — only flag if excessive and no CSP
+  // Check for environment variable leaks in HTML/JS responses
+  const envLeakPatterns: { pattern: RegExp; name: string }[] = [
+    { pattern: /NEXT_PUBLIC_[A-Z_]+=(?!["']?\$\{)/g, name: "NEXT_PUBLIC_ env assignment" },
+    { pattern: /process\.env\.((?!NODE_ENV|NEXT_PUBLIC_)[A-Z_]{5,})/g, name: "server-only env reference" },
+    { pattern: /VERCEL_[A-Z_]+=.{5,}/g, name: "Vercel deployment env" },
+    { pattern: /RAILWAY_[A-Z_]+=.{5,}/g, name: "Railway deployment env" },
+    { pattern: /FLY_[A-Z_]+=.{5,}/g, name: "Fly.io deployment env" },
+    { pattern: /RENDER_[A-Z_]+=.{5,}/g, name: "Render deployment env" },
+  ];
+
   const allJs = Array.from(target.jsContents.values()).join("\n");
+  for (const ep of envLeakPatterns) {
+    const matches = allJs.match(ep.pattern);
+    if (matches && matches.length > 0) {
+      // Filter out expected public env vars
+      const suspicious = matches.filter((m) => !/NEXT_PUBLIC_|VERCEL_URL|VERCEL_ENV/i.test(m));
+      if (suspicious.length > 0) {
+        findings.push({
+          id: `infoleak-env-${ep.name.replace(/\s+/g, "-")}`,
+          module: "Information Leakage",
+          severity: "medium",
+          title: `${ep.name} exposed in client JS (${suspicious.length} instances)`,
+          description: `Found ${suspicious.length} instance(s) of ${ep.name} in client-side JavaScript. Server-only environment variables should never appear in the client bundle.`,
+          evidence: `Found: ${suspicious.slice(0, 3).join(", ")}${suspicious.length > 3 ? `, +${suspicious.length - 3} more` : ""}`,
+          remediation: "Only prefix client-safe env vars with NEXT_PUBLIC_. Server-only vars should be accessed only in server components, API routes, or middleware.",
+          cwe: "CWE-200", owasp: "A05:2021",
+          codeSnippet: `// .env.local — separate public and private vars\nNEXT_PUBLIC_API_URL=https://api.example.com  # safe for client\nDATABASE_URL=postgres://...                   # server only\n\n// Access server-only vars only in server code:\n// app/api/route.ts or server components\nconst db = process.env.DATABASE_URL; // only available server-side`,
+        });
+      }
+    }
+  }
+
+  // Check for internal API/service URLs leaked in JS bundles
+  const internalUrlPatterns = [
+    /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)(?::\d+)?(?:\/\S*)?/gi,
+    /https?:\/\/[a-z0-9-]+\.(?:internal|local|corp|private|dev|staging)(?:\.[a-z]+)?(?::\d+)?(?:\/\S*)?/gi,
+  ];
+
+  const internalUrls = new Set<string>();
+  for (const pat of internalUrlPatterns) {
+    const matches = allJs.match(pat);
+    if (matches) matches.forEach((m: string) => internalUrls.add(m.substring(0, 100)));
+  }
+
+  if (internalUrls.size > 0) {
+    const urls = [...internalUrls].slice(0, 5);
+    findings.push({
+      id: "infoleak-internal-urls",
+      module: "Information Leakage",
+      severity: "medium",
+      title: `${internalUrls.size} internal/localhost URL${internalUrls.size > 1 ? "s" : ""} in client code`,
+      description: "Internal service URLs (localhost, private IPs, internal domains) were found in client-side code. These reveal your internal infrastructure and can be used for SSRF or targeted attacks.",
+      evidence: urls.join("\n"),
+      remediation: "Replace hardcoded internal URLs with environment variables. Use relative URLs or proxy through your API.",
+      cwe: "CWE-200",
+      codeSnippet: `// Use environment variables for API URLs\nconst API_URL = process.env.NEXT_PUBLIC_API_URL || "/api";\n\n// Or proxy through Next.js rewrites:\n// next.config.ts\nasync rewrites() {\n  return [{ source: "/api/:path*", destination: process.env.BACKEND_URL + "/:path*" }];\n}`,
+    });
+  }
+
+  // Check for dangerouslySetInnerHTML — only flag if excessive and no CSP
   const dangerousMatches = allJs.match(/dangerouslySetInnerHTML/g);
   const hasCSP = !!target.headers["content-security-policy"];
   if (dangerousMatches && dangerousMatches.length > 15 && !hasCSP) {
