@@ -175,6 +175,70 @@ echo $R | jq '{grade, score, summary}' && \\
           </pre>
         </section>
 
+        {/* Vercel Deploy Hook */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Vercel Deploy Hook</h2>
+          <p className="text-sm text-zinc-500 mb-4">Auto-scan after every Vercel deployment by adding a webhook in your project settings:</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# vercel.json — add a post-deploy webhook
+{
+  "github": {
+    "autoAlias": true
+  }
+}
+
+# Or use Vercel CLI to trigger a scan after deploy:
+vercel deploy --prod && \\
+  curl -s -X POST ${baseUrl}/api/scan \\
+    -H "Content-Type: application/json" \\
+    -d "{\\"url\\": \\"$(vercel inspect --json | jq -r .url)\\", \\"mode\\": \\"quick\\"}"
+`}
+          </pre>
+        </section>
+
+        {/* Response Schema */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Response Schema</h2>
+          <p className="text-sm text-zinc-500 mb-4">The scan result object returned by <code className="text-zinc-400 bg-zinc-800/50 px-1.5 py-0.5 rounded">GET /api/scan/:id</code>:</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`{
+  "id": "abc-123",
+  "target": "https://your-app.vercel.app",
+  "status": "completed",         // "queued" | "scanning" | "completed" | "failed"
+  "mode": "full",                // "quick" | "security" | "full"
+  "grade": "B+",                 // A, A-, B+, B, C+, C, D+, D, F
+  "score": 78,                   // 0-100
+  "startedAt": "2025-03-25T...",
+  "completedAt": "2025-03-25T...",
+  "technologies": ["Next.js", "React", "Tailwind", "Supabase"],
+  "summary": {
+    "critical": 0, "high": 2, "medium": 5, "low": 3, "info": 1, "total": 11
+  },
+  "surface": {
+    "pages": 12, "apiEndpoints": 8, "jsFiles": 5, "forms": 2, "cookies": 3
+  },
+  "findings": [{
+    "id": "headers-content-security-policy",
+    "module": "Security Headers",
+    "severity": "medium",        // "critical" | "high" | "medium" | "low" | "info"
+    "title": "Missing Content-Security-Policy header",
+    "description": "...",
+    "evidence": "...",           // optional
+    "remediation": "...",
+    "codeSnippet": "...",        // optional — copy-paste fix
+    "cwe": "CWE-693",           // optional
+    "owasp": "A05:2021"         // optional
+  }],
+  "modules": [{
+    "name": "Security Headers",
+    "status": "completed",
+    "findingsCount": 2,
+    "durationMs": 340
+  }]
+}`}
+          </pre>
+        </section>
+
         {/* Badge */}
         <section className="mb-12">
           <h2 className="text-lg font-bold text-zinc-200 mb-4">README Badge</h2>
