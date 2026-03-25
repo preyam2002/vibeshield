@@ -346,7 +346,12 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
 
         {/* API reference */}
         <section className="mb-12">
-          <h2 className="text-lg font-bold text-zinc-200 mb-4">API Reference</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-zinc-200">API Reference</h2>
+            <a href="/api/openapi" target="_blank" className="text-xs text-blue-500 hover:text-blue-400 transition-colors">
+              OpenAPI Spec →
+            </a>
+          </div>
           <div className="space-y-4">
             {[
               { method: "POST", path: "/api/scan", desc: "Start a new scan", body: '{"url": "...", "mode?": "quick|security|full", "callbackUrl?": "..."}' },
