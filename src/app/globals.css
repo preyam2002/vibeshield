@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+@media print {
+  body { background: white !important; color: black !important; }
+  nav, footer, button, .animate-spin, .animate-ping { display: none !important; }
+  a { color: inherit !important; text-decoration: none !important; }
+  [class*="bg-zinc"] { background: transparent !important; border-color: #ddd !important; }
+  [class*="text-zinc"] { color: #333 !important; }
+  [class*="text-red"] { color: #dc2626 !important; }
+  [class*="text-orange"] { color: #ea580c !important; }
+  [class*="text-yellow"] { color: #ca8a04 !important; }
+  [class*="text-green"], [class*="text-emerald"] { color: #16a34a !important; }
+  pre { white-space: pre-wrap !important; word-break: break-all !important; border: 1px solid #ddd !important; }
+  .lg\:col-span-1 { display: none !important; }
+  .lg\:col-span-3 { grid-column: span 4 !important; }
+}

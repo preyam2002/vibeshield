@@ -450,6 +450,30 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: "Axiom API token exposed. Attackers can read your application logs, which may contain sensitive data.",
     remediation: "Rotate in Axiom settings. Move to server-side.",
   },
+  // Polar API key (payment/subscription platform for OSS)
+  {
+    name: "Polar API Key",
+    pattern: /polar_[a-zA-Z0-9]{32,}/g,
+    severity: "critical",
+    description: "Polar API key exposed. Attackers can access your subscription and payment data.",
+    remediation: "Rotate in Polar dashboard. Move to server-side environment variable.",
+  },
+  // Dub.co API key (link management)
+  {
+    name: "Dub.co API Key",
+    pattern: /dub_[a-zA-Z0-9]{24,}/g,
+    severity: "high",
+    description: "Dub.co API key exposed. Attackers can manage your links and access analytics.",
+    remediation: "Rotate in Dub.co settings. Move to server-side.",
+  },
+  // Loops API key (email marketing)
+  {
+    name: "Loops API Key",
+    pattern: /loops_[a-zA-Z0-9]{24,}/g,
+    severity: "high",
+    description: "Loops.so API key exposed. Attackers can send emails on your behalf and access subscriber data.",
+    remediation: "Rotate in Loops dashboard. Move to server-side.",
+  },
   // R2/S3 presigned URL patterns (not secret per se, but dangerous if long-lived)
   {
     name: "Long-lived Presigned S3/R2 URL",
