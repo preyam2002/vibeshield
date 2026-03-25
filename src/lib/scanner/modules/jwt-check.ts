@@ -67,6 +67,7 @@ export const jwtModule: ScanModule = async (target) => {
         evidence: `Algorithm: ${header.alg}`,
         remediation: "Consider using RS256 (asymmetric) for public-facing JWTs. Ensure HS256 secrets are at least 256 bits.",
         cwe: "CWE-326",
+        codeSnippet: `// Use asymmetric RS256 for better security\nimport jwt from "jsonwebtoken";\nconst token = jwt.sign({ sub: userId }, privateKey, {\n  algorithm: "RS256",\n  expiresIn: "15m",\n});`,
       });
     }
 
@@ -84,6 +85,7 @@ export const jwtModule: ScanModule = async (target) => {
         evidence: `Sensitive fields: ${sensitiveFields.join(", ")}\nSource: ${source}`,
         remediation: "Never put sensitive data in JWT payloads. JWTs are readable by anyone — only store non-sensitive identifiers.",
         cwe: "CWE-312",
+        codeSnippet: `// Only include non-sensitive identifiers in JWT\nconst token = jwt.sign(\n  { sub: user.id, role: user.role }, // NOT email, password, etc.\n  secret,\n  { expiresIn: "15m" }\n);\n// Look up sensitive data server-side from the user ID`,
       });
     }
 
@@ -103,6 +105,7 @@ export const jwtModule: ScanModule = async (target) => {
           evidence: `Expires: ${expDate.toISOString()}\nDays until expiry: ${Math.round(daysUntilExpiry)}`,
           remediation: "Use short-lived access tokens (15-60 minutes) with refresh tokens for re-authentication.",
           cwe: "CWE-613",
+          codeSnippet: `// Use short-lived tokens\nconst token = jwt.sign({ sub: userId }, secret, {\n  expiresIn: "15m", // short-lived access token\n});\n// Pair with a refresh token (7d) for seamless re-auth`,
         });
       }
     } else if (!payload.exp) {
@@ -156,6 +159,7 @@ export const jwtModule: ScanModule = async (target) => {
         evidence: `Sent forged JWT with alg:none, role:admin\nEndpoint: ${v.endpoint}\nStatus: ${v.status}\nResponse length: ${v.length}`,
         remediation: "Reject JWTs with alg:none. Use a JWT library that validates the algorithm.",
         cwe: "CWE-347", owasp: "A02:2021",
+        codeSnippet: `// Reject alg:none — always specify algorithms\nimport jwt from "jsonwebtoken";\ntry {\n  const decoded = jwt.verify(token, secret, {\n    algorithms: ["HS256"], // NEVER include "none"\n  });\n} catch (err) {\n  return Response.json({ error: "Invalid token" }, { status: 401 });\n}`,
       });
     }
   }
