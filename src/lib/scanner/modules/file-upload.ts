@@ -40,192 +40,132 @@ export const fileUploadModule: ScanModule = async (target) => {
   const MAX_FINDINGS = 3;
   const endpointsToTest = [...uploadEndpoints].slice(0, 15);
 
-  for (const endpoint of endpointsToTest) {
-    if (findings.length >= MAX_FINDINGS) break;
+  // Helper to build multipart body
+  const buildMultipart = (filename: string, contentType: string, content: string) => {
+    const boundary = "----VibeShieldBoundary" + Math.random().toString(36).slice(2);
+    const body = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n${content}\r\n--${boundary}--`;
+    return { boundary, body };
+  };
 
-    // Test 1: Try uploading an HTML file (stored XSS vector)
-    try {
-      const htmlPayload = "<html><body><script>alert(1)</script></body></html>";
-      const boundary = "----VibeShieldBoundary" + Date.now();
-      const body = [
-        `--${boundary}`,
-        `Content-Disposition: form-data; name="file"; filename="test.html"`,
-        `Content-Type: text/html`,
-        ``,
-        htmlPayload,
-        `--${boundary}--`,
-      ].join("\r\n");
+  // Test all endpoints in parallel — each endpoint runs its 3 tests sequentially
+  const [endpointResults, dirResults] = await Promise.all([
+    Promise.allSettled(
+      endpointsToTest.map(async (endpoint) => {
+        const pathname = new URL(endpoint).pathname;
 
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-        body,
-        timeoutMs: 5000,
-      });
-
-      if (res.status === 404 || res.status === 405) continue;
-      const text = await res.text();
-      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
-      if (text.length < 5) continue;
-
-      if (res.ok) {
-        // Check if response contains a URL/path to the uploaded file
-        const urlMatch = text.match(/["']((?:https?:\/\/[^"']+|\/[^"']+)\.html?)["']/);
-        if (urlMatch) {
-          // Verify the uploaded file is actually accessible
-          try {
-            const fileUrl = urlMatch[1].startsWith("http") ? urlMatch[1] : target.baseUrl + urlMatch[1];
-            const fileRes = await scanFetch(fileUrl, { timeoutMs: 5000 });
-            const fileText = await fileRes.text();
-            if (fileRes.ok && fileText.includes("alert(1)")) {
-              findings.push({
-                id: `file-upload-xss-${findings.length}`,
-                module: "File Upload",
-                severity: "critical",
-                title: `Stored XSS via HTML file upload on ${new URL(endpoint).pathname}`,
-                description: "The upload endpoint accepts HTML files and serves them with executable scripts. An attacker can upload malicious HTML that executes JavaScript in victims' browsers.",
-                evidence: `POST ${endpoint} with test.html\nUploaded to: ${fileUrl}\nHTML with script tag is served and executable`,
-                remediation: "Restrict allowed file types. Never serve user-uploaded HTML files. Use Content-Disposition: attachment for downloads. Store files on a separate domain.",
-                cwe: "CWE-434",
-                owasp: "A04:2021",
-              });
-              continue;
-            }
-          } catch { /* skip */ }
-        }
-
-        // Even without URL confirmation, accepting HTML uploads is risky
-        if (/url|path|key|location|filename/i.test(text)) {
-          findings.push({
-            id: `file-upload-html-${findings.length}`,
-            module: "File Upload",
-            severity: "high",
-            title: `HTML file upload accepted on ${new URL(endpoint).pathname}`,
-            description: "The upload endpoint accepts HTML files without content-type validation. If these files are served to users, this enables stored XSS attacks.",
-            evidence: `POST ${endpoint} with test.html → ${res.status}\nResponse: ${text.substring(0, 200)}`,
-            remediation: "Validate file types on the server side (don't trust Content-Type headers). Restrict to expected types (images, PDFs, etc.).",
-            cwe: "CWE-434",
-            owasp: "A04:2021",
-          });
-          continue;
-        }
-      }
-    } catch {
-      // skip
-    }
-
-    // Test 2: Try uploading an SVG with embedded script (common bypass)
-    if (findings.length >= MAX_FINDINGS) break;
-    try {
-      const svgPayload = `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`;
-      const boundary = "----VibeShieldBoundary" + Date.now();
-      const body = [
-        `--${boundary}`,
-        `Content-Disposition: form-data; name="file"; filename="test.svg"`,
-        `Content-Type: image/svg+xml`,
-        ``,
-        svgPayload,
-        `--${boundary}--`,
-      ].join("\r\n");
-
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-        body,
-        timeoutMs: 5000,
-      });
-
-      if (res.status === 404 || res.status === 405) continue;
-      const text = await res.text();
-      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
-
-      if (res.ok && text.length > 10 && /url|path|key|location|filename/i.test(text)) {
-        findings.push({
-          id: `file-upload-svg-${findings.length}`,
-          module: "File Upload",
-          severity: "high",
-          title: `SVG file upload accepted on ${new URL(endpoint).pathname}`,
-          description: "The upload endpoint accepts SVG files which can contain embedded JavaScript. If served inline, this enables stored XSS via SVG.",
-          evidence: `POST ${endpoint} with test.svg (contains <script>) → ${res.status}\nResponse: ${text.substring(0, 200)}`,
-          remediation: "Sanitize SVG uploads by stripping script tags. Or reject SVGs entirely and only accept rasterized image formats (PNG, JPG, WebP).",
-          cwe: "CWE-434",
-          owasp: "A04:2021",
+        // Test 1: HTML upload
+        const { boundary: b1, body: body1 } = buildMultipart("test.html", "text/html", "<html><body><script>alert(1)</script></body></html>");
+        const res1 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b1}` }, body: body1, timeoutMs: 5000,
         });
-      }
-    } catch {
-      // skip
-    }
+        if (res1.status === 404 || res1.status === 405) return null;
+        const text1 = await res1.text();
+        if (looksLikeHtml(text1) && (isSoft404(text1, target) || target.isSpa)) return null;
+        if (text1.length < 5) return null;
 
-    // Test 3: Path traversal in filename
-    if (findings.length >= MAX_FINDINGS) break;
-    try {
-      const boundary = "----VibeShieldBoundary" + Date.now();
-      const body = [
-        `--${boundary}`,
-        `Content-Disposition: form-data; name="file"; filename="../../../etc/passwd"`,
-        `Content-Type: application/octet-stream`,
-        ``,
-        `test content`,
-        `--${boundary}--`,
-      ].join("\r\n");
-
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-        body,
-        timeoutMs: 5000,
-      });
-
-      if (res.ok) {
-        const text = await res.text();
-        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) continue;
-        // If it accepted the traversal filename without error, that's concerning
-        if (text.length > 10 && /url|path|key|location|filename/i.test(text) && /etc|passwd|\.\.\//i.test(text)) {
-          findings.push({
-            id: `file-upload-traversal-${findings.length}`,
-            module: "File Upload",
-            severity: "critical",
-            title: `Path traversal in file upload on ${new URL(endpoint).pathname}`,
-            description: "The upload endpoint accepted a filename containing path traversal sequences (../). An attacker could write files to arbitrary locations on the server.",
-            evidence: `POST ${endpoint} with filename="../../../etc/passwd"\nResponse: ${text.substring(0, 200)}`,
-            remediation: "Sanitize filenames on the server. Strip path separators and traversal sequences. Generate random filenames for uploaded files.",
-            cwe: "CWE-22",
-            owasp: "A01:2021",
-          });
+        if (res1.ok) {
+          const urlMatch = text1.match(/["']((?:https?:\/\/[^"']+|\/[^"']+)\.html?)["']/);
+          if (urlMatch) {
+            try {
+              const fileUrl = urlMatch[1].startsWith("http") ? urlMatch[1] : target.baseUrl + urlMatch[1];
+              const fileRes = await scanFetch(fileUrl, { timeoutMs: 5000 });
+              const fileText = await fileRes.text();
+              if (fileRes.ok && fileText.includes("alert(1)")) {
+                return { type: "xss" as const, endpoint, pathname, fileUrl };
+              }
+            } catch { /* skip */ }
+          }
+          if (/url|path|key|location|filename/i.test(text1)) {
+            return { type: "html" as const, endpoint, pathname, status: res1.status, text: text1 };
+          }
         }
-      }
-    } catch {
-      // skip
+
+        // Test 2: SVG upload
+        const { boundary: b2, body: body2 } = buildMultipart("test.svg", "image/svg+xml", `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`);
+        const res2 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b2}` }, body: body2, timeoutMs: 5000,
+        });
+        if (res2.status !== 404 && res2.status !== 405) {
+          const text2 = await res2.text();
+          if (!(looksLikeHtml(text2) && (isSoft404(text2, target) || target.isSpa))) {
+            if (res2.ok && text2.length > 10 && /url|path|key|location|filename/i.test(text2)) {
+              return { type: "svg" as const, endpoint, pathname, status: res2.status, text: text2 };
+            }
+          }
+        }
+
+        // Test 3: Path traversal
+        const { boundary: b3, body: body3 } = buildMultipart("../../../etc/passwd", "application/octet-stream", "test content");
+        const res3 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b3}` }, body: body3, timeoutMs: 5000,
+        });
+        if (res3.ok) {
+          const text3 = await res3.text();
+          if (!(looksLikeHtml(text3) && (isSoft404(text3, target) || target.isSpa))) {
+            if (text3.length > 10 && /url|path|key|location|filename/i.test(text3) && /etc|passwd|\.\.\//i.test(text3)) {
+              return { type: "traversal" as const, endpoint, pathname, text: text3 };
+            }
+          }
+        }
+
+        return null;
+      }),
+    ),
+
+    // Test 4: Exposed upload directories in parallel
+    Promise.allSettled(
+      ["/uploads", "/media", "/files", "/assets/uploads", "/public/uploads", "/static/uploads"].map(async (dir) => {
+        const res = await scanFetch(target.baseUrl + dir, { timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const text = await res.text();
+        if (looksLikeHtml(text) && isSoft404(text, target)) return null;
+        if (target.isSpa) return null;
+        if (/Index of\s|directory listing|Parent Directory/i.test(text)) return { dir };
+        return null;
+      }),
+    ),
+  ]);
+
+  for (const r of endpointResults) {
+    if (findings.length >= MAX_FINDINGS) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+
+    if (v.type === "xss") {
+      findings.push({ id: `file-upload-xss-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `Stored XSS via HTML file upload on ${v.pathname}`,
+        description: "The upload endpoint accepts HTML files and serves them with executable scripts.",
+        evidence: `POST ${v.endpoint} with test.html\nUploaded to: ${v.fileUrl}\nHTML with script tag is served and executable`,
+        remediation: "Restrict allowed file types. Never serve user-uploaded HTML files. Use Content-Disposition: attachment.", cwe: "CWE-434", owasp: "A04:2021" });
+    } else if (v.type === "html") {
+      findings.push({ id: `file-upload-html-${findings.length}`, module: "File Upload", severity: "high",
+        title: `HTML file upload accepted on ${v.pathname}`,
+        description: "The upload endpoint accepts HTML files without content-type validation.",
+        evidence: `POST ${v.endpoint} with test.html → ${v.status}\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate file types on the server side. Restrict to expected types (images, PDFs, etc.).", cwe: "CWE-434", owasp: "A04:2021" });
+    } else if (v.type === "svg") {
+      findings.push({ id: `file-upload-svg-${findings.length}`, module: "File Upload", severity: "high",
+        title: `SVG file upload accepted on ${v.pathname}`,
+        description: "The upload endpoint accepts SVG files which can contain embedded JavaScript.",
+        evidence: `POST ${v.endpoint} with test.svg (contains <script>) → ${v.status}\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Sanitize SVG uploads by stripping script tags. Or reject SVGs entirely.", cwe: "CWE-434", owasp: "A04:2021" });
+    } else if (v.type === "traversal") {
+      findings.push({ id: `file-upload-traversal-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `Path traversal in file upload on ${v.pathname}`,
+        description: "The upload endpoint accepted a filename containing path traversal sequences.",
+        evidence: `POST ${v.endpoint} with filename="../../../etc/passwd"\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Sanitize filenames. Strip path separators and traversal sequences. Generate random filenames.", cwe: "CWE-22", owasp: "A01:2021" });
     }
   }
 
-  // Test 4: Check for exposed upload directories
-  const uploadDirs = ["/uploads", "/media", "/files", "/assets/uploads", "/public/uploads", "/static/uploads"];
-  for (const dir of uploadDirs) {
+  for (const r of dirResults) {
     if (findings.length >= MAX_FINDINGS) break;
-    try {
-      const res = await scanFetch(target.baseUrl + dir, { timeoutMs: 5000 });
-      if (res.ok) {
-        const text = await res.text();
-        if (looksLikeHtml(text) && isSoft404(text, target)) continue;
-        // Check for directory listing indicators
-        if (target.isSpa) continue;
-        if (/Index of\s|directory listing|Parent Directory/i.test(text)) {
-          findings.push({
-            id: `file-upload-dir-listing-${findings.length}`,
-            module: "File Upload",
-            severity: "medium",
-            title: `Upload directory listing exposed at ${dir}`,
-            description: "The upload directory has directory listing enabled, exposing all uploaded files. Attackers can browse and download user-uploaded content.",
-            evidence: `GET ${target.baseUrl + dir} → ${res.status}\nDirectory listing detected`,
-            remediation: "Disable directory listing on upload directories. Serve files through an application endpoint with access controls.",
-            cwe: "CWE-548",
-          });
-        }
-      }
-    } catch {
-      // skip
-    }
+    if (r.status !== "fulfilled" || !r.value) continue;
+    findings.push({ id: `file-upload-dir-listing-${findings.length}`, module: "File Upload", severity: "medium",
+      title: `Upload directory listing exposed at ${r.value.dir}`,
+      description: "The upload directory has directory listing enabled, exposing all uploaded files.",
+      evidence: `GET ${target.baseUrl + r.value.dir} → 200\nDirectory listing detected`,
+      remediation: "Disable directory listing on upload directories.", cwe: "CWE-548" });
   }
 
   return findings;

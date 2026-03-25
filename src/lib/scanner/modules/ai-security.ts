@@ -127,134 +127,108 @@ export const aiSecurityModule: ScanModule = async (target) => {
     }
   }
 
-  // 2. Discover and test AI endpoints
+  // 2. Discover AI endpoints and test + check admin paths in parallel
   const aiEndpoints = findAiEndpoints(target);
-  const confirmedEndpoints: string[] = [];
-
-  for (const endpoint of aiEndpoints) {
-    // Test if endpoint exists and accepts requests without auth
-    try {
-      const res = await scanFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "Hello", messages: [{ role: "user", content: "Hello" }] }),
-        timeoutMs: 15000, // AI endpoints can be slow
-      });
-
-      const text = await res.text();
-      if (isSoft404(text, target)) continue;
-      // Real AI endpoints return JSON, not HTML — skip any HTML response
-      if (looksLikeHtml(text)) continue;
-
-      if (res.ok && text.length > 5) {
-        // Skip responses that are actually error/auth messages returning 200
-        const isErrorResponse = /\b(unauthorized|unauthenticated|forbidden|invalid.?token|login.?required|sign.?in|access.?denied)\b/i.test(text.substring(0, 500));
-        if (isErrorResponse) continue;
-
-        confirmedEndpoints.push(endpoint);
-
-        // Check if there's no auth at all (200 without any auth headers)
-        findings.push({
-          id: `ai-no-auth-${findings.length}`,
-          module: "AI Security",
-          severity: "high",
-          title: `AI endpoint accessible without authentication: ${new URL(endpoint).pathname}`,
-          description: "This AI/LLM endpoint accepts requests without authentication. Attackers can abuse this to make unlimited AI API calls at your expense, extract training data, or use your AI for malicious purposes.",
-          evidence: `POST ${endpoint}\nStatus: ${res.status}\nResponse preview: ${text.substring(0, 300)}`,
-          remediation: "Add authentication to AI endpoints. Implement per-user rate limiting. Consider adding usage caps.",
-          cwe: "CWE-306",
-          owasp: "A07:2021",
-        });
-      }
-    } catch {
-      // skip — endpoint doesn't exist or timed out
-    }
-  }
-
-  // 3. Test confirmed AI endpoints for prompt injection / system prompt leakage
-  for (const endpoint of confirmedEndpoints.slice(0, 3)) {
-    for (const payload of PROMPT_INJECTION_PAYLOADS.slice(0, 2)) {
-      try {
-        const res = await scanFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: payload,
-            messages: [{ role: "user", content: payload }],
-            prompt: payload,
-            input: payload,
-          }),
-          timeoutMs: 20000,
-        });
-
-        if (!res.ok) continue;
-
-        const text = await res.text();
-        if (text.length < 20) continue;
-
-        // Check if the response contains system prompt indicators
-        const leakedIndicators = SYSTEM_PROMPT_INDICATORS.filter((p) => p.test(text));
-        if (leakedIndicators.length >= 3) {
-          findings.push({
-            id: `ai-prompt-leak-${findings.length}`,
-            module: "AI Security",
-            severity: "high",
-            title: `Possible system prompt leakage on ${new URL(endpoint).pathname}`,
-            description: "The AI endpoint may be leaking its system prompt when given prompt injection payloads. System prompts often contain business logic, security rules, and sensitive instructions that should remain confidential.",
-            evidence: `POST ${endpoint}\nInjection payload sent\nResponse contains ${leakedIndicators.length} system prompt indicators\nResponse preview: ${text.substring(0, 400)}`,
-            remediation: "Implement prompt injection defenses: validate/sanitize user input before passing to the LLM, use output filtering, and add instructions that resist extraction attempts. Consider using a dedicated prompt firewall.",
-            cwe: "CWE-74",
-            owasp: "A03:2021",
-          });
-          break; // one finding per endpoint
-        }
-      } catch {
-        // skip
-      }
-    }
-  }
-
-  // 4. Check for AI framework debug/admin endpoints
   const aiAdminPaths = [
-    "/api/ai/debug",
-    "/api/ai/config",
-    "/api/ai/models",
-    "/api/chat/debug",
-    "/langsmith",
-    "/api/langchain",
-    "/_langfuse",
-    "/api/tracing",
+    "/api/ai/debug", "/api/ai/config", "/api/ai/models", "/api/chat/debug",
+    "/langsmith", "/api/langchain", "/_langfuse", "/api/tracing",
   ];
 
-  for (const path of aiAdminPaths) {
-    try {
-      const url = target.baseUrl + path;
-      const res = await scanFetch(url);
-      if (res.status !== 200) continue;
-
-      const text = await res.text();
-      if (isSoft404(text, target)) continue;
-      // Real debug endpoints return JSON, not HTML
-      if (looksLikeHtml(text)) continue;
-      if (text.length < 10) continue;
-
-      // Verify it has actual AI-related content
-      if (/(?:model|prompt|chain|agent|llm|token|embedding|langchain|langfuse|openai|anthropic)/i.test(text)) {
-        findings.push({
-          id: `ai-debug-endpoint-${findings.length}`,
-          module: "AI Security",
-          severity: "high",
-          title: `AI debug/admin endpoint exposed at ${path}`,
-          description: "An AI framework debug or administration endpoint is publicly accessible. This may reveal model configurations, prompt templates, API keys, or allow manipulation of AI behavior.",
-          evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 300)}`,
-          remediation: "Remove or protect AI debug endpoints in production. Restrict access to authenticated administrators only.",
-          cwe: "CWE-489",
-          owasp: "A05:2021",
+  const [discoveryResults, adminResults] = await Promise.all([
+    // Probe all AI endpoints in parallel
+    Promise.allSettled(
+      aiEndpoints.map(async (endpoint) => {
+        const res = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "Hello", messages: [{ role: "user", content: "Hello" }] }),
+          timeoutMs: 10000,
         });
-      }
-    } catch {
-      // skip
-    }
+        const text = await res.text();
+        if (isSoft404(text, target)) return null;
+        if (looksLikeHtml(text)) return null;
+        if (!res.ok || text.length <= 5) return null;
+        if (/\b(unauthorized|unauthenticated|forbidden|invalid.?token|login.?required|sign.?in|access.?denied)\b/i.test(text.substring(0, 500))) return null;
+        return { endpoint, status: res.status, text };
+      }),
+    ),
+    // Check admin paths in parallel
+    Promise.allSettled(
+      aiAdminPaths.map(async (path) => {
+        const url = target.baseUrl + path;
+        const res = await scanFetch(url, { timeoutMs: 5000 });
+        if (res.status !== 200) return null;
+        const text = await res.text();
+        if (isSoft404(text, target) || looksLikeHtml(text) || text.length < 10) return null;
+        if (/(?:model|prompt|chain|agent|llm|token|embedding|langchain|langfuse|openai|anthropic)/i.test(text)) {
+          return { path, url, text };
+        }
+        return null;
+      }),
+    ),
+  ]);
+
+  const confirmedEndpoints: string[] = [];
+  for (const r of discoveryResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { endpoint, status, text } = r.value;
+    confirmedEndpoints.push(endpoint);
+    findings.push({
+      id: `ai-no-auth-${findings.length}`, module: "AI Security", severity: "high",
+      title: `AI endpoint accessible without authentication: ${new URL(endpoint).pathname}`,
+      description: "This AI/LLM endpoint accepts requests without authentication. Attackers can abuse this to make unlimited AI API calls at your expense.",
+      evidence: `POST ${endpoint}\nStatus: ${status}\nResponse preview: ${text.substring(0, 300)}`,
+      remediation: "Add authentication to AI endpoints. Implement per-user rate limiting. Consider adding usage caps.",
+      cwe: "CWE-306", owasp: "A07:2021",
+    });
+  }
+
+  // 3. Test confirmed endpoints for prompt injection in parallel
+  const injectionResults = await Promise.allSettled(
+    confirmedEndpoints.slice(0, 3).flatMap((endpoint) =>
+      PROMPT_INJECTION_PAYLOADS.slice(0, 2).map(async (payload) => {
+        const res = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: payload, messages: [{ role: "user", content: payload }], prompt: payload, input: payload }),
+          timeoutMs: 15000,
+        });
+        if (!res.ok) return null;
+        const text = await res.text();
+        if (text.length < 20) return null;
+        const leakedIndicators = SYSTEM_PROMPT_INDICATORS.filter((p) => p.test(text));
+        if (leakedIndicators.length >= 3) return { endpoint, leakedCount: leakedIndicators.length, text };
+        return null;
+      }),
+    ),
+  );
+
+  const injectionSeen = new Set<string>();
+  for (const r of injectionResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { endpoint, leakedCount, text } = r.value;
+    if (injectionSeen.has(endpoint)) continue;
+    injectionSeen.add(endpoint);
+    findings.push({
+      id: `ai-prompt-leak-${findings.length}`, module: "AI Security", severity: "high",
+      title: `Possible system prompt leakage on ${new URL(endpoint).pathname}`,
+      description: "The AI endpoint may be leaking its system prompt when given prompt injection payloads.",
+      evidence: `POST ${endpoint}\nInjection payload sent\nResponse contains ${leakedCount} system prompt indicators\nResponse preview: ${text.substring(0, 400)}`,
+      remediation: "Implement prompt injection defenses: validate/sanitize user input, use output filtering, add instructions that resist extraction.",
+      cwe: "CWE-74", owasp: "A03:2021",
+    });
+  }
+
+  // 4. Collect admin endpoint findings
+  for (const r of adminResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { path, url, text } = r.value;
+    findings.push({
+      id: `ai-debug-endpoint-${findings.length}`, module: "AI Security", severity: "high",
+      title: `AI debug/admin endpoint exposed at ${path}`,
+      description: "An AI framework debug or administration endpoint is publicly accessible.",
+      evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 300)}`,
+      remediation: "Remove or protect AI debug endpoints in production.",
+      cwe: "CWE-489", owasp: "A05:2021",
+    });
   }
 
   return findings;
