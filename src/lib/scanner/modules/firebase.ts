@@ -95,6 +95,7 @@ export const firebaseModule: ScanModule = async (target) => {
       evidence: `GET firestore.googleapis.com/.../documents/${v.collection}\nDocuments returned: ${v.count}`,
       remediation: `Add Firestore security rules to restrict read access for "${v.collection}".`,
       cwe: "CWE-862", owasp: "A01:2021",
+      codeSnippet: `// firestore.rules\nrules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /${v.collection}/{docId} {\n      allow read: if request.auth != null;\n      allow write: if request.auth != null\n        && request.auth.uid == resource.data.userId;\n    }\n  }\n}`,
     });
   }
   if (firestoreWriteResult) {

@@ -74,6 +74,7 @@ export const graphqlModule: ScanModule = async (target) => {
             remediation: "Disable introspection in production. For Apollo Server: new ApolloServer({ introspection: false })",
             cwe: "CWE-200",
             owasp: "A05:2021",
+            codeSnippet: `// Apollo Server\nconst server = new ApolloServer({\n  typeDefs, resolvers,\n  introspection: false, // disable in production\n});\n\n// Yoga / Envelop\nuseDisableIntrospection()`,
           });
         }
       }
