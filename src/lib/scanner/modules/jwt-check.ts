@@ -171,6 +171,56 @@ export const jwtModule: ScanModule = async (target) => {
     }
   }
 
+  // Detect JWTs in URL parameters (insecure — logged by proxies, visible in referer headers)
+  for (const link of target.linkUrls.slice(0, 50)) {
+    try {
+      const url = new URL(link);
+      for (const [param, value] of url.searchParams) {
+        if (/^eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./.test(value)) {
+          findings.push({
+            id: `jwt-in-url-${findings.length}`,
+            module: "JWT Security",
+            severity: "high",
+            title: `JWT exposed in URL parameter "${param}"`,
+            description: "A JWT is passed as a URL query parameter. URLs are logged by proxies, browsers, and web servers, and leak via Referer headers. This exposes the token to interception.",
+            evidence: `URL: ${url.pathname}?${param}=eyJ...`,
+            remediation: "Pass JWTs in the Authorization header or as an HttpOnly cookie, never in URL parameters.",
+            cwe: "CWE-598", owasp: "A02:2021",
+            codeSnippet: `// WRONG: JWT in URL\nfetch(\`/api/data?token=\${jwt}\`);\n\n// CORRECT: JWT in Authorization header\nfetch("/api/data", {\n  headers: { Authorization: \`Bearer \${jwt}\` },\n});`,
+          });
+          break;
+        }
+      }
+      if (findings.length > 0 && findings[findings.length - 1].id.startsWith("jwt-in-url")) break;
+    } catch { /* skip */ }
+  }
+
+  // Check for JWT in JS bundle as hardcoded string (not in a variable assignment to a cookie)
+  const hardcodedJwts = allJs.match(/["'`](eyJhbGciO[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+)["'`]/g);
+  if (hardcodedJwts && hardcodedJwts.length > 0) {
+    // Decode to check if it's a real service token (not a Supabase anon key)
+    for (const match of hardcodedJwts.slice(0, 3)) {
+      const token = match.slice(1, -1);
+      const tokenPayload = decodeJwtPart(token.split(".")[1]);
+      if (!tokenPayload) continue;
+      // Skip Supabase anon keys (role: "anon") — they're meant to be public
+      if (tokenPayload.role === "anon") continue;
+      // Skip tokens that appear to be test/example tokens
+      if (tokenPayload.sub === "test" || tokenPayload.sub === "example") continue;
+      findings.push({
+        id: `jwt-hardcoded-${findings.length}`,
+        module: "JWT Security",
+        severity: "high",
+        title: "Hardcoded JWT found in JavaScript bundle",
+        description: `A JWT with role "${tokenPayload.role || "unknown"}" is hardcoded in a JavaScript file. This token is accessible to anyone viewing the source and should be treated as compromised.`,
+        evidence: `Token payload keys: ${Object.keys(tokenPayload).join(", ")}\nRole: ${tokenPayload.role || "(none)"}${tokenPayload.exp ? `\nExpires: ${new Date((tokenPayload.exp as number) * 1000).toISOString()}` : ""}`,
+        remediation: "Never hardcode JWTs in client-side code. Use API routes to issue tokens dynamically. Rotate any exposed tokens immediately.",
+        cwe: "CWE-798", owasp: "A07:2021",
+      });
+      break;
+    }
+  }
+
   // Test alg:none bypass on API endpoints — all in parallel
   if (target.apiEndpoints.length > 0) {
     const fakeJwt = Buffer.from('{"alg":"none","typ":"JWT"}').toString("base64url") +
@@ -209,6 +259,52 @@ export const jwtModule: ScanModule = async (target) => {
         cwe: "CWE-347", owasp: "A02:2021",
         codeSnippet: `// Reject alg:none — always specify algorithms\nimport jwt from "jsonwebtoken";\ntry {\n  const decoded = jwt.verify(token, secret, {\n    algorithms: ["HS256"], // NEVER include "none"\n  });\n} catch (err) {\n  return Response.json({ error: "Invalid token" }, { status: 401 });\n}`,
       });
+    }
+  }
+
+  // Test algorithm confusion: send HS256 token when server expects RS256
+  // If the server uses a public RSA key as the HMAC secret, we can sign arbitrary tokens
+  if (target.apiEndpoints.length > 0 && findings.length < 8) {
+    // Try with embedded JWK in header (if server trusts the jwk header, game over)
+    const embeddedJwkJwt = Buffer.from(JSON.stringify({
+      alg: "HS256",
+      typ: "JWT",
+      jwk: { kty: "oct", k: Buffer.from("vibeshield-test-key").toString("base64url") },
+    })).toString("base64url") +
+      "." + Buffer.from(JSON.stringify({ sub: "1", role: "admin", iat: Math.floor(Date.now() / 1000) })).toString("base64url") +
+      ".fakesig";
+
+    const jwkResults = await Promise.allSettled(
+      target.apiEndpoints.slice(0, 3).map(async (endpoint) => {
+        const res = await scanFetch(endpoint, {
+          headers: { Authorization: `Bearer ${embeddedJwkJwt}` },
+          timeoutMs: 5000,
+        });
+        if (!res.ok) return null;
+        const text = await res.text();
+        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+        if (/unauthorized|invalid|forbidden|expired/i.test(text.substring(0, 200))) return null;
+        if (text.length > 10) {
+          return { endpoint, pathname: new URL(endpoint).pathname };
+        }
+        return null;
+      }),
+    );
+
+    for (const r of jwkResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      findings.push({
+        id: `jwt-embedded-jwk-${findings.length}`,
+        module: "JWT Security",
+        severity: "critical",
+        title: `API trusts embedded JWK header on ${r.value.pathname}`,
+        description: "The API accepted a JWT with an embedded JWK (JSON Web Key) in the header. This means an attacker can provide their own signing key inside the token, completely bypassing signature verification.",
+        evidence: `Sent JWT with embedded JWK header to ${r.value.endpoint}\nServer returned success response`,
+        remediation: "Never trust the jwk/jku header from incoming JWTs. Always use a pre-configured, server-side key or JWKS endpoint.",
+        cwe: "CWE-347", owasp: "A02:2021",
+        codeSnippet: `// WRONG: trusting jwk from token header\nconst key = jwt.header.jwk; // attacker controls this!\n\n// CORRECT: use server-side JWKS\nconst JWKS = jose.createRemoteJWKSet(\n  new URL("https://your-auth/.well-known/jwks.json")\n);\nconst { payload } = await jose.jwtVerify(token, JWKS);`,
+      });
+      break;
     }
   }
 
