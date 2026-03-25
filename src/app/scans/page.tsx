@@ -143,6 +143,69 @@ export default function ScansPage() {
           />
         </div>
 
+        {/* Score trend by domain */}
+        {completedCount >= 2 && (() => {
+          const completed = scans.filter((s) => s.status === "completed");
+          const byDomain = new Map<string, ScanEntry[]>();
+          for (const s of completed) {
+            const host = getHostname(s.target);
+            if (!byDomain.has(host)) byDomain.set(host, []);
+            byDomain.get(host)!.push(s);
+          }
+          // Only show domains with 2+ scans
+          const trending = [...byDomain.entries()]
+            .filter(([, scans]) => scans.length >= 2)
+            .map(([domain, domainScans]) => {
+              const sorted = [...domainScans].sort((a, b) => (a.completedAt || a.startedAt).localeCompare(b.completedAt || b.startedAt));
+              const scores = sorted.map((s) => s.score);
+              const latest = scores[scores.length - 1];
+              const prev = scores[scores.length - 2];
+              return { domain, scores, latest, delta: latest - prev, count: scores.length };
+            })
+            .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+          if (trending.length === 0) return null;
+          return (
+            <div className="mb-6 bg-zinc-900/30 border border-zinc-800/30 rounded-xl p-4">
+              <h2 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Score Trends</h2>
+              <div className="space-y-2">
+                {trending.slice(0, 5).map((t) => {
+                  const min = Math.min(...t.scores);
+                  const max = Math.max(...t.scores);
+                  const range = max - min || 1;
+                  const w = 80;
+                  const h = 20;
+                  const points = t.scores.map((s, i) => {
+                    const x = t.scores.length === 1 ? w / 2 : (i / (t.scores.length - 1)) * w;
+                    const y = h - ((s - min) / range) * h;
+                    return `${x},${y}`;
+                  }).join(" ");
+                  return (
+                    <div key={t.domain} className="flex items-center gap-3">
+                      <span className="text-xs text-zinc-400 w-36 truncate">{t.domain}</span>
+                      <svg width={w} height={h} className="shrink-0">
+                        <polyline
+                          points={points}
+                          fill="none"
+                          stroke={t.delta > 0 ? "#34d399" : t.delta < 0 ? "#f87171" : "#a1a1aa"}
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span className="text-xs text-zinc-500 w-8 text-right">{t.latest}</span>
+                      <span className={`text-[10px] font-medium w-12 text-right ${t.delta > 0 ? "text-emerald-400" : t.delta < 0 ? "text-red-400" : "text-zinc-600"}`}>
+                        {t.delta > 0 ? "+" : ""}{t.delta}
+                      </span>
+                      <span className="text-[9px] text-zinc-700">{t.count} scans</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Aggregate stats */}
         {completedCount > 0 && (() => {
           const completed = scans.filter((s) => s.status === "completed");
