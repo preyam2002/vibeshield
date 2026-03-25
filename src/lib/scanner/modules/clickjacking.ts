@@ -151,5 +151,68 @@ export const clickjackingModule: ScanModule = async (target) => {
     }
   }
 
+  // Check for pages with sensitive forms that could be targeted by clickjacking
+  const sensitiveForms = target.forms.filter((f) =>
+    f.method === "POST" && f.inputs.some((i) =>
+      /password|card|cvv|ssn|amount|transfer|confirm|delete|remove/i.test(i.name),
+    ),
+  );
+  if (sensitiveForms.length > 0 && !xfo && !hasFrameAncestors) {
+    findings.push({
+      id: "clickjacking-sensitive-forms",
+      module: "Clickjacking",
+      severity: "high",
+      title: `${sensitiveForms.length} sensitive form(s) exposed to clickjacking`,
+      description: `Found ${sensitiveForms.length} form(s) with sensitive fields (password, payment, delete, etc.) that lack clickjacking protection. An attacker can overlay these forms in an invisible iframe, tricking users into submitting sensitive data.`,
+      evidence: `Sensitive forms:\n${sensitiveForms.slice(0, 3).map((f) => `  ${f.method} ${f.action} — fields: ${f.inputs.map((i) => i.name).join(", ")}`).join("\n")}`,
+      remediation: "Add X-Frame-Options: DENY and CSP frame-ancestors: 'none' to prevent framing of pages with sensitive forms.",
+      cwe: "CWE-1021",
+      owasp: "A05:2021",
+      codeSnippet: `// Protect all pages globally\n// next.config.ts\nasync headers() {\n  return [{ source: "/(.*)", headers: [\n    { key: "X-Frame-Options", value: "DENY" },\n    { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },\n  ]}];\n}`,
+    });
+  }
+
+  // Check for window.opener vulnerability (reverse tabnapping)
+  // Look for links with target="_blank" without rel="noopener"
+  const mainPageRes = await scanFetch(target.url, { timeoutMs: 5000 }).catch(() => null);
+  if (mainPageRes) {
+    const html = await mainPageRes.text();
+    const blankLinks = html.match(/<a[^>]*target\s*=\s*["']_blank["'][^>]*>/gi) || [];
+    const unsafeLinks = blankLinks.filter((link) => !(/rel\s*=\s*["'][^"']*noopener/i.test(link)));
+    if (unsafeLinks.length > 3) {
+      findings.push({
+        id: "clickjacking-tabnapping",
+        module: "Clickjacking",
+        severity: "low",
+        title: `${unsafeLinks.length} external links without rel="noopener"`,
+        description: `Found ${unsafeLinks.length} links with target="_blank" but without rel="noopener". The opened page can access window.opener and redirect your page to a phishing site (reverse tabnapping). Modern browsers mitigate this by default, but older browsers are still vulnerable.`,
+        evidence: `${unsafeLinks.length} links with target="_blank" missing rel="noopener"\nExample: ${unsafeLinks[0]?.substring(0, 100)}`,
+        remediation: "Add rel=\"noopener noreferrer\" to all external links with target=\"_blank\". React/Next.js does this automatically for <Link>, but not for raw <a> tags.",
+        cwe: "CWE-1022",
+        confidence: 80,
+        codeSnippet: `// Always add rel="noopener" to external links\n<a href="https://external.com" target="_blank" rel="noopener noreferrer">\n  External Link\n</a>`,
+      });
+    }
+  }
+
+  // Check for CSP sandbox directive that might enable framing
+  if (csp && /sandbox/i.test(csp)) {
+    const sandboxMatch = csp.match(/sandbox\s+([^;]+)/i);
+    const sandboxValue = sandboxMatch?.[1] || "";
+    if (sandboxValue.includes("allow-scripts") && sandboxValue.includes("allow-same-origin")) {
+      findings.push({
+        id: "clickjacking-sandbox-escape",
+        module: "Clickjacking",
+        severity: "medium",
+        title: "CSP sandbox allows both scripts and same-origin (escapable)",
+        description: "The CSP sandbox directive allows both 'allow-scripts' and 'allow-same-origin'. This combination allows sandboxed content to remove the sandbox attribute via JavaScript, completely escaping the sandbox.",
+        evidence: `CSP sandbox: ${sandboxValue}`,
+        remediation: "Never combine allow-scripts and allow-same-origin in the sandbox directive. This combination defeats the purpose of sandboxing.",
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+      });
+    }
+  }
+
   return findings;
 };

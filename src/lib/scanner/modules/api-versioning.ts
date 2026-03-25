@@ -186,5 +186,139 @@ export const apiVersioningModule: ScanModule = async (target) => {
     if (bypassPaths.size >= 2) break;
   }
 
+  // Test 4: Content-Type / Accept header version negotiation
+  // Some APIs serve different versions based on Accept header (GitHub-style)
+  const acceptVersionResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 5).map(async (ep) => {
+      const pathname = new URL(ep).pathname;
+      const baseRes = await scanFetch(ep, { timeoutMs: 5000 });
+      if (!baseRes.ok) return null;
+      const baseText = await baseRes.text();
+
+      // Try requesting older API versions via Accept header
+      const versionHeaders = [
+        "application/vnd.api.v1+json",
+        "application/vnd.api.v0+json",
+        "application/json; version=1",
+        "application/json; version=0",
+      ];
+      for (const accept of versionHeaders) {
+        const res = await scanFetch(ep, {
+          headers: { Accept: accept },
+          timeoutMs: 5000,
+        });
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (text.length > 10 && text !== baseText && Math.abs(text.length - baseText.length) > 20) {
+          return { pathname, accept, baseLen: baseText.length, altLen: text.length };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of acceptVersionResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `api-ver-accept-${findings.length}`,
+      module: "API Versioning",
+      severity: "medium",
+      title: `API version negotiation via Accept header on ${v.pathname}`,
+      description: `The endpoint returns different content (${v.baseLen} vs ${v.altLen} bytes) when the Accept header specifies an older version. Header-based version negotiation is often overlooked in security audits — older versions may lack auth or data filtering.`,
+      evidence: `GET ${v.pathname}\nAccept: ${v.accept}\nDefault response: ${v.baseLen} bytes\nVersioned response: ${v.altLen} bytes`,
+      remediation: "Ensure all API versions accessed via content negotiation have the same security controls. Reject unsupported version requests.",
+      cwe: "CWE-284",
+      owasp: "A01:2021",
+      confidence: 65,
+    });
+    break;
+  }
+
+  // Test 5: Deprecated API header detection
+  // Check if any endpoints return deprecation headers that indicate old API is still active
+  const deprecationResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 10).map(async (ep) => {
+      const res = await scanFetch(ep, { timeoutMs: 5000 });
+      const deprecated = res.headers.get("deprecation") || res.headers.get("x-deprecated") || "";
+      const sunset = res.headers.get("sunset") || "";
+      const warning = res.headers.get("warning") || "";
+      const pathname = new URL(ep).pathname;
+
+      if (deprecated || sunset || /deprecat/i.test(warning)) {
+        // Check if sunset date has passed
+        let pastSunset = false;
+        if (sunset) {
+          try {
+            pastSunset = new Date(sunset).getTime() < Date.now();
+          } catch { /* invalid date */ }
+        }
+        return { pathname, deprecated, sunset, warning, pastSunset };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of deprecationResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const severity = v.pastSunset ? "high" as const : "low" as const;
+    findings.push({
+      id: `api-ver-deprecated-${findings.length}`,
+      module: "API Versioning",
+      severity,
+      title: `Deprecated API endpoint still active: ${v.pathname}${v.pastSunset ? " (past sunset)" : ""}`,
+      description: `This endpoint returns deprecation headers${v.pastSunset ? " and the sunset date has passed" : ""}. Deprecated endpoints may stop receiving security patches and become attack vectors.${v.sunset ? ` Sunset date: ${v.sunset}` : ""}`,
+      evidence: `GET ${v.pathname}\n${v.deprecated ? `Deprecation: ${v.deprecated}\n` : ""}${v.sunset ? `Sunset: ${v.sunset}\n` : ""}${v.warning ? `Warning: ${v.warning}` : ""}`,
+      remediation: v.pastSunset
+        ? "This endpoint is past its sunset date. Decommission it immediately and redirect clients to the current version."
+        : "Plan migration to the current API version. Monitor usage and set a firm sunset date.",
+      cwe: "CWE-284",
+    });
+    if (findings.length >= 5) break;
+  }
+
+  // Test 6: GraphQL versioning — check if persisted queries from old schemas still work
+  const graphqlEndpoints = target.apiEndpoints.filter((ep) =>
+    /graphql|gql/i.test(ep),
+  );
+  if (graphqlEndpoints.length > 0) {
+    const gqlResults = await Promise.allSettled(
+      graphqlEndpoints.slice(0, 2).map(async (ep) => {
+        // Try accessing with version query param
+        const testUrl = new URL(ep);
+        testUrl.searchParams.set("version", "1");
+        const res = await scanFetch(testUrl.href, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: "{ __schema { queryType { name } } }" }),
+          timeoutMs: 5000,
+        });
+        if (!res.ok) return null;
+        const text = await res.text();
+        if (text.includes("queryType")) {
+          return { pathname: new URL(ep).pathname };
+        }
+        return null;
+      }),
+    );
+
+    for (const r of gqlResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      findings.push({
+        id: `api-ver-graphql-${findings.length}`,
+        module: "API Versioning",
+        severity: "low",
+        title: `GraphQL endpoint accepts version parameter: ${r.value.pathname}`,
+        description: "The GraphQL endpoint responds to a version query parameter. If schema versioning is supported, older schema versions may expose deprecated fields or lack authorization on newer resolvers.",
+        evidence: `POST ${r.value.pathname}?version=1 with introspection query succeeded`,
+        remediation: "If GraphQL versioning is not intentional, reject version parameters. If it is, ensure all schema versions have the same auth and field-level permissions.",
+        cwe: "CWE-284",
+        confidence: 55,
+      });
+      break;
+    }
+  }
+
   return findings;
 };
