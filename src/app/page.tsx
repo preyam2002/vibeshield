@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 const ATTACK_MODULES = [
   { name: "Secret Detection", desc: "API keys, tokens, passwords in JS bundles", icon: "🔑" },
-  { name: "Supabase RLS", desc: "RLS bypass, edge function auth, realtime channel leaks", icon: "🛡" },
+  { name: "Supabase RLS", desc: "RLS bypass, RPC enum, edge function auth, realtime leaks", icon: "🛡" },
   { name: "Firebase Rules", desc: "Firestore/RTDB rules, Cloud Functions auth, service account leak", icon: "🔥" },
   { name: "Auth Bypass", desc: "Path traversal, case bypass, verb tampering, token validation", icon: "🚪" },
   { name: "IDOR", desc: "Sequential ID enum, method-based access, privilege escalation", icon: "🔢" },
@@ -17,7 +17,7 @@ const ATTACK_MODULES = [
   { name: "Source Maps", desc: "Check if .map files expose source code", icon: "🗺" },
   { name: "Directory Exposure", desc: ".env, .git, backup files, admin panels", icon: "📁" },
   { name: "GraphQL", desc: "Introspection, depth/alias abuse, subscription leak, APQ bypass", icon: "◈" },
-  { name: "Stripe Webhook", desc: "Unverified webhooks, price/quantity tampering, portal bypass", icon: "💳" },
+  { name: "Stripe Webhook", desc: "Unverified webhooks, price tampering, coupon abuse, plan hijacking", icon: "💳" },
   { name: "Next.js Specific", desc: "Middleware bypass, RSC leaks, preview tokens, catch-all routes, Server Action fuzzing", icon: "▲" },
   { name: "Open Redirect", desc: "15 bypass variants: encoding, backslash, javascript:, data:", icon: "↗" },
   { name: "CSRF", desc: "SameSite bypass, content-type confusion, form token checks", icon: "🔄" },
@@ -38,7 +38,7 @@ const ATTACK_MODULES = [
   { name: "Exposed Dev Tools", desc: "Prisma/Drizzle Studio, Grafana, Redis, MinIO, MailHog, Swagger, Storybook", icon: "🔧" },
   { name: "API Security", desc: "Prototype pollution, over-fetching, mass assignment", icon: "🧬" },
   { name: "Env Variable Leak", desc: "Exposed env vars, dev configs, localhost URLs", icon: "🔐" },
-  { name: "AI/LLM Security", desc: "Prompt injection, system prompt leak, tool abuse, unauthed AI", icon: "🤖" },
+  { name: "AI/LLM Security", desc: "Prompt injection, system prompt leak, model switching, token abuse", icon: "🤖" },
   { name: "SSRF", desc: "Cloud metadata, IAM creds, blind timing, Redis, file://, filter bypasses", icon: "🌀" },
   { name: "File Upload", desc: "HTML/SVG XSS, polyglot bypass, null byte, double extension, dir listing", icon: "📤" },
   { name: "CRLF Injection", desc: "Header/cookie injection, response splitting, POST body CRLF", icon: "↵" },
@@ -52,7 +52,7 @@ const ATTACK_MODULES = [
   { name: "Business Logic", desc: "Negative values, zero-price, integer overflow, coupon stacking", icon: "🧮" },
   { name: "OAuth/OIDC", desc: "Redirect URI bypass variants, PKCE, nonce, implicit flow", icon: "🔐" },
   { name: "API Versioning", desc: "Hidden versions, path bypass, endpoint shadowing", icon: "🔀" },
-  { name: "CSP Analysis", desc: "Unsafe directives, CDN bypasses, JSONP endpoints, nonce", icon: "🛡" },
+  { name: "CSP Analysis", desc: "Unsafe directives, CDN/JSONP bypasses, Trusted Types, nonce checks", icon: "🛡" },
   { name: "Cloud Storage", desc: "S3/GCS/Azure/R2 bucket listing, presigned URL leaks", icon: "☁" },
 ];
 
