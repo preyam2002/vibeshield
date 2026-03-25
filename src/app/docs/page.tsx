@@ -96,7 +96,12 @@ curl ${baseUrl}/api/scan/abc-123/csv -o findings.csv`}
 #   "gate": {"passed": true},  // if minScore/failOnCritical set
 #   "moduleHealth": {"failed": 0, "skipped": 0, "total": 50}  // if any modules failed/skipped
 # }
-# Callbacks retry up to 3x with exponential backoff on server errors.`}
+# Callbacks retry up to 3x with exponential backoff on server errors.
+#
+# Webhook signature verification (optional):
+# Set VIBESHIELD_WEBHOOK_SECRET env var to enable HMAC-SHA256 signatures.
+# Callbacks include X-VibeShield-Signature and X-VibeShield-Timestamp headers.
+# Verify: HMAC-SHA256(secret, timestamp + "." + body) === signature`}
           </pre>
         </section>
 

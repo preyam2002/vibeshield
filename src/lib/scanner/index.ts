@@ -340,12 +340,28 @@ const sendCallback = async (callbackUrl: string, scanId: string, gateConfig?: { 
     ...(failedModules > 0 || skippedModules > 0 ? { moduleHealth: { failed: failedModules, skipped: skippedModules, total: scan.modules.length } } : {}),
   });
 
+  // Generate HMAC signature for webhook verification
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  let signature = "";
+  try {
+    const encoder = new TextEncoder();
+    const signingKey = process.env.VIBESHIELD_WEBHOOK_SECRET || "";
+    if (signingKey) {
+      const key = await crypto.subtle.importKey("raw", encoder.encode(signingKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(`${timestamp}.${payload}`));
+      signature = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch { /* skip if crypto unavailable */ }
+
   // Retry with exponential backoff (3 attempts)
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(callbackUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(signature ? { "X-VibeShield-Signature": `sha256=${signature}`, "X-VibeShield-Timestamp": timestamp } : {}),
+        },
         body: payload,
       });
       if (res.ok || res.status < 500) return; // Success or client error (don't retry 4xx)
