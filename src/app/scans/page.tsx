@@ -42,6 +42,7 @@ export default function ScansPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("date");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sevFilter, setSevFilter] = useState<string>("all");
   const [localOnly, setLocalOnly] = useState(false);
 
   useEffect(() => {
@@ -73,6 +74,9 @@ export default function ScansPage() {
     if (statusFilter === "running" && s.status !== "scanning" && s.status !== "queued") return false;
     if (statusFilter === "completed" && s.status !== "completed") return false;
     if (statusFilter === "failed" && s.status !== "failed") return false;
+    if (sevFilter === "critical" && s.summary.critical === 0) return false;
+    if (sevFilter === "high" && s.summary.critical === 0 && s.summary.high === 0) return false;
+    if (sevFilter === "clean" && s.summary.total > 0) return false;
     return true;
   });
 
@@ -177,6 +181,24 @@ export default function ScansPage() {
               </button>
             ))}
           </div>
+          {completedCount > 0 && (
+            <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
+              {[
+                { key: "all", label: "Any severity" },
+                { key: "critical", label: "Has critical" },
+                { key: "high", label: "Has high+" },
+                { key: "clean", label: "Clean" },
+              ].map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setSevFilter(f.key)}
+                  className={`text-[10px] px-2.5 py-1.5 transition-colors ${sevFilter === f.key ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden ml-auto">
             {([
               { key: "date" as SortKey, label: "Recent" },

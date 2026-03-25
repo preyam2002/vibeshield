@@ -53,6 +53,7 @@ const ATTACK_MODULES = [
   { name: "OAuth/OIDC", desc: "Redirect URI bypass, state validation, provider leaks", icon: "🔐" },
   { name: "API Versioning", desc: "Hidden versions, path bypass, endpoint shadowing", icon: "🔀" },
   { name: "CSP Analysis", desc: "Deep CSP bypass analysis, unsafe directives, CDN bypasses", icon: "🛡" },
+  { name: "Cloud Storage", desc: "S3/GCS/Azure/R2 bucket listing, presigned URL leaks", icon: "☁" },
 ];
 
 interface RecentScan {
@@ -84,8 +85,8 @@ export default function Home() {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setVisibleModules((prev) => (prev < ATTACK_MODULES.length ? prev + 1 : prev));
-    }, 40);
+      setVisibleModules((prev) => (prev < ATTACK_MODULES.length ? prev + 2 : prev));
+    }, 25);
     return () => clearInterval(timer);
   }, []);
 
@@ -271,14 +272,15 @@ export default function Home() {
               </p>
               <div className="flex items-center bg-zinc-900/50 border border-zinc-800/50 rounded-lg overflow-hidden">
                 {([
-                  { key: "quick" as const, label: "Quick (~10s)" },
-                  { key: "security" as const, label: "Security (~45s)" },
-                  { key: "full" as const, label: "Full + Stress (~90s)" },
+                  { key: "quick" as const, label: "Quick (~10s)", title: "13 modules: headers, SSL, secrets, CORS, cookies, CSP, dependencies, source maps" },
+                  { key: "security" as const, label: "Security (~45s)", title: "44 modules: all security checks including injection, auth bypass, SSRF, IDOR" },
+                  { key: "full" as const, label: "Full + Stress (~90s)", title: "50 modules: everything + load testing, race conditions, rate limit checks" },
                 ]).map((m) => (
                   <button
                     key={m.key}
                     type="button"
                     onClick={() => setMode(m.key)}
+                    title={m.title}
                     className={`text-[10px] px-2.5 py-1 transition-colors ${mode === m.key ? "bg-zinc-800 text-zinc-300" : "text-zinc-600 hover:text-zinc-400"}`}
                   >
                     {m.label}
