@@ -11,7 +11,7 @@ const METHOD_OVERRIDE_HEADERS = [
 
 export const httpMethodsModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
-  const endpoints = [target.url, ...target.apiEndpoints.slice(0, 5)];
+  const endpoints = [target.url, ...target.apiEndpoints.slice(0, 3)];
 
   const tests: Promise<void>[] = [];
 
@@ -20,7 +20,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
     tests.push(
       (async () => {
         try {
-          const res = await scanFetch(endpoint, { method: "OPTIONS", timeoutMs: 5000 });
+          const res = await scanFetch(endpoint, { method: "OPTIONS", timeoutMs: 3000 });
           const allow = res.headers.get("allow") || res.headers.get("access-control-allow-methods") || "";
 
           for (const method of DANGEROUS_METHODS) {
@@ -50,7 +50,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
     tests.push(
       (async () => {
         try {
-          const res = await scanFetch(endpoint, { method: "TRACE", timeoutMs: 5000 });
+          const res = await scanFetch(endpoint, { method: "TRACE", timeoutMs: 3000 });
           if (res.ok) {
             findings.push({
               id: `http-methods-trace-active-${findings.length}`,
@@ -76,7 +76,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
         const pathname = new URL(endpoint).pathname;
         try {
           // Baseline: normal GET
-          const baseRes = await scanFetch(endpoint, { timeoutMs: 5000 });
+          const baseRes = await scanFetch(endpoint, { timeoutMs: 3000 });
           const baseStatus = baseRes.status;
           const baseText = await baseRes.text();
 
@@ -85,7 +85,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
             const res = await scanFetch(endpoint, {
               method: "POST",
               headers: { [header]: "DELETE", "Content-Length": "0" },
-              timeoutMs: 5000,
+              timeoutMs: 3000,
             });
 
             // If server accepts the override and returns different behavior than baseline
@@ -114,7 +114,7 @@ export const httpMethodsModule: ScanModule = async (target) => {
             const traceRes = await scanFetch(endpoint, {
               method: "POST",
               headers: { [header]: "TRACE", "Content-Length": "0" },
-              timeoutMs: 5000,
+              timeoutMs: 3000,
             });
             if (traceRes.ok) {
               const traceText = await traceRes.text();
