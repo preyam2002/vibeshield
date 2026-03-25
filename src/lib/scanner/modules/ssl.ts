@@ -200,5 +200,65 @@ export const sslModule: ScanModule = async (target) => {
     });
   }
 
+  // TLS 1.3 support check
+  if (url.protocol === "https:") {
+    const tls13 = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 5000);
+      try {
+        const socket = tls.connect(443, url.hostname, {
+          rejectUnauthorized: false, servername: url.hostname,
+          minVersion: "TLSv1.3", maxVersion: "TLSv1.3",
+        }, () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+        socket.on("error", () => { clearTimeout(timer); resolve(false); });
+      } catch { clearTimeout(timer); resolve(false); }
+    });
+    if (!tls13) {
+      findings.push({
+        id: "ssl-no-tls13",
+        module: "SSL/TLS",
+        severity: "info",
+        title: "TLS 1.3 not supported",
+        description: "The server does not support TLS 1.3. While TLS 1.2 is still considered secure, TLS 1.3 offers improved performance (faster handshakes) and stronger security guarantees.",
+        remediation: "Enable TLS 1.3 on your server or hosting provider. Most modern platforms (Cloudflare, Vercel, AWS) support it by default.",
+        cwe: "CWE-326",
+      });
+    }
+  }
+
+  // Certificate Transparency check
+  const expectCt = target.headers["expect-ct"];
+  const ctHeader = target.headers["certificate-transparency"] || target.headers["signed-certificate-timestamp"];
+  const majorProviders = ["cloudflare", "vercel", "amazonaws", "google", "fastly", "akamai"];
+  const serverHeader = (target.headers["server"] || "").toLowerCase();
+  const viaHeader = (target.headers["via"] || "").toLowerCase();
+  const isMajorProvider = majorProviders.some((p) => serverHeader.includes(p) || viaHeader.includes(p) || url.hostname.includes(p));
+  if (!expectCt && !ctHeader && !isMajorProvider) {
+    findings.push({
+      id: "ssl-no-ct",
+      module: "SSL/TLS",
+      severity: "info",
+      title: "No Certificate Transparency evidence in headers",
+      description: "No Expect-CT or Certificate Transparency headers were found. Certificate Transparency helps detect misissued certificates. Major providers handle this automatically, but self-managed certificates should ensure CT log inclusion.",
+      remediation: "Ensure your certificate is logged in public CT logs. Use a CA that supports CT by default (Let's Encrypt does). The Expect-CT header is deprecated but can still be used for reporting.",
+      cwe: "CWE-295",
+    });
+  }
+
+  // HPKP detection (deprecated and dangerous)
+  const hpkp = target.headers["public-key-pins"] || target.headers["public-key-pins-report-only"];
+  if (hpkp) {
+    findings.push({
+      id: "ssl-hpkp-detected",
+      module: "SSL/TLS",
+      severity: "medium",
+      title: "Deprecated HPKP header detected",
+      description: "The site sends a Public-Key-Pins header. HPKP is deprecated by all major browsers and is dangerous — a misconfigured pin can make your site permanently inaccessible to users. This often appears when vibe-coded apps copy outdated security header configurations.",
+      evidence: `Public-Key-Pins: ${hpkp.substring(0, 120)}${hpkp.length > 120 ? "..." : ""}`,
+      remediation: "Remove the Public-Key-Pins header immediately. Use Certificate Transparency (Expect-CT) or CAA DNS records instead for certificate security.",
+      cwe: "CWE-693",
+      codeSnippet: `// Remove from your headers config — do NOT use HPKP\n// next.config.ts\nmodule.exports = {\n  async headers() {\n    return [{ source: "/(.*)", headers: [\n      // Use Expect-CT instead (or just rely on CT logs)\n      { key: "Expect-CT", value: "max-age=86400, enforce" }\n    ]}];\n  },\n};`,
+    });
+  }
+
   return findings;
 };
