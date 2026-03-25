@@ -723,9 +723,14 @@ export default nextConfig;`;
                     <div className="mt-2 bg-zinc-900/40 border border-zinc-800/40 rounded-lg p-3 space-y-2">
                       <div className="flex items-center justify-between">
                         <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">vs previous scan</div>
-                        <a href={`/scan/${scan.comparison.previousId}`} className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors">
-                          View previous →
-                        </a>
+                        <div className="flex items-center gap-2">
+                          <a href={`/compare?a=${scan.comparison.previousId}&b=${scan.id}`} className="text-[10px] text-blue-500 hover:text-blue-400 transition-colors">
+                            Compare →
+                          </a>
+                          <a href={`/scan/${scan.comparison.previousId}`} className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors">
+                            View previous →
+                          </a>
+                        </div>
                       </div>
                       <div className="flex items-center gap-3">
                         <div className={`text-sm font-bold ${scan.comparison.delta.score > 0 ? "text-green-400" : scan.comparison.delta.score < 0 ? "text-red-400" : "text-zinc-400"}`}>

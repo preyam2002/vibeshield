@@ -202,6 +202,7 @@ export default function Home() {
             <span className="text-xs text-zinc-600 hidden sm:block">Black-box pentesting for vibe-coded apps</span>
             <a href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Dashboard</a>
             <a href="/scans" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">All Scans</a>
+            <a href="/compare" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Compare</a>
             <a href="/docs" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">API</a>
           </div>
         </div>

@@ -117,6 +117,7 @@ export default function ScansPage() {
           </a>
           <div className="flex items-center gap-3">
             <a href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Dashboard</a>
+            <a href="/compare" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Compare</a>
             <a href="/docs" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">API</a>
             <a href="/" className="text-xs bg-linear-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-white px-4 py-1.5 rounded-lg transition-colors">
               New Scan

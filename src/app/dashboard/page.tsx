@@ -118,6 +118,7 @@ export default function DashboardPage() {
           </a>
           <div className="flex items-center gap-4">
             <a href="/scans" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">All Scans</a>
+            <a href="/compare" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Compare</a>
             <a href="/docs" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">API</a>
             <span className="text-xs text-zinc-400 font-medium">Dashboard</span>
           </div>

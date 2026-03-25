@@ -14,6 +14,8 @@ export default function DocsPage() {
           </a>
           <div className="flex items-center gap-4">
             <a href="/scans" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">All Scans</a>
+            <a href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Dashboard</a>
+            <a href="/compare" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Compare</a>
             <span className="text-xs text-zinc-400 font-medium">API Docs</span>
           </div>
         </div>
@@ -343,6 +345,7 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
               { method: "GET", path: "/api/scan/schedule", desc: "List all scheduled scans" },
               { method: "DELETE", path: "/api/scan/schedule?id=:id", desc: "Delete a scheduled scan" },
               { method: "GET", path: "/api/scan/timeline?target=example.com", desc: "Security score timeline for a target. Returns trend, best/worst, and per-scan deltas." },
+              { method: "GET", path: "/api/scan/compare?a=:id&b=:id", desc: "Compare two scans side-by-side. Returns new/fixed findings, severity changes, module-level diffs." },
               { method: "POST", path: "/api/webhook-test", desc: "Test webhook integration", body: '{"url": "https://hooks.slack.com/...", "format": "slack|discord|json"}' },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
             ].map((ep) => (
