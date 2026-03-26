@@ -15,6 +15,12 @@ export interface Finding {
   endpoint?: string;
   /** Confidence in the finding (0-100). Header checks = 100, heuristic = 60-80 */
   confidence?: number;
+  /** CVSS v3.1 base score */
+  cvss?: { score: number; vector: string; rating: string };
+  /** Whether this finding has been suppressed (false positive / accepted risk) */
+  suppressed?: boolean;
+  /** Reason for suppression */
+  suppressedReason?: string;
 }
 
 export interface FormField {
@@ -91,6 +97,13 @@ export interface ScanResult {
     forms: number;
     cookies: number;
   };
+  /** Custom headers sent with scan requests (for authenticated scanning) */
+  authConfig?: {
+    headers?: Record<string, string>;
+    cookies?: string;
+  };
+  /** Scan policy ID used for this scan */
+  policyId?: string;
   comparison?: {
     previousId: string;
     previousGrade: string;

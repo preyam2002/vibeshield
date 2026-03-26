@@ -37,6 +37,83 @@ X-API-Key: <your-key>`}</pre>
           </div>
         </section>
 
+        {/* Authenticated Scanning */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Authenticated Scanning</h2>
+          <p className="text-sm text-zinc-500 mb-4">Scan behind login by passing custom headers or cookies. This lets VibeShield test authenticated routes and business logic.</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Scan with session cookie
+curl -X POST ${baseUrl}/api/scan \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://your-app.com",
+    "authCookies": "session=abc123; csrf=xyz",
+    "mode": "security"
+  }'
+
+# Scan with Bearer token
+curl -X POST ${baseUrl}/api/scan \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://your-app.com",
+    "authHeaders": {"Authorization": "Bearer eyJ..."},
+    "mode": "full"
+  }'`}
+          </pre>
+        </section>
+
+        {/* Scan Policies */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">Scan Policies</h2>
+          <p className="text-sm text-zinc-500 mb-4">Create reusable module presets. Useful for different environments (CI = quick, staging = full).</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Create a policy
+curl -X POST ${baseUrl}/api/scan/policies \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "CI Quick Check",
+    "description": "Fast checks for CI pipelines",
+    "enabledModules": ["Security Headers", "SSL/TLS", "Secret Detection", "CSP Analysis"]
+  }'
+
+# Use a policy in a scan
+curl -X POST ${baseUrl}/api/scan \\
+  -H "Content-Type: application/json" \\
+  -d '{"url": "https://app.com", "policyId": "policy-id-here"}'
+
+# Or specify modules directly
+curl -X POST ${baseUrl}/api/scan \\
+  -H "Content-Type: application/json" \\
+  -d '{"url": "https://app.com", "modules": ["SQL Injection & XSS", "SSRF", "Authentication"]}'
+
+# List available modules
+curl ${baseUrl}/api/scan/modules`}
+          </pre>
+        </section>
+
+        {/* False Positive Management */}
+        <section className="mb-12">
+          <h2 className="text-lg font-bold text-zinc-200 mb-4">False Positive Management</h2>
+          <p className="text-sm text-zinc-500 mb-4">Suppress findings that are false positives or accepted risks. Suppressed findings are excluded from score calculations.</p>
+          <pre className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-4 text-sm text-zinc-300 overflow-x-auto">
+{`# Suppress a finding
+curl -X POST ${baseUrl}/api/scan/suppressions \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "findingKey": "Security Headers::Missing Content-Security-Policy header",
+    "reason": "CSP is handled by our CDN, not the app server"
+  }'
+
+# List all suppressions
+curl ${baseUrl}/api/scan/suppressions
+
+# Remove a suppression
+curl -X DELETE ${baseUrl}/api/scan/suppressions \\
+  -H "Content-Type: application/json" \\
+  -d '{"findingKey": "Security Headers::Missing Content-Security-Policy header"}'`}
+          </pre>
+        </section>
+
         {/* Quick start */}
         <section className="mb-12">
           <h2 className="text-lg font-bold text-zinc-200 mb-4">Quick Start</h2>
@@ -268,7 +345,12 @@ vercel deploy --prod && \\
     "cwe": "CWE-693",           // optional
     "owasp": "A05:2021",        // optional
     "confidence": 95,           // optional — 0-100, detection confidence
-    "endpoint": "/api/users"    // optional — specific URL where issue was found
+    "endpoint": "/api/users",   // optional — specific URL where issue was found
+    "cvss": {                   // CVSS v3.1 base score (auto-calculated)
+      "score": 5.3,
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N",
+      "rating": "Medium"
+    }
   }],
   "modules": [{
     "name": "Security Headers",
@@ -354,7 +436,7 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
           </div>
           <div className="space-y-4">
             {[
-              { method: "POST", path: "/api/scan", desc: "Start a new scan", body: '{"url": "...", "mode?": "quick|security|full", "callbackUrl?": "..."}' },
+              { method: "POST", path: "/api/scan", desc: "Start a new scan (supports authenticated scanning)", body: '{"url": "...", "mode?": "...", "authHeaders?": {...}, "authCookies?": "...", "modules?": [...], "policyId?": "..."}' },
               { method: "GET", path: "/api/scan/:id", desc: "Get scan status and results" },
               { method: "GET", path: "/api/scan/:id/export", desc: "Download JSON report" },
               { method: "GET", path: "/api/scan/:id/report", desc: "Download Markdown report" },
@@ -375,7 +457,17 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
               { method: "GET", path: "/api/scan/timeline?target=example.com", desc: "Security score timeline for a target. Returns trend, best/worst, and per-scan deltas." },
               { method: "GET", path: "/api/scan/compare?a=:id&b=:id", desc: "Compare two scans side-by-side. Returns new/fixed findings, severity changes, module-level diffs." },
               { method: "POST", path: "/api/webhook-test", desc: "Test webhook integration", body: '{"url": "https://hooks.slack.com/...", "format": "slack|discord|json"}' },
+              { method: "GET", path: "/api/scan/:id/remediation", desc: "Prioritized remediation plan with ROI ranking" },
+              { method: "GET", path: "/api/scan/modules", desc: "List all available scanner modules" },
+              { method: "GET", path: "/api/scan/suppressions", desc: "List all finding suppressions" },
+              { method: "POST", path: "/api/scan/suppressions", desc: "Suppress a finding (false positive / accepted risk)", body: '{"findingKey": "module::title", "reason": "..."}' },
+              { method: "DELETE", path: "/api/scan/suppressions", desc: "Remove a suppression", body: '{"findingKey": "module::title"}' },
+              { method: "GET", path: "/api/scan/policies", desc: "List scan policies" },
+              { method: "POST", path: "/api/scan/policies", desc: "Create a scan policy (module selection preset)", body: '{"name": "...", "enabledModules": ["Security Headers", "SSL/TLS", ...]}' },
+              { method: "DELETE", path: "/api/scan/policies", desc: "Delete a scan policy", body: '{"id": "..."}' },
               { method: "GET", path: "/api/stats", desc: "Aggregate scan statistics" },
+              { method: "GET", path: "/api/health", desc: "Health check (200 healthy, 503 overloaded)" },
+              { method: "GET", path: "/api/openapi", desc: "OpenAPI 3.1 specification" },
             ].map((ep) => (
               <div key={ep.path + ep.method} className="bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-1">
@@ -406,6 +498,8 @@ curl -X POST ${baseUrl}/api/scan/bulk \\
               { env: "VIBESHIELD_RATE_WINDOW_MS", desc: "Rate limit window", default: "300000" },
               { env: "VIBESHIELD_MAX_SCANS", desc: "Max scans in memory", default: "100" },
               { env: "VIBESHIELD_WEBHOOK_SECRET", desc: "HMAC-SHA256 key for webhook signatures", default: "(none)" },
+              { env: "VIBESHIELD_DATA_DIR", desc: "SQLite data directory for persistence", default: ".vibeshield-data" },
+              { env: "LOG_LEVEL", desc: "Logging level (debug, info, warn, error)", default: "info (prod) / debug (dev)" },
             ].map((c) => (
               <div key={c.env} className="flex items-baseline gap-3 text-xs">
                 <code className="text-zinc-300 bg-zinc-800/50 px-1.5 py-0.5 rounded font-mono shrink-0">{c.env}</code>

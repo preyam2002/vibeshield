@@ -1,3 +1,14 @@
+// Auth config that gets injected into every scan request
+let scanAuthConfig: { headers?: Record<string, string>; cookies?: string } | undefined;
+
+export const setScanAuth = (config: typeof scanAuthConfig) => {
+  scanAuthConfig = config;
+};
+
+export const clearScanAuth = () => {
+  scanAuthConfig = undefined;
+};
+
 // Global concurrency-limited fetch with retry logic
 let active = 0;
 const MAX_CONCURRENT = 20;
@@ -45,6 +56,32 @@ const isRetryableStatus = (status: number): boolean => {
   return status === 429 || status === 502 || status === 503 || status === 504;
 };
 
+const buildMergedHeaders = (fetchHeaders?: HeadersInit): Record<string, string> | undefined => {
+  const merged: Record<string, string> = {};
+  let hasEntries = false;
+
+  if (scanAuthConfig?.headers) {
+    Object.assign(merged, scanAuthConfig.headers);
+    hasEntries = true;
+  }
+  if (scanAuthConfig?.cookies) {
+    merged["Cookie"] = scanAuthConfig.cookies;
+    hasEntries = true;
+  }
+  if (fetchHeaders) {
+    if (fetchHeaders instanceof Headers) {
+      fetchHeaders.forEach((v, k) => { merged[k] = v; });
+    } else if (Array.isArray(fetchHeaders)) {
+      for (const [k, v] of fetchHeaders) merged[k] = v;
+    } else {
+      Object.assign(merged, fetchHeaders);
+    }
+    hasEntries = true;
+  }
+
+  return hasEntries ? merged : undefined;
+};
+
 export const scanFetch = async (
   url: string,
   opts: RequestInit & { timeoutMs?: number; noCache?: boolean } = {},
@@ -53,7 +90,7 @@ export const scanFetch = async (
   const method = (fetchOpts.method || "GET").toUpperCase();
 
   // Cache only simple GET requests (no custom headers beyond defaults)
-  const isCacheable = method === "GET" && !noCache && !fetchOpts.headers && fetchOpts.redirect !== "manual";
+  const isCacheable = method === "GET" && !noCache && !fetchOpts.headers && !scanAuthConfig && fetchOpts.redirect !== "manual";
   if (isCacheable) {
     const cached = responseCache.get(url);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
@@ -77,8 +114,10 @@ export const scanFetch = async (
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
+        const mergedHeaders = buildMergedHeaders(fetchOpts.headers);
         const res = await fetch(url, {
           ...fetchOpts,
+          ...(mergedHeaders ? { headers: mergedHeaders } : {}),
           signal: controller.signal,
         });
         clearTimeout(timer);

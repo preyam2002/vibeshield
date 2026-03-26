@@ -1,5 +1,6 @@
 import type { ScanResult, Finding, ModuleStatus } from "./types";
 import { MAX_STORED_SCANS, STALE_SCAN_TIMEOUT_MS } from "./config";
+import { dbSaveScan, dbGetRecentScans, dbAvailable } from "../db";
 
 const globalForStore = globalThis as unknown as {
   __vibeshieldScans?: Map<string, ScanResult>;
@@ -119,6 +120,10 @@ export const updateScanStatus = (id: string, status: ScanResult["status"], error
     }
     if (status === "completed") {
       buildComparison(scan);
+    }
+    // Persist completed/failed scans to SQLite
+    if ((status === "completed" || status === "failed") && dbAvailable) {
+      try { dbSaveScan(scan); } catch { /* silently fail — in-memory is primary */ }
     }
   }
 };

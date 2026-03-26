@@ -47,7 +47,7 @@ const isPrivateHost = (host: string): boolean => {
 export async function POST(req: NextRequest) {
   const auth = validateApiKey(req);
   if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
-  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick"; minScore?: number; failOnCritical?: boolean };
+  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick"; minScore?: number; failOnCritical?: boolean; authHeaders?: Record<string, string>; authCookies?: string; policyId?: string; modules?: string[] };
   const url = typeof body.url === "string" ? body.url.trim() : "";
   // Validate callback URL — only allow public HTTPS URLs
   let callbackUrl: string | undefined;
@@ -147,9 +147,16 @@ export async function POST(req: NextRequest) {
   const minScore = typeof body.minScore === "number" && body.minScore >= 0 && body.minScore <= 100 ? Math.round(body.minScore) : undefined;
   const failOnCritical = body.failOnCritical === true;
 
+  // Auth config for authenticated scanning
+  const authConfig = (body.authHeaders || body.authCookies)
+    ? { headers: body.authHeaders, cookies: body.authCookies }
+    : undefined;
+  const policyId = typeof body.policyId === "string" ? body.policyId : undefined;
+  const modules = Array.isArray(body.modules) ? body.modules.filter((m): m is string => typeof m === "string") : undefined;
+
   const scanId = crypto.randomUUID();
   const gateConfig = (minScore !== undefined || failOnCritical) ? { minScore, failOnCritical } : undefined;
-  startScan(scanId, parsed.href, callbackUrl, mode, gateConfig);
+  startScan(scanId, parsed.href, callbackUrl, mode, gateConfig, authConfig, policyId, modules);
 
   return NextResponse.json({
     id: scanId,

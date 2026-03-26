@@ -11,7 +11,8 @@ import {
   registerAbort,
   cleanupAbort,
 } from "./store";
-import { clearScanCache } from "./fetch";
+import { clearScanCache, setScanAuth, clearScanAuth } from "./fetch";
+import { getCvssScore } from "./cvss";
 import { runRecon } from "./modules/recon";
 import { headersModule } from "./modules/headers";
 import { sslModule } from "./modules/ssl";
@@ -75,7 +76,7 @@ import {
 } from "./config";
 
 // Ordered by signal-to-time ratio: fastest/highest-signal modules first
-const SECURITY_MODULES: ScanModuleDefinition[] = [
+export const SECURITY_MODULES: ScanModuleDefinition[] = [
   // Batch 1: Fast, high-signal checks (headers, config, static analysis)
   { name: "Security Headers", description: "Check HTTP security headers", category: "security", run: headersModule },
   { name: "SSL/TLS", description: "Check HTTPS and TLS configuration", category: "security", run: sslModule },
@@ -129,7 +130,7 @@ const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "DNS & Email Security", description: "SPF, DMARC, CAA records, dangling CNAMEs, security.txt", category: "security", run: dnsSecurityModule },
 ];
 
-const STRESS_MODULES: ScanModuleDefinition[] = [
+export const STRESS_MODULES: ScanModuleDefinition[] = [
   { name: "Load Testing", description: "Test app performance under concurrent load", category: "stress", run: loadModule },
   { name: "Race Conditions", description: "Test for race condition vulnerabilities", category: "stress", run: raceConditionModule },
   { name: "Rate Limiting", description: "Check rate limiting on critical endpoints", category: "stress", run: rateLimitModule },
@@ -139,6 +140,10 @@ const STRESS_MODULES: ScanModuleDefinition[] = [
 ];
 
 const ALL_MODULES = [...SECURITY_MODULES, ...STRESS_MODULES];
+
+/** Module names for external consumers (API listing, policy filtering) */
+export const SECURITY_MODULE_NAMES = SECURITY_MODULES.map((m) => m.name);
+export const STRESS_MODULE_NAMES = STRESS_MODULES.map((m) => m.name);
 
 // Quick mode: only the fastest, highest-signal modules (~10s total)
 const QUICK_MODULE_NAMES = new Set([
@@ -150,10 +155,31 @@ const QUICK_MODULES = SECURITY_MODULES.filter((m) => QUICK_MODULE_NAMES.has(m.na
 
 export type ScanMode = "full" | "security" | "quick";
 
-export const startScan = (scanId: string, targetUrl: string, callbackUrl?: string, mode: ScanMode = "full", gateConfig?: { minScore?: number; failOnCritical?: boolean }) => {
+export interface AuthConfig {
+  headers?: Record<string, string>;
+  cookies?: string;
+}
+
+export const startScan = (
+  scanId: string,
+  targetUrl: string,
+  callbackUrl?: string,
+  mode: ScanMode = "full",
+  gateConfig?: { minScore?: number; failOnCritical?: boolean },
+  authConfig?: AuthConfig,
+  policyId?: string,
+  modules?: string[],
+) => {
   createScan(scanId, targetUrl, mode);
 
-  const activeModules = mode === "quick" ? QUICK_MODULES : mode === "security" ? SECURITY_MODULES : ALL_MODULES;
+  let activeModules = mode === "quick" ? QUICK_MODULES : mode === "security" ? SECURITY_MODULES : ALL_MODULES;
+
+  // If explicit module list provided, filter to only those modules
+  if (modules && modules.length > 0) {
+    const moduleSet = new Set(modules);
+    activeModules = activeModules.filter((m) => moduleSet.has(m.name));
+  }
+
   const moduleStatuses = [
     { name: "Recon", status: "pending" as const, findingsCount: 0 },
     ...activeModules.map((m) => ({
@@ -168,8 +194,11 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
   const abortController = new AbortController();
   registerAbort(scanId, abortController);
 
+  // Capture activeModules for the async closure
+  const modulesToRun = activeModules;
+
   setTimeout(() => {
-    runScan(scanId, targetUrl, mode, abortController.signal).then(() => {
+    runScan(scanId, targetUrl, mode, abortController.signal, authConfig, modulesToRun).then(() => {
       cleanupAbort(scanId);
       if (callbackUrl) sendCallback(callbackUrl, scanId, gateConfig).catch(() => {});
     }).catch((err) => {
@@ -183,106 +212,131 @@ export const startScan = (scanId: string, targetUrl: string, callbackUrl?: strin
   }, 0);
 };
 
-const runScan = async (scanId: string, targetUrl: string, mode: ScanMode = "full", abortSignal?: AbortSignal) => {
+const runScan = async (
+  scanId: string,
+  targetUrl: string,
+  mode: ScanMode = "full",
+  abortSignal?: AbortSignal,
+  authConfig?: AuthConfig,
+  activeModules?: ScanModuleDefinition[],
+) => {
   clearScanCache();
-  // Phase 1: Recon
-  updateModule(scanId, "Recon", { status: "running" });
-  const reconStart = Date.now();
-  let target: ScanTarget;
-  try {
-    target = await runRecon(targetUrl);
-    setTechInfo(scanId, target.technologies, target.isSpa);
-    setSurface(scanId, {
-      pages: target.pages.length,
-      apiEndpoints: target.apiEndpoints.length,
-      jsFiles: target.jsContents.size,
-      forms: target.forms.length,
-      cookies: target.cookies.length,
-    });
-    updateModule(scanId, "Recon", { status: "completed", durationMs: Date.now() - reconStart });
-  } catch (err) {
-    const errorMsg = humanizeError(err, targetUrl);
-    updateModule(scanId, "Recon", { status: "failed", error: errorMsg, durationMs: Date.now() - reconStart });
-    updateScanStatus(scanId, "failed", errorMsg);
-    return;
+
+  // Set auth config for scanFetch to inject into requests
+  if (authConfig) {
+    setScanAuth(authConfig);
   }
 
-  // Circuit breaker: if too many modules fail with the same error class, abort early
-  let consecutiveFailures = 0;
-
-  const runModule = async (mod: ScanModuleDefinition) => {
-    if (abortSignal?.aborted || consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-      updateModule(scanId, mod.name, { status: "skipped" });
+  try {
+    // Phase 1: Recon
+    updateModule(scanId, "Recon", { status: "running" });
+    const reconStart = Date.now();
+    let target: ScanTarget;
+    try {
+      target = await runRecon(targetUrl);
+      setTechInfo(scanId, target.technologies, target.isSpa);
+      setSurface(scanId, {
+        pages: target.pages.length,
+        apiEndpoints: target.apiEndpoints.length,
+        jsFiles: target.jsContents.size,
+        forms: target.forms.length,
+        cookies: target.cookies.length,
+      });
+      updateModule(scanId, "Recon", { status: "completed", durationMs: Date.now() - reconStart });
+    } catch (err) {
+      const errorMsg = humanizeError(err, targetUrl);
+      updateModule(scanId, "Recon", { status: "failed", error: errorMsg, durationMs: Date.now() - reconStart });
+      updateScanStatus(scanId, "failed", errorMsg);
       return;
     }
-    updateModule(scanId, mod.name, { status: "running" });
-    const start = Date.now();
-    try {
-      const findings = await Promise.race([
-        mod.run(target),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Module timed out after ${MODULE_TIMEOUT_MS / 1000}s`)), MODULE_TIMEOUT_MS),
-        ),
-        ...(abortSignal ? [new Promise<never>((_, reject) => {
-          abortSignal.addEventListener("abort", () => reject(new Error("Scan cancelled")), { once: true });
-        })] : []),
-      ]);
-      // Apply default confidence scores based on module type if not set by module
-      const enriched = findings.map((f) => ({
-        ...f,
-        confidence: f.confidence ?? getDefaultConfidence(mod.name, f),
-      }));
-      addFindings(scanId, enriched.slice(0, MAX_FINDINGS_PER_MODULE));
-      updateModule(scanId, mod.name, {
-        status: "completed",
-        findingsCount: findings.length,
-        durationMs: Date.now() - start,
-      });
-      consecutiveFailures = 0; // Reset on success
-    } catch (err) {
-      const cancelled = abortSignal?.aborted;
-      updateModule(scanId, mod.name, {
-        status: cancelled ? "skipped" : "failed",
-        error: cancelled ? undefined : String(err),
-        durationMs: Date.now() - start,
-      });
-      if (!cancelled) {
-        consecutiveFailures++;
-        console.error(`Module ${mod.name} failed:`, err);
+
+    // Circuit breaker: if too many modules fail with the same error class, abort early
+    let consecutiveFailures = 0;
+
+    const runModule = async (mod: ScanModuleDefinition) => {
+      if (abortSignal?.aborted || consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+        updateModule(scanId, mod.name, { status: "skipped" });
+        return;
+      }
+      updateModule(scanId, mod.name, { status: "running" });
+      const start = Date.now();
+      try {
+        const findings = await Promise.race([
+          mod.run(target),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Module timed out after ${MODULE_TIMEOUT_MS / 1000}s`)), MODULE_TIMEOUT_MS),
+          ),
+          ...(abortSignal ? [new Promise<never>((_, reject) => {
+            abortSignal.addEventListener("abort", () => reject(new Error("Scan cancelled")), { once: true });
+          })] : []),
+        ]);
+        // Apply default confidence scores and CVSS scores
+        const enriched = findings.map((f) => ({
+          ...f,
+          confidence: f.confidence ?? getDefaultConfidence(mod.name, f),
+          cvss: f.cvss ?? getCvssScore(f.cwe, f.severity),
+        }));
+        addFindings(scanId, enriched.slice(0, MAX_FINDINGS_PER_MODULE));
+        updateModule(scanId, mod.name, {
+          status: "completed",
+          findingsCount: findings.length,
+          durationMs: Date.now() - start,
+        });
+        consecutiveFailures = 0; // Reset on success
+      } catch (err) {
+        const cancelled = abortSignal?.aborted;
+        updateModule(scanId, mod.name, {
+          status: cancelled ? "skipped" : "failed",
+          error: cancelled ? undefined : String(err),
+          durationMs: Date.now() - start,
+        });
+        if (!cancelled) {
+          consecutiveFailures++;
+          console.error(`Module ${mod.name} failed:`, err);
+        }
+      }
+    };
+
+    // Use provided module list or fall back to defaults based on mode
+    const securityModules = activeModules
+      ? activeModules.filter((m) => m.category === "security")
+      : (mode === "quick" ? QUICK_MODULES : SECURITY_MODULES);
+    const stressModules = activeModules
+      ? activeModules.filter((m) => m.category === "stress")
+      : STRESS_MODULES;
+
+    if (abortSignal?.aborted) { return; }
+
+    if (mode === "quick" && !activeModules) {
+      await Promise.all(QUICK_MODULES.map(runModule));
+    } else {
+      for (let i = 0; i < securityModules.length; i += SECURITY_BATCH_SIZE) {
+        if (abortSignal?.aborted) break;
+        const batch = securityModules.slice(i, i + SECURITY_BATCH_SIZE);
+        await Promise.all(batch.map(runModule));
+      }
+      if ((mode === "full" || activeModules) && !abortSignal?.aborted && stressModules.length > 0) {
+        await Promise.all(stressModules.map(runModule));
       }
     }
-  };
 
-  // Quick mode: run all modules in one batch (they're fast)
-  // Security/full: batch security modules, then stress sequentially
-  if (abortSignal?.aborted) { return; }
-
-  if (mode === "quick") {
-    await Promise.all(QUICK_MODULES.map(runModule));
-  } else {
-    for (let i = 0; i < SECURITY_MODULES.length; i += SECURITY_BATCH_SIZE) {
-      if (abortSignal?.aborted) break;
-      const batch = SECURITY_MODULES.slice(i, i + SECURITY_BATCH_SIZE);
-      await Promise.all(batch.map(runModule));
-    }
-    if (mode === "full" && !abortSignal?.aborted) {
-      await Promise.all(STRESS_MODULES.map(runModule));
-    }
-  }
-
-  // If circuit breaker tripped, mark remaining modules as skipped and note the early termination
-  if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-    const scan = getScan(scanId);
-    if (scan) {
-      for (const mod of scan.modules) {
-        if (mod.status === "pending") mod.status = "skipped";
+    // If circuit breaker tripped, mark remaining modules as skipped and note the early termination
+    if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+      const scan = getScan(scanId);
+      if (scan) {
+        for (const mod of scan.modules) {
+          if (mod.status === "pending") mod.status = "skipped";
+        }
       }
+      console.warn(`Scan ${scanId}: circuit breaker tripped after ${CIRCUIT_BREAKER_THRESHOLD} consecutive module failures`);
     }
-    console.warn(`Scan ${scanId}: circuit breaker tripped after ${CIRCUIT_BREAKER_THRESHOLD} consecutive module failures`);
-  }
 
-  if (!abortSignal?.aborted) {
-    updateScanStatus(scanId, "completed");
+    if (!abortSignal?.aborted) {
+      updateScanStatus(scanId, "completed");
+    }
+  } finally {
+    // Always clear auth config after scan completes
+    clearScanAuth();
   }
 };
 

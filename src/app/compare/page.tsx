@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -31,6 +31,14 @@ const gradeColor = (g: string) =>
   g.startsWith("C") ? "text-yellow-400" : g.startsWith("D") ? "text-orange-400" : "text-red-400";
 
 export default function ComparePage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-black text-white flex items-center justify-center">Loading...</div>}>
+      <CompareContent />
+    </Suspense>
+  );
+}
+
+function CompareContent() {
   const params = useSearchParams();
   const router = useRouter();
   const [scans, setScans] = useState<ScanListItem[]>([]);

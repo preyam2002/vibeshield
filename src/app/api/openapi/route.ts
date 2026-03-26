@@ -114,6 +114,60 @@ export async function GET() {
       "/api/scan/{id}/csv": { get: { summary: "Export as CSV", tags: ["Export"], parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "CSV file" } } } },
       "/api/scan/{id}/junit": { get: { summary: "Export as JUnit XML", tags: ["Export"], parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "JUnit XML" } } } },
       "/api/scan/{id}/badge": { get: { summary: "Security grade badge (SVG)", tags: ["Export"], parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "SVG badge" } } } },
+      "/api/scan/modules": {
+        get: {
+          summary: "List available scanner modules",
+          tags: ["System"],
+          responses: { "200": { description: "Module list with names, descriptions, and categories" } },
+        },
+      },
+      "/api/scan/suppressions": {
+        get: { summary: "List all finding suppressions", tags: ["Configuration"], responses: { "200": { description: "Suppression list" } } },
+        post: {
+          summary: "Suppress a finding (mark as false positive or accepted risk)",
+          tags: ["Configuration"],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", properties: { findingKey: { type: "string", description: "Format: 'module::title'" }, reason: { type: "string" } }, required: ["findingKey", "reason"] } } },
+          },
+          responses: { "200": { description: "Suppression created" } },
+        },
+        delete: {
+          summary: "Remove a finding suppression",
+          tags: ["Configuration"],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", properties: { findingKey: { type: "string" } }, required: ["findingKey"] } } },
+          },
+          responses: { "200": { description: "Suppression removed" } },
+        },
+      },
+      "/api/scan/policies": {
+        get: { summary: "List scan policies", tags: ["Configuration"], responses: { "200": { description: "Policy list" } } },
+        post: {
+          summary: "Create a scan policy (module selection preset)",
+          tags: ["Configuration"],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, enabledModules: { type: "array", items: { type: "string" } } }, required: ["name", "enabledModules"] } } },
+          },
+          responses: { "200": { description: "Policy created" } },
+        },
+        delete: {
+          summary: "Delete a scan policy",
+          tags: ["Configuration"],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } } } },
+          responses: { "200": { description: "Policy deleted" } },
+        },
+      },
+      "/api/scan/{id}/remediation": {
+        get: {
+          summary: "Prioritized remediation plan",
+          tags: ["Analytics"],
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Phased remediation plan with ROI ranking" }, "404": { description: "Scan not found" } },
+        },
+      },
       "/api/health": { get: { summary: "Health check", tags: ["System"], responses: { "200": { description: "Healthy" }, "503": { description: "Overloaded" } } } },
       "/api/stats": { get: { summary: "Aggregate statistics", tags: ["System"], responses: { "200": { description: "Stats" } } } },
       "/api/webhook-test": {
@@ -143,6 +197,10 @@ export async function GET() {
             callbackUrl: { type: "string", description: "HTTPS webhook for completion notification" },
             minScore: { type: "integer", description: "Minimum score for CI pass" },
             failOnCritical: { type: "boolean", description: "Fail CI if critical findings exist" },
+            authHeaders: { type: "object", additionalProperties: { type: "string" }, description: "Custom headers for authenticated scanning" },
+            authCookies: { type: "string", description: "Cookie string for authenticated scanning" },
+            policyId: { type: "string", description: "Scan policy ID to use" },
+            modules: { type: "array", items: { type: "string" }, description: "Explicit list of module names to run" },
           },
         },
         ScanStarted: {
@@ -164,6 +222,8 @@ export async function GET() {
             id: { type: "string" }, module: { type: "string" }, severity: { type: "string", enum: ["critical", "high", "medium", "low", "info"] },
             title: { type: "string" }, description: { type: "string" }, evidence: { type: "string" }, remediation: { type: "string" },
             cwe: { type: "string" }, confidence: { type: "integer", minimum: 0, maximum: 100 },
+            cvss: { type: "object", properties: { score: { type: "number" }, vector: { type: "string" }, rating: { type: "string" } } },
+            suppressed: { type: "boolean" }, suppressedReason: { type: "string" },
           },
         },
         BulkScanRequest: {
@@ -185,7 +245,8 @@ export async function GET() {
       { name: "Analytics", description: "Timeline, comparison, and trends" },
       { name: "Export", description: "Export results in various formats" },
       { name: "Integrations", description: "Slack, Discord, and webhook integrations" },
-      { name: "System", description: "Health and statistics" },
+      { name: "Configuration", description: "Scan policies and finding suppressions" },
+      { name: "System", description: "Health, statistics, and module listings" },
     ],
   };
 
