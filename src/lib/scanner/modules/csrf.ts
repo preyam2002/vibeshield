@@ -440,5 +440,153 @@ export const csrfModule: ScanModule = async (target) => {
     break;
   }
 
+  // Phase 9: Cross-origin JSON content-type CSRF
+  // JSON endpoints that don't require CORS preflight can be exploited via fetch() with no-cors
+  // or via Flash/PDF content-type tricks
+  const jsonCsrfResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 6).map(async (endpoint) => {
+      // Test if endpoint accepts JSON body with text/plain content-type (no preflight)
+      const res = await scanFetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          Origin: "https://evil.com",
+        },
+        body: '{"action":"test","csrf":"bypass"}',
+        timeoutMs: 5000,
+      });
+      if (!res.ok) return null;
+      const text = await res.text();
+      // Check if the server parsed the JSON despite text/plain content-type
+      if (text.length > 5 && !/error|invalid|unsupported.*content|bad.*request/i.test(text.substring(0, 300))) {
+        return { endpoint, pathname: new URL(endpoint).pathname, status: res.status };
+      }
+      return null;
+    }),
+  );
+
+  for (const r of jsonCsrfResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `csrf-json-content-type-${findings.length}`,
+      module: "CSRF",
+      severity: "medium",
+      title: `JSON API accepts text/plain content-type: ${v.pathname}`,
+      description: `The endpoint ${v.pathname} parses JSON request bodies even when Content-Type is text/plain. Since text/plain is a "simple" content type, cross-origin requests with this type bypass CORS preflight. An attacker can submit JSON payloads via a <form> with enctype="text/plain" or via fetch() in no-cors mode, enabling CSRF against JSON APIs.`,
+      evidence: `POST ${v.endpoint}\nContent-Type: text/plain\nOrigin: https://evil.com\nBody: {"action":"test","csrf":"bypass"}\nStatus: ${v.status}`,
+      remediation: "Strictly validate Content-Type on API endpoints. Reject requests that don't match the expected type (application/json). Require a custom header (like X-Requested-With) to force CORS preflight.",
+      cwe: "CWE-352",
+      owasp: "A01:2021",
+      confidence: 70,
+      codeSnippet: `// Enforce strict Content-Type checking\nexport async function POST(req: Request) {\n  const ct = req.headers.get("content-type");\n  if (!ct?.includes("application/json")) {\n    return Response.json({ error: "Invalid Content-Type" }, { status: 415 });\n  }\n  // Require custom header to force CORS preflight\n  if (!req.headers.get("x-requested-with")) {\n    return Response.json({ error: "Missing X-Requested-With" }, { status: 403 });\n  }\n}`,
+    });
+    break;
+  }
+
+  // Phase 10: Flash/Silverlight crossdomain.xml check
+  const crossdomainUrls = [
+    `${target.baseUrl}/crossdomain.xml`,
+    `${target.baseUrl}/clientaccesspolicy.xml`,
+  ];
+  const crossdomainResults = await Promise.allSettled(
+    crossdomainUrls.map(async (url) => {
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (!text.includes("cross-domain-policy") && !text.includes("access-policy")) return null;
+
+      const allowsAll = /domain\s*=\s*["']\*["']/i.test(text);
+      const allowsHttp = /domain\s*=\s*["']http:/i.test(text);
+      const allowsHeaders = /headers\s*=\s*["']\*["']/i.test(text);
+      const isSilverlight = url.endsWith("clientaccesspolicy.xml");
+
+      return { url, text: text.substring(0, 500), allowsAll, allowsHttp, allowsHeaders, isSilverlight };
+    }),
+  );
+
+  for (const r of crossdomainResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    if (v.allowsAll) {
+      findings.push({
+        id: `csrf-crossdomain-wildcard-${findings.length}`,
+        module: "CSRF",
+        severity: "medium",
+        title: `${v.isSilverlight ? "clientaccesspolicy.xml" : "crossdomain.xml"} allows wildcard access`,
+        description: `The ${v.isSilverlight ? "Silverlight" : "Flash"} cross-domain policy file allows requests from any domain (domain="*"). While Flash is largely deprecated, this file can still be abused by legacy Flash players or PDF plugins to make authenticated cross-origin requests, bypassing CSRF protections. Some browsers still support Flash via extensions.`,
+        evidence: `URL: ${v.url}\nPolicy:\n${v.text}`,
+        remediation: `Remove ${v.isSilverlight ? "clientaccesspolicy.xml" : "crossdomain.xml"} if Flash/Silverlight is not needed (it almost certainly isn't). If required, restrict domain to specific trusted origins instead of using wildcards.`,
+        cwe: "CWE-942",
+        owasp: "A01:2021",
+        confidence: 85,
+        codeSnippet: `<!-- If crossdomain.xml is needed, restrict it -->\n<?xml version="1.0"?>\n<cross-domain-policy>\n  <allow-access-from domain="trusted.example.com" secure="true"/>\n</cross-domain-policy>\n\n<!-- Better: delete crossdomain.xml entirely and return 404 -->`,
+      });
+    }
+    if (v.allowsHeaders) {
+      findings.push({
+        id: `csrf-crossdomain-headers-${findings.length}`,
+        module: "CSRF",
+        severity: "medium",
+        title: `crossdomain.xml allows wildcard custom headers`,
+        description: "The cross-domain policy allows sending arbitrary custom headers (headers=\"*\"). This enables Flash-based requests to bypass CSRF protections that rely on custom headers (like X-Requested-With) to trigger CORS preflight, since Flash has its own cross-origin model.",
+        evidence: `URL: ${v.url}\nPolicy:\n${v.text}`,
+        remediation: "Remove crossdomain.xml or restrict allowed headers to specific safe values. Do not use headers=\"*\".",
+        cwe: "CWE-942",
+        confidence: 80,
+      });
+    }
+  }
+
+  // Phase 11: Origin header validation bypass
+  const originBypassResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 5).map(async (endpoint) => {
+      const hostname = new URL(target.url).hostname;
+      const bypassOrigins = [
+        `https://${hostname}.evil.com`,       // Subdomain trick
+        `https://evil-${hostname}`,           // Prefix trick
+        `https://evil.com`,                   // Completely different origin
+        `null`,                               // null origin (sandboxed iframe, data: URI)
+      ];
+      for (const origin of bypassOrigins) {
+        const res = await scanFetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Origin: origin,
+          },
+          body: "test=csrf-bypass",
+          timeoutMs: 5000,
+        });
+        if (res.ok) {
+          const acao = res.headers.get("access-control-allow-origin");
+          if (acao === origin || acao === "*" || acao === "null") {
+            return { endpoint: new URL(endpoint).pathname, origin, acao };
+          }
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of originBypassResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `csrf-origin-bypass-${findings.length}`,
+      module: "CSRF",
+      severity: "high",
+      title: `Origin validation bypass on ${v.endpoint}`,
+      description: `The endpoint ${v.endpoint} reflects or accepts a spoofed Origin header ("${v.origin}") with ACAO: "${v.acao}". ${v.origin === "null" ? "The 'null' origin is particularly dangerous — it can be triggered from sandboxed iframes, data: URIs, and file: protocols, making it trivially exploitable." : "The server appears to validate the Origin using substring matching instead of exact comparison, allowing attacker-controlled subdomains to bypass the check."}`,
+      evidence: `POST ${v.endpoint}\nOrigin: ${v.origin}\nAccess-Control-Allow-Origin: ${v.acao}`,
+      remediation: "Validate the Origin header using exact string matching against a whitelist of allowed origins. Never reflect the Origin header directly. Reject requests with Origin: null unless specifically needed.",
+      cwe: "CWE-346",
+      owasp: "A01:2021",
+      confidence: 80,
+      codeSnippet: `// Strict Origin validation with whitelist\nconst ALLOWED_ORIGINS = new Set([\n  "https://yoursite.com",\n  "https://app.yoursite.com",\n]);\n\nfunction validateOrigin(req: Request): boolean {\n  const origin = req.headers.get("origin");\n  if (!origin || origin === "null") return false; // Reject null origin\n  return ALLOWED_ORIGINS.has(origin); // Exact match only\n}`,
+    });
+    break;
+  }
+
   return findings;
 };

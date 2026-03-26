@@ -9,7 +9,7 @@ export const raceConditionModule: ScanModule = async (target) => {
     /coupon|redeem|claim|transfer|withdraw|vote|checkout|purchase|apply|bonus|reward|credit|discount|activate|upgrade|downgrade/i.test(ep),
   );
 
-  if (stateEndpoints.length === 0) return findings;
+  if (stateEndpoints.length === 0 && target.apiEndpoints.length === 0) return findings;
   const testEndpoints = stateEndpoints.slice(0, 6);
 
   for (const endpoint of testEndpoints) {
@@ -67,7 +67,6 @@ if (existing) return JSON.parse(existing);`,
     }
 
     // Test for double-spend: send two requests with same idempotency key
-    // If both succeed, the server ignores idempotency keys
     const idempotencyKey = `vibeshield-race-${Date.now()}`;
     const idempResults = await Promise.allSettled(
       Array.from({ length: 2 }, () =>
@@ -87,7 +86,6 @@ if (existing) return JSON.parse(existing);`,
     );
     if (isSensitive && idempSuccesses.length === 2) {
       const bodies = idempSuccesses.map((r) => (r as PromiseFulfilledResult<{ status: number; body: string }>).value.body);
-      // If both return different bodies, idempotency is not enforced
       if (bodies[0] !== bodies[1] || bodies[0].length > 5) {
         findings.push({
           id: `race-no-idempotency-${findings.length}`,
@@ -133,7 +131,73 @@ const data = await prisma.$transaction(
     }
   }
 
-  // Phase 2: Signup/registration race condition — duplicate account creation
+  // --- Phase 2: Double-spend / double-submit detection for payment/credit endpoints ---
+  const paymentEndpoints = target.apiEndpoints.filter((ep) =>
+    /\/(pay|payment|charge|bill|subscribe|tip|donate|fund|topup|top-up|debit|send-money)\b/i.test(ep),
+  ).slice(0, 3);
+
+  for (const endpoint of paymentEndpoints) {
+    const paymentBody = JSON.stringify({
+      amount: 1,
+      currency: "usd",
+      idempotencyKey: `vibeshield-dblspend-${Date.now()}`,
+    });
+
+    const N = 10;
+    const results = await Promise.allSettled(
+      Array.from({ length: N }, () =>
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: paymentBody,
+        }).then(async (res) => ({
+          status: res.status,
+          body: await res.text().catch(() => ""),
+        })),
+      ),
+    );
+
+    const successes = results.filter(
+      (r) => r.status === "fulfilled" && (r.value.status === 200 || r.value.status === 201),
+    );
+
+    if (successes.length > 1) {
+      findings.push({
+        id: `race-double-spend-${findings.length}`,
+        module: "Race Conditions",
+        severity: "critical",
+        title: `Double-spend vulnerability on ${new URL(endpoint).pathname}`,
+        description: `${successes.length}/${N} concurrent payment requests succeeded with identical payloads. An attacker can submit the same payment multiple times simultaneously, potentially charging or crediting an account multiple times.`,
+        evidence: `Endpoint: ${endpoint}\nConcurrent requests: ${N}\nSuccessful: ${successes.length}\nPayload: identical for all requests`,
+        remediation:
+          "Use database-level unique constraints on transaction IDs. Implement optimistic locking with version fields. Process payments within serializable transactions. Require client-generated idempotency keys and enforce them server-side.",
+        codeSnippet: `// Prevent double-spend with atomic balance + idempotency
+const result = await prisma.$transaction(async (tx) => {
+  // Check idempotency first
+  const existing = await tx.transaction.findUnique({
+    where: { idempotencyKey },
+  });
+  if (existing) return existing; // already processed
+
+  // Atomic deduction — prevents negative balance race
+  const updated = await tx.account.updateMany({
+    where: { id: userId, balance: { gte: amount } },
+    data: { balance: { decrement: amount } },
+  });
+  if (updated.count === 0) throw new Error("Insufficient balance");
+
+  return tx.transaction.create({
+    data: { idempotencyKey, userId, amount, status: "completed" },
+  });
+}, { isolationLevel: "Serializable" });`,
+        cwe: "CWE-362",
+        owasp: "A04:2021",
+        confidence: 80,
+      });
+    }
+  }
+
+  // --- Phase 3: Signup/registration race condition — duplicate account creation ---
   const signupEndpoints = target.apiEndpoints.filter((ep) =>
     /\/(register|signup|sign-up|create-account|join)\b/i.test(ep),
   ).slice(0, 2);
@@ -173,18 +237,95 @@ const data = await prisma.$transaction(
     }
   }
 
-  // Phase 3: TOCTOU on balance/inventory endpoints
-  // Look for endpoints that might read-then-update state (balance, stock, quota)
+  // --- Phase 4: Session creation race conditions ---
+  const sessionEndpoints = target.apiEndpoints.filter((ep) =>
+    /\/(login|signin|sign-in|auth|session|token|oauth|callback)\b/i.test(ep),
+  ).slice(0, 2);
+
+  for (const endpoint of sessionEndpoints) {
+    const N = 15;
+    const results = await Promise.allSettled(
+      Array.from({ length: N }, () =>
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: "vibeshield-session-test@test.invalid",
+            password: "TestP@ss123!",
+          }),
+        }).then(async (res) => {
+          const body = await res.text().catch(() => "");
+          const setCookies = res.headers.get("set-cookie") || "";
+          return { status: res.status, body, setCookies };
+        }),
+      ),
+    );
+
+    const successes = results.filter(
+      (r) => r.status === "fulfilled" && (r.value.status === 200 || r.value.status === 201),
+    );
+
+    if (successes.length > 1) {
+      // Extract session tokens from set-cookie or body
+      const sessionTokens = successes
+        .map((r) => {
+          const val = (r as PromiseFulfilledResult<{ status: number; body: string; setCookies: string }>).value;
+          const cookieMatch = val.setCookies.match(/(?:session|token|sid|jwt)[^=]*=([^;]+)/i);
+          if (cookieMatch) return cookieMatch[1];
+          try {
+            const parsed = JSON.parse(val.body);
+            return parsed.token || parsed.accessToken || parsed.access_token || parsed.sessionId || "";
+          } catch {
+            return "";
+          }
+        })
+        .filter(Boolean);
+
+      const uniqueTokens = new Set(sessionTokens);
+
+      // Multiple different sessions for the same login = session proliferation
+      if (uniqueTokens.size > 1 && uniqueTokens.size >= successes.length * 0.5) {
+        findings.push({
+          id: `race-session-proliferation-${findings.length}`,
+          module: "Race Conditions",
+          severity: "medium",
+          title: `Session proliferation via concurrent login on ${new URL(endpoint).pathname}`,
+          description: `${uniqueTokens.size} different session tokens were created from ${successes.length} concurrent login requests. This allows an attacker to create many valid sessions simultaneously, making session revocation difficult and potentially bypassing "single active session" policies.`,
+          evidence: `Endpoint: ${endpoint}\nConcurrent logins: ${N}\nSuccessful: ${successes.length}\nUnique session tokens: ${uniqueTokens.size}`,
+          remediation:
+            "Implement session locking: before creating a new session, invalidate all existing sessions for the user within a transaction. Use a distributed lock (Redis SETNX) to serialize session creation per user.",
+          codeSnippet: `// Serialize session creation per user with Redis lock
+const lockKey = \`session-lock:\${userId}\`;
+const acquired = await redis.set(lockKey, "1", "NX", "EX", 5);
+if (!acquired) {
+  return Response.json({ error: "Login in progress" }, { status: 429 });
+}
+try {
+  // Invalidate existing sessions
+  await db.session.deleteMany({ where: { userId } });
+  // Create new session
+  const session = await db.session.create({ data: { userId, token: crypto.randomUUID() } });
+  return Response.json({ token: session.token });
+} finally {
+  await redis.del(lockKey);
+}`,
+          cwe: "CWE-362",
+          confidence: 70,
+        });
+      }
+    }
+  }
+
+  // --- Phase 5: TOCTOU on balance/inventory endpoints ---
   const balanceEndpoints = target.apiEndpoints.filter((ep) =>
     /\/(balance|wallet|credits?|stock|inventory|quota|limit|allowance)\b/i.test(ep),
   ).slice(0, 3);
 
   for (const endpoint of balanceEndpoints) {
-    // Send concurrent reads — if we get inconsistent values, there's a potential TOCTOU
     const N = 15;
     const results = await Promise.allSettled(
       Array.from({ length: N }, () =>
-        scanFetch(endpoint, { timeoutMs: 5000 }).then(async (res) => {
+        scanFetch(endpoint, { timeoutMs: 5000, noCache: true }).then(async (res) => {
           if (!res.ok) return null;
           const ct = res.headers.get("content-type") || "";
           if (!ct.includes("json")) return null;
@@ -199,7 +340,6 @@ const data = await prisma.$transaction(
 
     const unique = new Set(valid);
     if (unique.size > 1 && valid.length >= 5) {
-      // Multiple different values from concurrent reads = potential TOCTOU
       findings.push({
         id: `race-toctou-${findings.length}`,
         module: "Race Conditions",
@@ -212,6 +352,181 @@ const data = await prisma.$transaction(
         owasp: "A04:2021",
         codeSnippet: `// Atomic balance deduction — no TOCTOU\nconst result = await db.$executeRaw\`\n  UPDATE accounts\n  SET balance = balance - \${amount}\n  WHERE id = \${userId}\n  AND balance >= \${amount}\n\`;\nif (result.count === 0) {\n  return Response.json({ error: "Insufficient balance" }, { status: 400 });\n}`,
       });
+    }
+  }
+
+  // --- Phase 6: TOCTOU on state-changing endpoints (read-then-write pattern) ---
+  const stateChangeEndpoints = target.apiEndpoints.filter((ep) =>
+    /\/(settings|profile|config|preferences|update|edit|modify|toggle|enable|disable)\b/i.test(ep),
+  ).slice(0, 3);
+
+  for (const endpoint of stateChangeEndpoints) {
+    // Interleave reads and writes to detect TOCTOU
+    const readPromise = scanFetch(endpoint, { timeoutMs: 5000, noCache: true })
+      .then(async (res) => ({ status: res.status, body: await res.text().catch(() => "") }))
+      .catch(() => ({ status: 0, body: "" }));
+
+    const writePromises = Array.from({ length: 5 }, () =>
+      scanFetch(endpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _vibeshield_toctou_test: true }),
+        timeoutMs: 5000,
+      })
+        .then(async (res) => ({ status: res.status, body: await res.text().catch(() => "") }))
+        .catch(() => ({ status: 0, body: "" })),
+    );
+
+    const [readResult, ...writeResults] = await Promise.allSettled([
+      readPromise,
+      ...writePromises,
+    ]);
+
+    if (readResult.status === "fulfilled") {
+      const read = readResult.value;
+      const writeSuccesses = writeResults.filter(
+        (r) => r.status === "fulfilled" && (r.value.status === 200 || r.value.status === 204),
+      );
+
+      // If multiple concurrent writes succeed, there's no mutex protecting the resource
+      if (writeSuccesses.length > 2 && read.status === 200) {
+        findings.push({
+          id: `race-toctou-write-${findings.length}`,
+          module: "Race Conditions",
+          severity: "medium",
+          title: `No write serialization on ${new URL(endpoint).pathname}`,
+          description: `${writeSuccesses.length}/5 concurrent PUT requests succeeded without conflict. State-changing endpoints without optimistic concurrency control or locking are vulnerable to TOCTOU — a user can overwrite another user's changes if requests overlap.`,
+          evidence: `Endpoint: ${endpoint}\nConcurrent PUTs: 5\nSuccessful: ${writeSuccesses.length}\nGET status: ${read.status}`,
+          remediation:
+            "Implement optimistic concurrency control using ETags or version numbers. Reject updates where the version has changed since the client's last read.",
+          codeSnippet: `// Optimistic concurrency with version field
+export async function PUT(req: Request) {
+  const { id, version, ...data } = await req.json();
+  const updated = await prisma.resource.updateMany({
+    where: { id, version }, // only update if version matches
+    data: { ...data, version: { increment: 1 } },
+  });
+  if (updated.count === 0) {
+    return Response.json(
+      { error: "Conflict — resource was modified by another request" },
+      { status: 409 }
+    );
+  }
+  return Response.json({ success: true });
+}`,
+          cwe: "CWE-367",
+          confidence: 60,
+        });
+      }
+    }
+  }
+
+  // --- Phase 7: File upload race conditions ---
+  const uploadEndpoints = target.apiEndpoints.filter((ep) =>
+    /\/(upload|attach|import|file|media|avatar|photo|image|document)\b/i.test(ep),
+  ).slice(0, 2);
+
+  for (const endpoint of uploadEndpoints) {
+    // Send concurrent uploads with different filenames to detect overwrite races
+    const boundary = "----VibeshieldBoundary" + Date.now();
+    const makeUploadBody = (filename: string) =>
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: text/plain\r\n\r\nvibeshield-race-test-${Date.now()}\r\n--${boundary}--\r\n`;
+
+    const N = 8;
+    const results = await Promise.allSettled(
+      Array.from({ length: N }, (_, i) =>
+        scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+          body: makeUploadBody(`vibeshield-race-test-${i}.txt`),
+          timeoutMs: 10000,
+        }).then(async (res) => ({
+          status: res.status,
+          body: await res.text().catch(() => ""),
+        })),
+      ),
+    );
+
+    const uploadSuccesses = results.filter(
+      (r) => r.status === "fulfilled" && (r.value.status === 200 || r.value.status === 201),
+    );
+
+    if (uploadSuccesses.length > 1) {
+      // Check if responses indicate different file paths/URLs — same path = overwrite race
+      const uploadBodies = uploadSuccesses.map(
+        (r) => (r as PromiseFulfilledResult<{ status: number; body: string }>).value.body,
+      );
+
+      // Try to extract URLs from responses
+      const urlPattern = /https?:\/\/[^\s"']+/g;
+      const extractedUrls = uploadBodies.flatMap((b) => b.match(urlPattern) || []);
+      const uniqueUrls = new Set(extractedUrls);
+
+      // If multiple uploads succeed but produce the same URL = overwrite race
+      if (extractedUrls.length > 1 && uniqueUrls.size < extractedUrls.length * 0.5) {
+        findings.push({
+          id: `race-upload-overwrite-${findings.length}`,
+          module: "Race Conditions",
+          severity: "high",
+          title: `File upload overwrite race on ${new URL(endpoint).pathname}`,
+          description: `${uploadSuccesses.length} concurrent file uploads succeeded but produced overlapping file URLs. Concurrent uploads may overwrite each other, leading to data loss or serving the wrong file to users.`,
+          evidence: `Endpoint: ${endpoint}\nConcurrent uploads: ${N}\nSuccessful: ${uploadSuccesses.length}\nUnique URLs: ${uniqueUrls.size}/${extractedUrls.length}`,
+          remediation:
+            "Use unique file names (UUID or content hash) for uploads. Never allow user-controlled filenames to determine storage paths. Process uploads atomically with temp files renamed after completion.",
+          codeSnippet: `// Safe file upload with unique names
+import { randomUUID } from "crypto";
+import { extname } from "path";
+
+export async function POST(req: Request) {
+  const form = await req.formData();
+  const file = form.get("file") as File;
+  const ext = extname(file.name);
+  // UUID filename prevents overwrite races
+  const safeName = \`\${randomUUID()}\${ext}\`;
+  // Write to temp, then atomic rename
+  const tmpPath = \`/tmp/upload-\${safeName}\`;
+  const finalPath = \`/uploads/\${safeName}\`;
+  await writeFile(tmpPath, Buffer.from(await file.arrayBuffer()));
+  await rename(tmpPath, finalPath); // atomic on same filesystem
+  return Response.json({ url: \`/uploads/\${safeName}\` });
+}`,
+          cwe: "CWE-362",
+          confidence: 65,
+        });
+      }
+
+      // If all uploads succeed and there's no dedup = no upload rate limiting
+      if (uploadSuccesses.length >= N * 0.8) {
+        findings.push({
+          id: `race-upload-flood-${findings.length}`,
+          module: "Race Conditions",
+          severity: "medium",
+          title: `Upload endpoint accepts unlimited concurrent uploads at ${new URL(endpoint).pathname}`,
+          description: `${uploadSuccesses.length}/${N} concurrent upload requests succeeded. Without concurrency limits on uploads, an attacker can exhaust disk space, memory, or processing capacity by flooding the upload endpoint.`,
+          evidence: `Endpoint: ${endpoint}\nConcurrent uploads: ${N}\nSuccessful: ${uploadSuccesses.length}`,
+          remediation:
+            "Add per-user upload rate limiting, enforce maximum file sizes, limit concurrent uploads per session, and use a queue for processing uploads.",
+          codeSnippet: `// Rate limit uploads per user
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
+const uploadLimiter = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(5, "60 s"), // 5 uploads per minute
+});
+
+export async function POST(req: Request) {
+  const userId = getUserId(req);
+  const { success } = await uploadLimiter.limit(userId);
+  if (!success) {
+    return Response.json({ error: "Upload rate limit exceeded" }, { status: 429 });
+  }
+  // Process upload...
+}`,
+          cwe: "CWE-400",
+          confidence: 70,
+        });
+      }
     }
   }
 

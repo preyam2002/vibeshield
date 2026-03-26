@@ -8,6 +8,13 @@ export function middleware(req: NextRequest) {
   const res = NextResponse.next();
   const headers = res.headers;
 
+  // Request ID for observability
+  const requestId = req.headers.get("x-request-id") || crypto.randomUUID();
+  headers.set("X-Request-Id", requestId);
+
+  // Server timing (helps debug slow requests)
+  headers.set("Server-Timing", `edge;desc="middleware"`);
+
   // Core security headers
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
