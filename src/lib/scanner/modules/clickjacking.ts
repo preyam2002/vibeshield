@@ -238,6 +238,21 @@ export const clickjackingModule: ScanModule = async (target) => {
         cwe: "CWE-1021",
       });
     }
+
+    // frame-ancestors 'self' vs X-Frame-Options SAMEORIGIN precedence analysis
+    if (!xfo && origins.length > 3) {
+      findings.push({
+        id: "clickjacking-csp-too-many-ancestors",
+        module: "Clickjacking",
+        severity: "low",
+        title: `CSP frame-ancestors allows ${origins.length} origins`,
+        description: `The frame-ancestors directive lists ${origins.length} allowed origins. A large allowlist increases the attack surface — if any of those origins is compromised, your site can be clickjacked. No X-Frame-Options fallback is set for legacy browsers.`,
+        evidence: `Content-Security-Policy: frame-ancestors ${ancestorsValue}`,
+        remediation: "Minimize the number of allowed origins in frame-ancestors. Audit each origin periodically and add X-Frame-Options: SAMEORIGIN as a fallback for legacy browsers.",
+        cwe: "CWE-1021",
+        confidence: 60,
+      });
+    }
   }
 
   // --- Phase: Double-framing bypass detection ---
@@ -253,6 +268,130 @@ export const clickjackingModule: ScanModule = async (target) => {
       cwe: "CWE-1021",
       codeSnippet: `// Add CSP frame-ancestors to complement X-Frame-Options\n{ key: "Content-Security-Policy", value: "frame-ancestors 'self'" },\n{ key: "X-Frame-Options", value: "SAMEORIGIN" }`,
     });
+  }
+
+  // --- Phase: Drag-and-drop clickjacking detection ---
+  // Look for draggable elements in HTML that could be exploited without frame protection
+  if (mainPageRes) {
+    const htmlBody = await mainPageRes.clone().text().catch(() => "");
+    const draggableElements = htmlBody.match(/<[^>]*draggable\s*=\s*["']true["'][^>]*>/gi) || [];
+    const contentEditableElements = htmlBody.match(/<[^>]*contenteditable\s*=\s*["']true["'][^>]*>/gi) || [];
+    const dragTargets = [...draggableElements, ...contentEditableElements];
+
+    if (dragTargets.length > 0 && !xfo && !hasFrameAncestors) {
+      findings.push({
+        id: "clickjacking-drag-drop",
+        module: "Clickjacking",
+        severity: "medium",
+        title: `Drag-and-drop clickjacking: ${dragTargets.length} draggable/contenteditable element(s) without frame protection`,
+        description: "The page contains draggable or contenteditable elements and lacks framing protection. An attacker can overlay an invisible iframe and trick users into dragging sensitive content (tokens, text, files) from your page to the attacker's page, or drag attacker-controlled content into your page's editable areas. This attack does not require clicking — only dragging.",
+        evidence: `Draggable elements: ${draggableElements.length}\nContenteditable elements: ${contentEditableElements.length}\nExample: ${dragTargets[0]?.substring(0, 120)}`,
+        remediation: "Add CSP frame-ancestors: 'none' to prevent framing. If draggable content is necessary, ensure it cannot leak sensitive data and consider adding event handlers to validate drag operations.",
+        cwe: "CWE-1021",
+        confidence: 65,
+        codeSnippet: `// Prevent drag-based data exfiltration\nelement.addEventListener("dragstart", (e) => {\n  // Clear any auto-populated drag data\n  e.dataTransfer?.clearData();\n});\n\n// Better: prevent framing entirely\n{ key: "Content-Security-Policy", value: "frame-ancestors 'none'" }`,
+      });
+    }
+  }
+
+  // --- Phase: Likejacking detection (social media buttons without frame protection) ---
+  const htmlForSocial = mainPageRes ? await mainPageRes.clone().text().catch(() => "") : "";
+  const socialPatterns = [
+    { name: "Facebook Like", pattern: /(?:facebook\.com\/plugins\/like|fb-like|class=["'][^"']*facebook-like)/i },
+    { name: "Twitter/X Share", pattern: /(?:platform\.twitter\.com\/widgets|twitter-share-button|class=["'][^"']*tweet-button)/i },
+    { name: "LinkedIn Share", pattern: /(?:platform\.linkedin\.com|linkedin-share|class=["'][^"']*linkedin-button)/i },
+    { name: "Social iframe", pattern: /<iframe[^>]*(?:facebook|twitter|linkedin|social)[^>]*>/i },
+  ];
+  const detectedSocial = socialPatterns.filter((sp) => sp.pattern.test(htmlForSocial));
+  if (detectedSocial.length > 0 && !xfo && !hasFrameAncestors) {
+    findings.push({
+      id: "clickjacking-likejacking",
+      module: "Clickjacking",
+      severity: "medium",
+      title: `Likejacking risk: ${detectedSocial.map((s) => s.name).join(", ")} button(s) without frame protection`,
+      description: `The page includes social media buttons (${detectedSocial.map((s) => s.name).join(", ")}) and lacks clickjacking protection. An attacker can overlay your page in a transparent iframe positioned so that social buttons align with decoy UI. Users think they're clicking a harmless button but actually Like/Share/Follow attacker-controlled content on social media.`,
+      evidence: `Social widgets detected: ${detectedSocial.map((s) => s.name).join(", ")}\nFrame protection: none`,
+      remediation: "Add CSP frame-ancestors: 'none' to prevent your page from being framed. Social media SDKs protect their own iframes but cannot protect your page from being iframed by attackers.",
+      cwe: "CWE-1021",
+      confidence: 70,
+    });
+  }
+
+  // --- Phase: Cursor hijacking via CSS ---
+  const allCss = Array.from(target.jsContents.values()).join("\n") + "\n" + htmlForSocial;
+  const cursorHijackPatterns = [
+    /cursor\s*:\s*none/i,
+    /cursor\s*:\s*url\s*\([^)]+\)/i,
+    /pointer-events\s*:\s*none/i,
+  ];
+  const detectedCursorHijacks = cursorHijackPatterns.filter((p) => p.test(allCss));
+  // Only flag cursor: none or cursor: url() combined with lack of frame protection
+  if (detectedCursorHijacks.length > 0 && !xfo && !hasFrameAncestors) {
+    const hasCursorNone = /cursor\s*:\s*none/i.test(allCss);
+    const hasCursorUrl = /cursor\s*:\s*url\s*\([^)]+\)/i.test(allCss);
+    const hasPointerNone = /pointer-events\s*:\s*none/i.test(allCss);
+    const techniques: string[] = [];
+    if (hasCursorNone) techniques.push("cursor: none (hidden cursor)");
+    if (hasCursorUrl) techniques.push("cursor: url() (custom cursor image)");
+    if (hasPointerNone) techniques.push("pointer-events: none (click-through layer)");
+
+    findings.push({
+      id: "clickjacking-cursor-hijacking",
+      module: "Clickjacking",
+      severity: "low",
+      title: "Potential cursor hijacking via CSS without frame protection",
+      description: `The page uses CSS techniques that can facilitate cursor hijacking: ${techniques.join("; ")}. Without framing protection, an attacker can iframe your site and use these CSS properties to decouple the visible cursor from the actual click position. Users see the cursor in one place but click somewhere else — on hidden buttons, consent dialogs, or sensitive actions.`,
+      evidence: `CSS techniques found: ${techniques.join(", ")}\nFrame protection: none`,
+      remediation: "Add CSP frame-ancestors: 'none' to prevent framing. Avoid cursor: none on interactive elements. If custom cursors are needed, ensure they accurately represent the click target position.",
+      cwe: "CWE-1021",
+      confidence: 50,
+    });
+  }
+
+  // --- Phase: Frame-busting script bypass detection ---
+  if (hasJsFrameBusting) {
+    // Check for sandbox-bypassable frame-busting
+    const hasSandboxBypass = /sandbox\s*=\s*["'][^"']*allow-scripts[^"']*["']/i.test(htmlForSocial);
+    // Check for onbeforeunload-based prevention that attackers use to block frame-busting
+    const hasOnBeforeUnload = /onbeforeunload/i.test(allJs);
+    // Check for XSS filter abuse pattern (legacy IE)
+    const hasLocationAssign = /(?:window\.)?top\.location\s*(?:\.replace|\.assign|\.href\s*=)/i.test(allJs);
+    const noHeaderProtection = !xfo && !hasFrameAncestors;
+
+    // Detect specific bypass vectors
+    const bypassVectors: string[] = [];
+    // sandbox="allow-scripts" blocks top-navigation frame-busting
+    if (/top\.location/i.test(allJs)) {
+      bypassVectors.push("top.location assignment (blocked by sandbox='allow-scripts' without allow-top-navigation)");
+    }
+    // onbeforeunload can suppress navigation
+    if (hasOnBeforeUnload) {
+      bypassVectors.push("onbeforeunload handler detected (attacker can use this to suppress frame-busting navigation)");
+    }
+    // Double-framing defeats parent/self checks
+    if (/(?:window\.)?parent\s*!==?\s*(?:window\.)?self/i.test(allJs) && !/(?:window\.)?top\s*!==?\s*(?:window\.)?self/i.test(allJs)) {
+      bypassVectors.push("parent !== self check (bypassable via double-framing: only checks immediate parent, not top)");
+    }
+    // try/catch around location change
+    if (/try\s*\{[^}]*top\.location[^}]*\}\s*catch/i.test(allJs)) {
+      bypassVectors.push("try/catch around top.location (silently fails in sandboxed iframes)");
+    }
+
+    if (bypassVectors.length > 0 && noHeaderProtection) {
+      findings.push({
+        id: "clickjacking-frame-bust-bypass",
+        module: "Clickjacking",
+        severity: "medium",
+        title: `Frame-busting script has ${bypassVectors.length} known bypass vector(s)`,
+        description: `The JavaScript frame-busting code uses techniques with well-known bypasses:\n${bypassVectors.map((v, i) => `${i + 1}. ${v}`).join("\n")}\n\nAttackers can use iframe sandbox attributes, double-framing, or event handlers to neutralize these protections. No HTTP header protection (XFO/CSP) is set as a fallback.`,
+        evidence: `Bypass vectors:\n${bypassVectors.join("\n")}\nHeader protection: none`,
+        remediation: "Replace JS frame-busting with HTTP headers. Use CSP frame-ancestors: 'none' (or 'self') which cannot be bypassed by iframe attributes or JavaScript tricks.",
+        cwe: "CWE-1021",
+        owasp: "A05:2021",
+        confidence: 75,
+        codeSnippet: `// JS frame-busting is bypassable via:\n// <iframe sandbox="allow-scripts" src="your-site"> — blocks top navigation\n// <iframe onbeforeunload="return false"> — suppresses navigation\n// Double-framing: attacker -> middle -> your-site\n\n// Use headers instead (unbypassable):\n{ key: "Content-Security-Policy", value: "frame-ancestors 'none'" }`,
+      });
+    }
   }
 
   // --- Phase: Form action hijacking via base tag injection ---

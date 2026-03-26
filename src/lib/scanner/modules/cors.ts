@@ -260,8 +260,7 @@ export const corsModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 6: Null origin acceptance
-  // Some servers accept Origin: null (sent by sandboxed iframes, data: URIs, file:// pages)
+  // Phase 6: Null origin bypass testing (sandboxed iframes, data: URIs, file:// pages)
   const nullOriginResults = await Promise.allSettled(
     endpoints.slice(0, 3).map(async (endpoint) => {
       const res = await scanFetch(endpoint, { headers: { Origin: "null" } });
@@ -291,27 +290,254 @@ export const corsModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 7: Subdomain wildcard CORS
-  // Check if subdomains of the target are reflected (*.target.com)
-  const subdomainOrigin = `https://evil.${targetHost}`;
-  try {
-    const res = await scanFetch(endpoints[0] || target.url, { headers: { Origin: subdomainOrigin } });
-    const acao = res.headers.get("access-control-allow-origin");
-    if (acao === subdomainOrigin) {
+  // Phase 7: Subdomain wildcard CORS bypass
+  // Test multiple subdomain patterns to detect overly permissive regex/endsWith checks
+  const subdomainOrigins = [
+    `https://evil.${targetHost}`,                    // arbitrary subdomain
+    `https://test.staging.${targetHost}`,            // nested subdomain
+    `https://${targetHost}.attacker.com`,            // target as subdomain of attacker
+  ];
+  const subdomainResults = await Promise.allSettled(
+    subdomainOrigins.map(async (origin) => {
+      const res = await scanFetch(endpoints[0] || target.url, { headers: { Origin: origin } });
+      return {
+        origin,
+        acao: res.headers.get("access-control-allow-origin"),
+        acac: res.headers.get("access-control-allow-credentials"),
+      };
+    }),
+  );
+  let subdomainFlagged = false;
+  for (const r of subdomainResults) {
+    if (r.status !== "fulfilled" || subdomainFlagged) continue;
+    const { origin, acao, acac } = r.value;
+    if (acao === origin) {
+      subdomainFlagged = true;
+      const withCreds = acac === "true";
+      const isAttackerSubdomain = origin.includes(`${targetHost}.`);
       findings.push({
         id: `cors-subdomain-reflect-${findings.length}`,
         module: "CORS",
-        severity: "medium",
-        title: `CORS reflects arbitrary subdomain origins (*.${targetHost})`,
-        description: `The server accepts any subdomain as a valid origin (evil.${targetHost}). If an attacker can control or compromise any subdomain (via XSS, subdomain takeover, or dangling DNS), they can bypass CORS restrictions and steal data.`,
-        evidence: `Origin: ${subdomainOrigin}\nACAO: ${acao}`,
-        remediation: "Don't blindly trust all subdomains. Maintain an explicit allowlist of trusted origins. If you must allow subdomains, ensure all subdomains are secure and under your control.",
+        severity: withCreds ? "high" : "medium",
+        title: isAttackerSubdomain
+          ? `CORS trusts target hostname as subdomain prefix (${origin})`
+          : `CORS reflects arbitrary subdomain origins (*.${targetHost})`,
+        description: isAttackerSubdomain
+          ? `The server accepts "${origin}" as a valid origin, suggesting it uses a naive contains/endsWith check. An attacker can register this domain to bypass CORS.`
+          : `The server accepts any subdomain as a valid origin (${origin}). If an attacker can control or compromise any subdomain (via XSS, subdomain takeover, or dangling DNS), they can bypass CORS restrictions and steal data.`,
+        evidence: `Origin: ${origin}\nACAO: ${acao}${withCreds ? "\nACAC: true" : ""}`,
+        remediation: "Don't blindly trust all subdomains. Maintain an explicit allowlist of trusted origins. Validate using exact string matching, not endsWith/includes.",
         cwe: "CWE-942",
         owasp: "A05:2021",
-        confidence: 85,
+        confidence: isAttackerSubdomain ? 95 : 85,
       });
     }
-  } catch { /* skip */ }
+  }
+
+  // Phase 8: Pre-flight request manipulation — custom headers, non-standard methods
+  const preflightManipTests = await Promise.allSettled(
+    endpoints.slice(0, 3).map(async (endpoint) => {
+      const [customHeaderRes, traceRes] = await Promise.all([
+        scanFetch(endpoint, {
+          method: "OPTIONS",
+          headers: {
+            Origin: "https://evil.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "X-Custom-Header, X-Debug, X-Forwarded-For, X-Original-URL",
+          },
+        }),
+        scanFetch(endpoint, {
+          method: "OPTIONS",
+          headers: {
+            Origin: "https://evil.com",
+            "Access-Control-Request-Method": "TRACE",
+          },
+        }),
+      ]);
+      return {
+        endpoint,
+        customAllowHeaders: customHeaderRes.headers.get("access-control-allow-headers") || "",
+        traceAllowMethods: traceRes.headers.get("access-control-allow-methods") || "",
+      };
+    }),
+  );
+  let customHeaderFlagged = false;
+  let traceFlagged = false;
+  for (const r of preflightManipTests) {
+    if (r.status !== "fulfilled") continue;
+    const { endpoint, customAllowHeaders, traceAllowMethods } = r.value;
+    // Check if dangerous internal headers are allowed cross-origin
+    const dangerousHeaders = ["x-forwarded-for", "x-original-url", "x-debug"];
+    const allowedDangerous = dangerousHeaders.filter((h) =>
+      customAllowHeaders.toLowerCase().includes(h) || customAllowHeaders === "*",
+    );
+    if (allowedDangerous.length > 0 && !customHeaderFlagged) {
+      customHeaderFlagged = true;
+      findings.push({
+        id: `cors-dangerous-request-headers-${findings.length}`,
+        module: "CORS",
+        severity: "medium",
+        title: `CORS allows dangerous request headers on ${new URL(endpoint).pathname}`,
+        description: `Preflight response permits cross-origin requests with headers: ${allowedDangerous.join(", ")}. These headers can be used for IP spoofing (X-Forwarded-For), URL rewriting (X-Original-URL), or enabling debug modes.`,
+        evidence: `Access-Control-Request-Headers: X-Custom-Header, X-Debug, X-Forwarded-For, X-Original-URL\nAccess-Control-Allow-Headers: ${customAllowHeaders}`,
+        remediation: "Restrict Access-Control-Allow-Headers to only the headers your API actually uses. Never allow internal proxy headers like X-Forwarded-For cross-origin.",
+        cwe: "CWE-942",
+        owasp: "A05:2021",
+        codeSnippet: `// Only allow specific safe headers\nres.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");`,
+      });
+    }
+    // Check if TRACE method is allowed (enables XST attacks)
+    if (/TRACE/i.test(traceAllowMethods) && !traceFlagged) {
+      traceFlagged = true;
+      findings.push({
+        id: `cors-trace-method-${findings.length}`,
+        module: "CORS",
+        severity: "high",
+        title: `CORS allows TRACE method on ${new URL(endpoint).pathname}`,
+        description: "The server allows the TRACE HTTP method via CORS preflight. TRACE reflects the full request back in the response body, including cookies and auth headers. Combined with CORS, this enables Cross-Site Tracing (XST) attacks to steal credentials.",
+        evidence: `Access-Control-Allow-Methods: ${traceAllowMethods}`,
+        remediation: "Never allow TRACE in CORS preflight responses. Disable the TRACE method entirely on your server.",
+        cwe: "CWE-693",
+        owasp: "A05:2021",
+        codeSnippet: `// Disable TRACE and only allow needed methods\nres.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");`,
+      });
+    }
+  }
+
+  // Phase 9: CORS credential leak — wildcard origin with credentials
+  // This is a spec violation (browsers block it), but misconfigured servers may still send it
+  if (wildcardFound) {
+    const credLeakResults = await Promise.allSettled(
+      endpoints.slice(0, 3).map(async (endpoint) => {
+        const res = await scanFetch(endpoint, {
+          headers: { Origin: "https://evil.com", Cookie: "test=1" },
+        });
+        return {
+          endpoint,
+          acao: res.headers.get("access-control-allow-origin"),
+          acac: res.headers.get("access-control-allow-credentials"),
+        };
+      }),
+    );
+    let credLeakFlagged = false;
+    for (const r of credLeakResults) {
+      if (r.status !== "fulfilled" || credLeakFlagged) continue;
+      const { endpoint, acao, acac } = r.value;
+      if (acao === "*" && acac === "true") {
+        credLeakFlagged = true;
+        findings.push({
+          id: `cors-wildcard-credentials-${findings.length}`,
+          module: "CORS",
+          severity: "critical",
+          title: `CORS wildcard with credentials on ${new URL(endpoint).pathname}`,
+          description: "The server sends Access-Control-Allow-Origin: * alongside Access-Control-Allow-Credentials: true. While modern browsers reject this combination per spec, older browsers or non-browser HTTP clients can exploit it. This indicates a fundamental CORS misconfiguration that should be fixed regardless.",
+          evidence: `Access-Control-Allow-Origin: *\nAccess-Control-Allow-Credentials: true`,
+          remediation: "Never combine wildcard origin with credentials. Use a specific origin allowlist when credentials are needed.",
+          cwe: "CWE-942",
+          owasp: "A05:2021",
+          confidence: 100,
+          codeSnippet: `// Use specific origin with credentials\nconst ALLOWED = new Set(["https://yourdomain.com"]);\nconst origin = req.headers.get("origin") || "";\nif (ALLOWED.has(origin)) {\n  res.headers.set("Access-Control-Allow-Origin", origin);\n  res.headers.set("Access-Control-Allow-Credentials", "true");\n  res.headers.set("Vary", "Origin");\n}`,
+        });
+      }
+    }
+  }
+
+  // Phase 10: Internal network CORS probing
+  // Test if the server reflects origins pointing to internal/private networks
+  const internalOrigins = [
+    "https://localhost",
+    "https://127.0.0.1",
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "https://10.0.0.1",
+    "https://192.168.1.1",
+    "https://172.16.0.1",
+    "https://intranet.local",
+    "https://admin.internal",
+  ];
+  const internalResults = await Promise.allSettled(
+    internalOrigins.map(async (origin) => {
+      const res = await scanFetch(endpoints[0] || target.url, {
+        headers: { Origin: origin },
+        timeoutMs: 5000,
+      });
+      return {
+        origin,
+        acao: res.headers.get("access-control-allow-origin"),
+        acac: res.headers.get("access-control-allow-credentials"),
+      };
+    }),
+  );
+  let internalFlagged = false;
+  const reflectedInternalOrigins: string[] = [];
+  for (const r of internalResults) {
+    if (r.status !== "fulfilled") continue;
+    const { origin, acao, acac } = r.value;
+    if (acao === origin) {
+      reflectedInternalOrigins.push(`${origin}${acac === "true" ? " (+credentials)" : ""}`);
+    }
+  }
+  if (reflectedInternalOrigins.length > 0 && !internalFlagged) {
+    internalFlagged = true;
+    const hasCreds = reflectedInternalOrigins.some((o) => o.includes("+credentials"));
+    findings.push({
+      id: `cors-internal-network-${findings.length}`,
+      module: "CORS",
+      severity: hasCreds ? "high" : "medium",
+      title: `CORS allows ${reflectedInternalOrigins.length} internal/private network origin${reflectedInternalOrigins.length > 1 ? "s" : ""}`,
+      description: `The server reflects internal network origins in Access-Control-Allow-Origin. If this is a production server, it should not trust localhost, private IPs, or .local/.internal domains. An attacker on the local network or with SSRF access could exploit this to read responses.`,
+      evidence: `Reflected internal origins:\n${reflectedInternalOrigins.join("\n")}`,
+      remediation: "Remove localhost, private IP ranges (10.x, 172.16.x, 192.168.x), and internal domains from your CORS allowlist in production.",
+      cwe: "CWE-942",
+      owasp: "A05:2021",
+      confidence: 80,
+      codeSnippet: `// Only allow production origins\nconst ALLOWED_ORIGINS = [\n  "https://yourdomain.com",\n  "https://app.yourdomain.com",\n];\n// Never include localhost or internal IPs in production`,
+    });
+  }
+
+  // Phase 11: CORS cache poisoning via Vary header absence
+  // More thorough check: test multiple origins and see if Vary is consistently missing
+  const cachePoisonResults = await Promise.allSettled(
+    endpoints.slice(0, 3).map(async (endpoint) => {
+      const [res1, res2] = await Promise.all([
+        scanFetch(endpoint, { headers: { Origin: `https://${targetHost}` } }),
+        scanFetch(endpoint, { headers: { Origin: "https://other-domain.com" } }),
+      ]);
+      return {
+        endpoint,
+        acao1: res1.headers.get("access-control-allow-origin"),
+        acao2: res2.headers.get("access-control-allow-origin"),
+        vary1: res1.headers.get("vary") || "",
+        vary2: res2.headers.get("vary") || "",
+        cacheControl: res1.headers.get("cache-control") || "",
+      };
+    }),
+  );
+  let cachePoisonFlagged = false;
+  for (const r of cachePoisonResults) {
+    if (r.status !== "fulfilled" || cachePoisonFlagged) continue;
+    const { endpoint, acao1, acao2, vary1, cacheControl } = r.value;
+    // Only flag if ACAO is dynamic (different for different origins) AND cacheable AND no Vary: Origin
+    const isDynamic = acao1 && acao2 && acao1 !== acao2;
+    const isCacheable = !cacheControl.includes("no-store") && !cacheControl.includes("private");
+    const missingVary = !/\borigin\b/i.test(vary1);
+    if (isDynamic && isCacheable && missingVary) {
+      cachePoisonFlagged = true;
+      findings.push({
+        id: `cors-cache-poisoning-${findings.length}`,
+        module: "CORS",
+        severity: "medium",
+        title: `CORS cache poisoning risk on ${new URL(endpoint).pathname}`,
+        description: "The server returns different Access-Control-Allow-Origin values for different Origin requests, but does not include Vary: Origin and the response is cacheable. A CDN or proxy cache could serve a CORS response intended for one origin to a different origin, enabling cross-origin data theft.",
+        evidence: `ACAO varies by Origin but Vary: Origin is missing\nCache-Control: ${cacheControl || "(not set)"}\nVary: ${vary1 || "(not set)"}`,
+        remediation: "Add Vary: Origin to all responses with dynamic ACAO headers. Alternatively, set Cache-Control: private or no-store.",
+        cwe: "CWE-525",
+        owasp: "A05:2021",
+        confidence: 85,
+        codeSnippet: `// Prevent CORS cache poisoning\nres.headers.set("Vary", "Origin");\n// Or make response non-cacheable:\nres.headers.set("Cache-Control", "private, no-store");`,
+      });
+    }
+  }
 
   return findings;
 };

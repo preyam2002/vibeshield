@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getScan, findPreviousScan, getPercentile, cancelScan, getScanHistory } from "@/lib/scanner/store";
+import { dbAvailable, dbGetScan } from "@/lib/db";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const scan = getScan(id);
+  const scan = getScan(id) ?? (dbAvailable ? dbGetScan(id) : undefined);
 
   if (!scan) {
     return NextResponse.json({ error: "Scan not found" }, { status: 404 });

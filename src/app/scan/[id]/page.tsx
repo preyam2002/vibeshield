@@ -16,6 +16,7 @@ interface Finding {
   codeSnippet?: string;
   endpoint?: string;
   confidence?: number;
+  cvss?: { score: number; vector: string; rating: string };
 }
 
 interface ModuleStatus {
@@ -89,10 +90,20 @@ const GRADE_CONFIG: Record<string, { color: string; bg: string; border: string; 
   "-": { color: "text-zinc-600", bg: "bg-zinc-500/10", border: "border-zinc-500/30", desc: "Scanning" },
 };
 
-const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: boolean; onToggle: () => void }) => {
+const CVSS_COLORS: Record<string, string> = {
+  Critical: "bg-red-500/20 text-red-400 border-red-500/30",
+  High: "bg-orange-500/20 text-orange-400 border-orange-500/30",
+  Medium: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+  Low: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  None: "bg-zinc-800 text-zinc-500 border-zinc-700/30",
+};
+
+const FindingCard = ({ finding, isOpen, onToggle, suppressed, onSuppress }: { finding: Finding; isOpen: boolean; onToggle: () => void; suppressed?: { reason?: string; suppressedAt?: string }; onSuppress?: (key: string) => void }) => {
   const sev = SEVERITY_CONFIG[finding.severity];
+  const isSuppressed = !!suppressed;
+  const cvssColor = finding.cvss ? (CVSS_COLORS[finding.cvss.rating] || CVSS_COLORS.None) : "";
   return (
-    <div id={`finding-${finding.id}`} className={`border ${sev.border} rounded-lg overflow-hidden bg-zinc-950/50`} role="region" aria-label={`${finding.severity} finding: ${finding.title}`}>
+    <div id={`finding-${finding.id}`} className={`border ${isSuppressed ? "border-zinc-800/30" : sev.border} rounded-lg overflow-hidden ${isSuppressed ? "bg-zinc-950/30 opacity-50" : "bg-zinc-950/50"}`} role="region" aria-label={`${finding.severity} finding: ${finding.title}`}>
       <button
         onClick={onToggle}
         aria-expanded={isOpen}
@@ -102,7 +113,15 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
         <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${sev.bg} ${sev.color} shrink-0`}>
           {sev.label}
         </span>
-        <span className="flex-1 text-sm font-medium text-zinc-200 min-w-0">{finding.title}</span>
+        {finding.cvss && (
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${cvssColor}`} title={`CVSS ${finding.cvss.score} (${finding.cvss.rating})\n${finding.cvss.vector}`}>
+            {finding.cvss.score.toFixed(1)}
+          </span>
+        )}
+        <span className={`flex-1 text-sm font-medium min-w-0 ${isSuppressed ? "text-zinc-500 line-through" : "text-zinc-200"}`}>{finding.title}</span>
+        {isSuppressed && (
+          <span className="text-[9px] bg-zinc-800 text-zinc-500 border border-zinc-700/30 rounded px-1.5 py-0.5 shrink-0">Suppressed</span>
+        )}
         <span className="text-[10px] text-zinc-600 shrink-0 hidden sm:block">{finding.module}</span>
         <svg
           className={`w-4 h-4 text-zinc-600 transition-transform shrink-0 ${isOpen ? "rotate-180" : ""}`}
@@ -196,6 +215,15 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
             <button
               onClick={(e) => {
                 e.stopPropagation();
+                onSuppress?.(`${finding.module}::${finding.title}`);
+              }}
+              className={`text-[10px] border rounded px-2 py-0.5 transition-colors ${isSuppressed ? "bg-zinc-800 border-zinc-700 text-zinc-500" : "bg-zinc-800/50 border-zinc-700/30 hover:border-orange-500/40 text-zinc-500 hover:text-orange-400"}`}
+            >
+              {isSuppressed ? "Suppressed" : "Suppress"}
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
                 const prompt = `Fix this security vulnerability in my app:\n\n**${finding.title}**\n\nSeverity: ${finding.severity.toUpperCase()}\n\n${finding.description}\n\n${finding.evidence ? `Evidence:\n${finding.evidence}\n\n` : ""}Recommended fix:\n${finding.remediation}${finding.codeSnippet ? `\n\nExample code fix:\n\`\`\`\n${finding.codeSnippet}\n\`\`\`` : ""}`;
                 navigator.clipboard.writeText(prompt);
                 const btn = e.currentTarget;
@@ -207,6 +235,23 @@ const FindingCard = ({ finding, isOpen, onToggle }: { finding: Finding; isOpen: 
               Copy AI fix prompt
             </button>
           </div>
+          {finding.cvss && (
+            <details className="group/cvss">
+              <summary className="text-[10px] text-zinc-600 cursor-pointer hover:text-zinc-400 transition-colors select-none flex items-center gap-1.5">
+                <span>CVSS {finding.cvss.score.toFixed(1)} ({finding.cvss.rating})</span>
+                <svg className="w-3 h-3 transition-transform group-open/cvss:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </summary>
+              <pre className="mt-1.5 text-[10px] bg-zinc-900/80 border border-zinc-800/50 rounded-lg px-3 py-2 text-zinc-500 font-mono break-all whitespace-pre-wrap">
+                {finding.cvss.vector}
+              </pre>
+            </details>
+          )}
+          {isSuppressed && suppressed?.reason && (
+            <div className="text-[10px] bg-zinc-900/50 border border-zinc-800/30 rounded-lg px-3 py-2 text-zinc-500 italic">
+              Suppressed: {suppressed.reason}
+              {suppressed.suppressedAt && <span className="ml-2 text-zinc-600">({new Date(suppressed.suppressedAt).toLocaleDateString()})</span>}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -247,6 +292,7 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
   const [expandAll, setExpandAll] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mdCopied, setMdCopied] = useState(false);
+  const [suppressions, setSuppressions] = useState<Record<string, { reason?: string; suppressedAt?: string }>>({});
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchScan = useCallback(async () => {
@@ -539,6 +585,20 @@ export default nextConfig;`;
       setOpenFindings(new Set(sortedFindings.map((f) => f.id)));
     }
     setExpandAll(!expandAll);
+  };
+
+  const handleSuppress = async (findingKey: string) => {
+    if (suppressions[findingKey]) return;
+    const reason = prompt("Suppression reason (optional):");
+    if (reason === null) return;
+    try {
+      await fetch("/api/scan/suppressions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: findingKey, scanId: id, reason: reason || undefined }),
+      });
+      setSuppressions((prev) => ({ ...prev, [findingKey]: { reason: reason || undefined, suppressedAt: new Date().toISOString() } }));
+    } catch { /* skip */ }
   };
 
   if (error) {
@@ -1860,6 +1920,8 @@ export default nextConfig;`;
                     finding={finding}
                     isOpen={openFindings.has(finding.id)}
                     onToggle={() => toggleFinding(finding.id)}
+                    suppressed={suppressions[`${finding.module}::${finding.title}`]}
+                    onSuppress={handleSuppress}
                   />
                 ))}
               </div>
@@ -1886,6 +1948,8 @@ export default nextConfig;`;
                             finding={finding}
                             isOpen={openFindings.has(finding.id)}
                             onToggle={() => toggleFinding(finding.id)}
+                            suppressed={suppressions[`${finding.module}::${finding.title}`]}
+                            onSuppress={handleSuppress}
                           />
                         ))}
                       </div>

@@ -287,6 +287,234 @@ export const cookiesModule: ScanModule = async (target) => {
     });
   }
 
+  // Cookie prefix validation — ensure __Host- and __Secure- prefixed cookies meet all requirements
+  for (const cookie of target.cookies) {
+    if (cookie.name.startsWith("__Host-")) {
+      const issues: string[] = [];
+      if (!cookie.secure) issues.push("missing Secure flag");
+      if (cookie.path !== "/") issues.push(`Path is "${cookie.path}" instead of "/"`);
+      if (cookie.domain) issues.push(`Domain is set to "${cookie.domain}" (must be omitted)`);
+      if (cookie.sameSite.toLowerCase() === "none" && !cookie.secure) issues.push("SameSite=None without Secure");
+      if (issues.length > 0 && !findings.some((f) => f.id === `cookies-host-prefix-invalid-${cookie.name}`)) {
+        findings.push({
+          id: `cookies-host-prefix-deep-${cookie.name}`,
+          module: "Cookies",
+          severity: "medium",
+          title: `__Host- cookie "${cookie.name}" has ${issues.length} prefix violation${issues.length > 1 ? "s" : ""}`,
+          description: `__Host- prefixed cookies enforce strict origin binding. Violations: ${issues.join("; ")}. Browsers will reject this cookie, meaning it provides no security benefit and may break functionality.`,
+          evidence: `Cookie: ${cookie.name}\nViolations: ${issues.join(", ")}\nSecure: ${cookie.secure}\nPath: ${cookie.path}\nDomain: ${cookie.domain || "(not set)"}`,
+          remediation: "Fix all __Host- prefix requirements: Secure flag, Path=/, no Domain attribute. If these constraints don't fit your use case, use __Secure- prefix instead.",
+          cwe: "CWE-1275",
+          confidence: 100,
+          codeSnippet: `// Correct __Host- cookie\nres.cookies.set("__Host-session", token, {\n  secure: true,\n  path: "/",\n  httpOnly: true,\n  sameSite: "lax",\n  // No domain attribute!\n});`,
+        });
+      }
+    }
+    if (cookie.name.startsWith("__Secure-")) {
+      const issues: string[] = [];
+      if (!cookie.secure) issues.push("missing Secure flag");
+      if (!cookie.httpOnly && SENSITIVE_COOKIE_NAMES.some((p) => p.test(cookie.name.replace(/^__Secure-/, "")))) {
+        issues.push("sensitive __Secure- cookie without HttpOnly");
+      }
+      if (issues.length > 0 && !findings.some((f) => f.id === `cookies-secure-prefix-no-flag-${cookie.name}`)) {
+        findings.push({
+          id: `cookies-secure-prefix-deep-${cookie.name}`,
+          module: "Cookies",
+          severity: "medium",
+          title: `__Secure- cookie "${cookie.name}" has prefix issues`,
+          description: `__Secure- prefixed cookies must have the Secure flag. Issues: ${issues.join("; ")}. Without Secure, browsers reject this cookie entirely.`,
+          evidence: `Cookie: ${cookie.name}\nIssues: ${issues.join(", ")}`,
+          remediation: "Add the Secure flag to all __Secure- prefixed cookies. Consider also adding HttpOnly for sensitive data.",
+          cwe: "CWE-614",
+        });
+      }
+    }
+  }
+
+  // Cookie scope analysis — detect overly broad domain and path settings
+  const targetHost = new URL(target.url).hostname;
+  const targetParts = targetHost.split(".");
+  const targetTld = targetParts.length >= 2 ? targetParts.slice(-2).join(".") : targetHost;
+  const scopeIssues: { name: string; issue: string }[] = [];
+  for (const cookie of target.cookies) {
+    if (NON_SENSITIVE_PATTERNS.test(cookie.name)) continue;
+    const domain = (cookie.domain || "").replace(/^\./, "");
+    // Flag cookies scoped to a TLD or public suffix
+    if (domain && (domain === targetTld || domain.split(".").length <= 2) && cookie.domain?.startsWith(".")) {
+      const isSensitive = SENSITIVE_COOKIE_NAMES.some((p) => p.test(cookie.name));
+      if (isSensitive) {
+        scopeIssues.push({ name: cookie.name, issue: `domain=.${domain} (shared across all subdomains)` });
+      }
+    }
+    // Flag cookies with overly broad path (path=/ when they should be scoped to /api, /app, etc.)
+    if (cookie.path === "/" && SENSITIVE_COOKIE_NAMES.some((p) => p.test(cookie.name))) {
+      const apiPaths = target.apiEndpoints.map((ep) => new URL(ep).pathname.split("/").slice(0, 2).join("/")).filter(Boolean);
+      const uniquePaths = [...new Set(apiPaths)];
+      if (uniquePaths.length === 1 && uniquePaths[0] !== "/") {
+        scopeIssues.push({ name: cookie.name, issue: `path=/ but API lives at ${uniquePaths[0]}` });
+      }
+    }
+  }
+  if (scopeIssues.length > 0 && !findings.some((f) => f.id === "cookies-broad-scope")) {
+    findings.push({
+      id: "cookies-scope-overly-broad",
+      module: "Cookies",
+      severity: "medium",
+      title: `${scopeIssues.length} cookie${scopeIssues.length > 1 ? "s" : ""} with overly broad scope`,
+      description: "Sensitive cookies are scoped more broadly than necessary. Overly broad domain scope exposes cookies to all subdomains (including potentially compromised ones). Overly broad path scope sends cookies to endpoints that don't need them.",
+      evidence: scopeIssues.map((i) => `${i.name}: ${i.issue}`).join("\n"),
+      remediation: "Restrict cookie domain to the specific subdomain and path to the narrowest scope needed. Use __Host- prefix to lock cookies to the exact origin.",
+      cwe: "CWE-1275",
+      owasp: "A05:2021",
+      codeSnippet: `// Scope cookies tightly\nres.cookies.set("session", token, {\n  domain: "app.yourdomain.com",  // not ".yourdomain.com"\n  path: "/api",                   // not "/"\n  httpOnly: true,\n  secure: true,\n  sameSite: "lax",\n});`,
+    });
+  }
+
+  // Session cookie size analysis — individual and aggregate
+  const SESSION_MAX_REASONABLE = 256; // session IDs should be short opaque tokens
+  const largeSessionCookies = sessionCookies.filter((c) => {
+    const size = new TextEncoder().encode(c.value).length;
+    return size > SESSION_MAX_REASONABLE;
+  });
+  if (largeSessionCookies.length > 0 && !findings.some((f) => f.id === "cookies-oversized")) {
+    findings.push({
+      id: "cookies-session-too-large",
+      module: "Cookies",
+      severity: "medium",
+      title: `${largeSessionCookies.length} session cookie${largeSessionCookies.length > 1 ? "s" : ""} with excessive value size`,
+      description: "Session cookies should contain only an opaque session ID (typically 32-64 bytes). Larger values suggest the server is storing session data directly in the cookie (e.g., serialized objects, JWTs with large payloads), which increases attack surface, wastes bandwidth, and may leak sensitive data.",
+      evidence: largeSessionCookies.map((c) => {
+        const size = new TextEncoder().encode(c.value).length;
+        return `${c.name}: ${size} bytes (expected <${SESSION_MAX_REASONABLE})`;
+      }).join("\n"),
+      remediation: "Use a short opaque session ID in the cookie and store session data server-side (Redis, database). If using JWTs, minimize claims and consider moving to opaque tokens for session management.",
+      cwe: "CWE-539",
+      owasp: "A05:2021",
+      codeSnippet: `// Use short opaque session IDs\nimport { randomBytes } from "crypto";\nconst sessionId = randomBytes(32).toString("hex"); // 64 char hex string\nres.cookies.set("session", sessionId, { httpOnly: true, secure: true, sameSite: "lax" });\n// Store data server-side:\nawait redis.set(\`session:\${sessionId}\`, JSON.stringify(userData), "EX", 86400);`,
+    });
+  }
+
+  // Cookie entropy check — extended analysis for all session cookies
+  for (const cookie of sessionCookies) {
+    if (cookie.value.length < 8) continue;
+    if (findings.some((f) => f.id === `cookies-low-entropy-${cookie.name}`)) continue;
+    const value = cookie.value;
+    // Check for obviously sequential/predictable patterns
+    const isNumericOnly = /^\d+$/.test(value);
+    const isIncrementing = /^[0-9]{1,10}$/.test(value) && parseInt(value) < 1_000_000;
+    const hasRepeatingPattern = /(.{2,8})\1{2,}/.test(value);
+
+    if (isNumericOnly || isIncrementing || hasRepeatingPattern) {
+      const reason = isIncrementing ? "appears to be a sequential numeric ID" :
+        isNumericOnly ? "purely numeric (no alphabet characters)" :
+        "contains a repeating pattern";
+      findings.push({
+        id: `cookies-predictable-session-${cookie.name}`,
+        module: "Cookies",
+        severity: "high",
+        title: `Session cookie "${cookie.name}" appears predictable`,
+        description: `The session cookie value ${reason}. Predictable session tokens allow attackers to enumerate valid sessions or guess other users' session IDs (session prediction attack).`,
+        evidence: `Cookie: ${cookie.name}\nValue pattern: ${reason}\nSample: ${value.substring(0, 20)}${value.length > 20 ? "..." : ""}`,
+        remediation: "Generate session tokens using a CSPRNG with at least 128 bits of entropy. Use crypto.randomBytes(32).toString('hex') or crypto.randomUUID().",
+        cwe: "CWE-330",
+        owasp: "A02:2021",
+        confidence: isIncrementing ? 95 : 80,
+        codeSnippet: `// Generate unpredictable session tokens\nimport { randomBytes } from "crypto";\nconst token = randomBytes(32).toString("hex"); // 256-bit random token`,
+      });
+    }
+
+    // Also check minimum token length — session tokens should be at least 16 bytes (128 bits)
+    const effectiveBytes = value.length * (Math.log2(new Set(value).size) / 8);
+    if (effectiveBytes < 16 && value.length < 32) {
+      findings.push({
+        id: `cookies-short-session-${cookie.name}`,
+        module: "Cookies",
+        severity: "medium",
+        title: `Session cookie "${cookie.name}" may have insufficient token length`,
+        description: `The session token is only ${value.length} characters long with ~${Math.round(effectiveBytes)} effective bytes of entropy. OWASP recommends at least 128 bits (16 bytes) of entropy for session tokens to resist brute-force attacks.`,
+        evidence: `Cookie: ${cookie.name}\nValue length: ${value.length} chars\nUnique chars: ${new Set(value).size}\nEffective entropy: ~${Math.round(effectiveBytes)} bytes`,
+        remediation: "Use session tokens with at least 128 bits of randomness. A 32-character hex string (crypto.randomBytes(16).toString('hex')) provides 128 bits.",
+        cwe: "CWE-331",
+        owasp: "A02:2021",
+        codeSnippet: `// Minimum 128-bit session token\nimport { randomBytes } from "crypto";\nconst sessionToken = randomBytes(16).toString("hex"); // 128-bit minimum\n// Better: 256-bit\nconst strongToken = randomBytes(32).toString("hex");`,
+      });
+    }
+  }
+
+  // Third-party cookie detection with SameSite implications
+  const targetDomain = targetHost.split(".").slice(-2).join(".");
+  const thirdPartyCookies = target.cookies.filter((c) => {
+    const domain = (c.domain || "").replace(/^\./, "").toLowerCase();
+    if (!domain) return false;
+    return !domain.endsWith(targetDomain) && domain !== targetDomain;
+  });
+  const thirdPartyNone = thirdPartyCookies.filter((c) => c.sameSite.toLowerCase() === "none");
+  const thirdPartyNoSameSite = thirdPartyCookies.filter((c) => !c.sameSite || c.sameSite === "");
+  if (thirdPartyNone.length > 0) {
+    findings.push({
+      id: "cookies-third-party-samesite-none",
+      module: "Cookies",
+      severity: "medium",
+      title: `${thirdPartyNone.length} third-party cookie${thirdPartyNone.length > 1 ? "s" : ""} with SameSite=None`,
+      description: `Third-party cookies with SameSite=None are sent on all cross-site requests. With browsers phasing out third-party cookies (Chrome's Privacy Sandbox, Firefox ETP, Safari ITP), these cookies will stop working. Additionally, SameSite=None requires the Secure flag — without it, cookies are rejected.`,
+      evidence: thirdPartyNone.slice(0, 5).map((c) => `${c.name} (${c.domain}) SameSite=None Secure=${c.secure}`).join("\n"),
+      remediation: "Migrate away from third-party cookies. Use first-party alternatives (server-side sessions, CHIPS partitioned cookies, or the Storage Access API). Ensure all SameSite=None cookies have the Secure flag.",
+      cwe: "CWE-1275",
+      owasp: "A05:2021",
+      codeSnippet: `// Use CHIPS (Partitioned cookies) for legitimate cross-site use\nres.headers.append("Set-Cookie",\n  "widget_session=abc; SameSite=None; Secure; Partitioned; Path=/"\n);\n// Or use Storage Access API in the browser\nawait document.requestStorageAccess();`,
+    });
+  }
+  if (thirdPartyNoSameSite.length > 0) {
+    findings.push({
+      id: "cookies-third-party-missing-samesite",
+      module: "Cookies",
+      severity: "low",
+      title: `${thirdPartyNoSameSite.length} third-party cookie${thirdPartyNoSameSite.length > 1 ? "s" : ""} without SameSite attribute`,
+      description: "Third-party cookies without an explicit SameSite attribute default to Lax in modern browsers, which means they won't be sent in cross-site contexts. This may break functionality that depends on these cookies being available cross-site.",
+      evidence: thirdPartyNoSameSite.slice(0, 5).map((c) => `${c.name} (${c.domain})`).join("\n"),
+      remediation: "Explicitly set SameSite on all cookies. For cross-site cookies, use SameSite=None; Secure. For same-site only, use SameSite=Lax or Strict.",
+      cwe: "CWE-1275",
+    });
+  }
+
+  // Cookie manipulation via header injection — check for cookie values that could enable injection
+  for (const cookie of target.cookies) {
+    const value = cookie.value;
+    // Check for newlines or carriage returns in cookie values (header injection)
+    if (value.includes("\r") || value.includes("\n") || value.includes("%0d") || value.includes("%0a") ||
+        value.includes("%0D") || value.includes("%0A")) {
+      findings.push({
+        id: `cookies-header-injection-${cookie.name}`,
+        module: "Cookies",
+        severity: "high",
+        title: `Cookie "${cookie.name}" contains newline characters (header injection risk)`,
+        description: "This cookie value contains CR/LF characters or their URL-encoded equivalents. If the server reflects cookie values in Set-Cookie headers without sanitization, an attacker could inject additional HTTP headers (HTTP Response Splitting) or set arbitrary cookies.",
+        evidence: `Cookie: ${cookie.name}\nValue contains: ${value.includes("\r") || value.includes("%0d") || value.includes("%0D") ? "CR " : ""}${value.includes("\n") || value.includes("%0a") || value.includes("%0A") ? "LF" : ""}`,
+        remediation: "Sanitize all cookie values to strip CR/LF characters. Use your framework's built-in cookie-setting functions which handle encoding. Never reflect raw user input in Set-Cookie headers.",
+        cwe: "CWE-113",
+        owasp: "A03:2021",
+        confidence: 90,
+        codeSnippet: `// Sanitize cookie values\nconst safeCookieValue = (val: string) =>\n  val.replace(/[\\r\\n%0d%0a]/gi, "");\nres.cookies.set("name", safeCookieValue(userInput), { httpOnly: true });`,
+      });
+    }
+    // Check for semicolons or additional cookie attributes embedded in the value
+    if (value.includes(";") && (value.toLowerCase().includes("path=") || value.toLowerCase().includes("domain=") ||
+        value.toLowerCase().includes("expires=") || value.toLowerCase().includes("httponly"))) {
+      findings.push({
+        id: `cookies-attribute-injection-${cookie.name}`,
+        module: "Cookies",
+        severity: "high",
+        title: `Cookie "${cookie.name}" value contains embedded cookie attributes`,
+        description: "The cookie value appears to contain cookie attribute directives (path=, domain=, expires=, httponly). This suggests the server may be concatenating unsanitized input into Set-Cookie headers, allowing attackers to override security attributes.",
+        evidence: `Cookie: ${cookie.name}\nValue: ${value.substring(0, 100)}${value.length > 100 ? "..." : ""}`,
+        remediation: "Never concatenate user input into Set-Cookie headers. Use your framework's cookie API which properly encodes values and separates attributes.",
+        cwe: "CWE-113",
+        owasp: "A03:2021",
+        confidence: 75,
+      });
+    }
+  }
+
   // Check for auth tokens stored in localStorage (XSS-vulnerable)
   const allJs = Array.from(target.jsContents.values()).join("\n");
   const localStoragePatterns = [

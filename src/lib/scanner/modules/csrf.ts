@@ -236,7 +236,54 @@ export const csrfModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 7: SameSite=None without CSRF tokens — critical combination
+  // Phase 7: SameSite cookie bypass via top-level navigation
+  // SameSite=Lax allows cookies on top-level GET navigations, enabling CSRF on GET side-effects
+  const sameSiteLaxCookies = target.cookies.filter(
+    (c) => !c.sameSite || c.sameSite.toLowerCase() === "lax",
+  );
+  if (sameSiteLaxCookies.length > 0) {
+    // Check for state-changing GET endpoints (common CSRF vector with Lax cookies)
+    const stateChangingGetPaths = target.apiEndpoints.filter((ep) =>
+      /logout|delete|remove|unsubscribe|confirm|approve|verify|activate|deactivate|toggle|enable|disable/i.test(ep),
+    );
+    const getResults = await Promise.allSettled(
+      stateChangingGetPaths.slice(0, 5).map(async (endpoint) => {
+        const res = await scanFetch(endpoint, {
+          method: "GET",
+          headers: { Origin: "https://evil.com" },
+          timeoutMs: 5000,
+        });
+        if (res.ok && res.status === 200) {
+          const text = await res.text();
+          // Check if the response suggests the action was performed
+          if (!/error|unauthorized|forbidden|login|redirect/i.test(text.substring(0, 300))) {
+            return { endpoint, pathname: new URL(endpoint).pathname, status: res.status };
+          }
+        }
+        return null;
+      }),
+    );
+    for (const r of getResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      findings.push({
+        id: `csrf-get-side-effect-${findings.length}`,
+        module: "CSRF",
+        severity: "medium",
+        title: `State-changing GET endpoint: ${v.pathname}`,
+        description: `The endpoint ${v.pathname} appears to perform state-changing actions via GET request. SameSite=Lax cookies (the default) are sent on top-level GET navigations, so an attacker can trigger this action via <a href>, <img src>, or window.open(). This bypasses SameSite=Lax protection because the browser treats top-level navigations as "safe".`,
+        evidence: `GET ${v.endpoint} → ${v.status} OK\nSameSite=Lax cookies: ${sameSiteLaxCookies.map((c) => c.name).join(", ")}`,
+        remediation: "Never perform state-changing operations via GET requests. Use POST/PUT/DELETE for mutations. Add CSRF tokens to all state-changing endpoints regardless of SameSite cookie settings.",
+        cwe: "CWE-352",
+        owasp: "A01:2021",
+        confidence: 60,
+        codeSnippet: `// Reject state-changing GET requests\nexport async function GET(req: Request) {\n  // GET should be safe/idempotent — no side effects\n  return Response.json({ error: "Use POST for this action" }, { status: 405 });\n}\n\nexport async function POST(req: Request) {\n  // Validate CSRF token or Origin header\n  // ... perform action\n}`,
+      });
+      break;
+    }
+  }
+
+  // Phase 7a: SameSite=None without CSRF tokens — critical combination
   const hasSameSiteNone = target.cookies.some((c) => c.sameSite?.toLowerCase() === "none");
   if (hasSameSiteNone) {
     const formsWithoutCsrf = target.forms.filter((f) =>
@@ -258,31 +305,77 @@ export const csrfModule: ScanModule = async (target) => {
     }
   }
 
-  // Phase 7b: CSRF token predictability check
+  // Phase 7b: CSRF token entropy analysis
   const csrfTokenInputs = target.forms.flatMap((f) =>
     f.inputs.filter((i) => /csrf|xsrf|token|_token|authenticity/i.test(i.name)),
   );
-  // If we can see token values in form HTML, check quality
   const allHtml = Array.from(target.jsContents.values()).join("\n");
   for (const input of csrfTokenInputs.slice(0, 3)) {
     const valMatch = allHtml.match(new RegExp(`name=["']${input.name}["'][^>]*value=["']([^"']+)["']`, "i"));
     if (valMatch) {
       const token = valMatch[1];
-      const isWeak = token.length < 16 || /^\d+$/.test(token) || /^[a-f0-9]{1,8}$/i.test(token);
-      if (isWeak) {
+      // Entropy analysis: check length, character set diversity, and patterns
+      const isShort = token.length < 16;
+      const isNumericOnly = /^\d+$/.test(token);
+      const isLowHex = /^[a-f0-9]{1,8}$/i.test(token);
+      const isTimestamp = /^1[6-7]\d{8,11}$/.test(token); // Unix timestamp-like
+      const isSequential = /^0*[1-9]\d{0,5}$/.test(token); // Small sequential number
+      const uniqueChars = new Set(token).size;
+      const charRatio = uniqueChars / token.length;
+      const isLowEntropy = charRatio < 0.3 && token.length > 8; // Repetitive characters
+
+      const weaknesses: string[] = [];
+      if (isShort) weaknesses.push(`too short (${token.length} chars, need 32+)`);
+      if (isNumericOnly) weaknesses.push("numeric-only (limited keyspace)");
+      if (isLowHex) weaknesses.push("short hex value (brute-forceable)");
+      if (isTimestamp) weaknesses.push("appears to be a Unix timestamp (predictable)");
+      if (isSequential) weaknesses.push("appears sequential (predictable)");
+      if (isLowEntropy) weaknesses.push(`low entropy (only ${uniqueChars} unique chars in ${token.length} char token)`);
+
+      if (weaknesses.length > 0) {
         findings.push({
           id: `csrf-weak-token-${findings.length}`,
           module: "CSRF",
           severity: "medium",
-          title: `Weak CSRF token in "${input.name}" (${token.length} chars${/^\d+$/.test(token) ? ", numeric-only" : ""})`,
-          description: `The CSRF token appears weak: ${token.length < 16 ? "too short" : "low entropy"}. Weak tokens can be brute-forced or predicted, defeating CSRF protection.`,
-          evidence: `Input: ${input.name}\nToken: ${token.substring(0, 20)}${token.length > 20 ? "..." : ""}\nLength: ${token.length}`,
-          remediation: "Use cryptographically random tokens of at least 32 bytes. In Node.js: crypto.randomBytes(32).toString('hex').",
+          title: `Weak CSRF token in "${input.name}": ${weaknesses[0]}`,
+          description: `The CSRF token has weak entropy characteristics: ${weaknesses.join("; ")}. An attacker may be able to predict or brute-force the token, completely defeating CSRF protection.`,
+          evidence: `Input: ${input.name}\nToken: ${token.substring(0, 20)}${token.length > 20 ? "..." : ""}\nLength: ${token.length}\nUnique characters: ${uniqueChars}\nWeaknesses: ${weaknesses.join(", ")}`,
+          remediation: "Use cryptographically random tokens of at least 32 bytes. In Node.js: crypto.randomBytes(32).toString('hex'). Avoid timestamps, sequential IDs, or low-entropy values as CSRF tokens.",
           cwe: "CWE-330",
           confidence: 75,
         });
         break;
       }
+    }
+  }
+
+  // Phase 7c: CSRF token fixation — check if token can be reused across sessions
+  // Fetch the page twice and compare CSRF tokens
+  if (csrfTokenInputs.length > 0) {
+    const tokenName = csrfTokenInputs[0].name;
+    const tokenFetchResults = await Promise.allSettled([
+      scanFetch(target.url, { timeoutMs: 5000 }),
+      scanFetch(target.url, { timeoutMs: 5000, headers: { Cookie: "" } }),
+    ]);
+    const tokens: string[] = [];
+    for (const r of tokenFetchResults) {
+      if (r.status !== "fulfilled") continue;
+      const html = await r.value.text();
+      const match = html.match(new RegExp(`name=["']${tokenName}["'][^>]*value=["']([^"']+)["']`, "i"));
+      if (match) tokens.push(match[1]);
+    }
+    if (tokens.length === 2 && tokens[0] === tokens[1] && tokens[0].length > 0) {
+      findings.push({
+        id: `csrf-token-fixation-${findings.length}`,
+        module: "CSRF",
+        severity: "medium",
+        title: `CSRF token "${tokenName}" appears static across requests`,
+        description: "The CSRF token is identical across two separate requests with different session contexts. This suggests the token is either globally static or not tied to the user session. An attacker could obtain a valid token from their own session and use it in a CSRF attack against another user.",
+        evidence: `Token name: ${tokenName}\nToken value (both requests): ${tokens[0].substring(0, 20)}...`,
+        remediation: "Generate unique CSRF tokens per session and tie them cryptographically to the session ID. Tokens should be unpredictable and non-reusable across different sessions.",
+        cwe: "CWE-352",
+        confidence: 70,
+      });
     }
   }
 
