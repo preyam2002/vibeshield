@@ -320,5 +320,308 @@ export const apiVersioningModule: ScanModule = async (target) => {
     }
   }
 
+  // Test 7: GraphQL schema versioning — detect deprecated fields via introspection
+  if (graphqlEndpoints.length > 0) {
+    const gqlDeprecatedResults = await Promise.allSettled(
+      graphqlEndpoints.slice(0, 2).map(async (ep) => {
+        const introspectionQuery = `{
+          __schema {
+            types {
+              name
+              fields(includeDeprecated: true) {
+                name
+                isDeprecated
+                deprecationReason
+              }
+            }
+          }
+        }`;
+        const res = await scanFetch(ep, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: introspectionQuery }),
+          timeoutMs: 8000,
+        });
+        if (!res.ok) return null;
+        const text = await res.text();
+        try {
+          const json = JSON.parse(text) as {
+            data?: {
+              __schema?: {
+                types?: { name: string; fields?: { name: string; isDeprecated: boolean; deprecationReason?: string }[] }[];
+              };
+            };
+          };
+          const types = json.data?.__schema?.types || [];
+          const deprecatedFields: { type: string; field: string; reason?: string }[] = [];
+          for (const t of types) {
+            if (t.name.startsWith("__")) continue;
+            for (const f of t.fields || []) {
+              if (f.isDeprecated) {
+                deprecatedFields.push({ type: t.name, field: f.name, reason: f.deprecationReason || undefined });
+              }
+            }
+          }
+          if (deprecatedFields.length > 0) {
+            return { pathname: new URL(ep).pathname, deprecatedFields };
+          }
+        } catch { /* skip */ }
+        return null;
+      }),
+    );
+
+    for (const r of gqlDeprecatedResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      const fieldList = v.deprecatedFields.slice(0, 8);
+      findings.push({
+        id: `api-ver-graphql-deprecated-${findings.length}`,
+        module: "API Versioning",
+        severity: "medium",
+        title: `${v.deprecatedFields.length} deprecated GraphQL field${v.deprecatedFields.length > 1 ? "s" : ""} still accessible via introspection`,
+        description: `The GraphQL schema at ${v.pathname} exposes deprecated fields that are still queryable. Deprecated fields may lack security controls applied to their replacements, or return data that should no longer be accessible.`,
+        evidence: `Deprecated fields:\n${fieldList.map((f) => `  ${f.type}.${f.field}${f.reason ? ` — ${f.reason}` : ""}`).join("\n")}${v.deprecatedFields.length > 8 ? `\n  ...and ${v.deprecatedFields.length - 8} more` : ""}`,
+        remediation: "Remove deprecated fields from the schema once migration is complete. If they must remain, ensure they have the same authorization checks as their replacements. Disable introspection in production.",
+        cwe: "CWE-284",
+        owasp: "A01:2021",
+        confidence: 75,
+      });
+      break;
+    }
+  }
+
+  // Test 8: API version header analysis (Accept-Version, API-Version, X-API-Version)
+  const versionHeaderResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 6).map(async (ep) => {
+      const pathname = new URL(ep).pathname;
+      const baseRes = await scanFetch(ep, { timeoutMs: 5000 });
+      if (!baseRes.ok) return null;
+      const baseText = await baseRes.text();
+
+      const versionHeaders: [string, string][] = [
+        ["Accept-Version", "1.0"],
+        ["Accept-Version", "0.1"],
+        ["API-Version", "1"],
+        ["API-Version", "2020-01-01"],
+        ["X-API-Version", "1"],
+        ["X-API-Version", "0"],
+      ];
+      for (const [header, value] of versionHeaders) {
+        const res = await scanFetch(ep, {
+          headers: { [header]: value },
+          timeoutMs: 5000,
+        });
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (text.length > 10 && text !== baseText && Math.abs(text.length - baseText.length) > 20) {
+          return { pathname, header, value, baseLen: baseText.length, altLen: text.length };
+        }
+      }
+      return null;
+    }),
+  );
+
+  for (const r of versionHeaderResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    findings.push({
+      id: `api-ver-header-negotiation-${findings.length}`,
+      module: "API Versioning",
+      severity: "medium",
+      title: `API version negotiation via ${v.header} header on ${v.pathname}`,
+      description: `The endpoint returns different content (${v.baseLen} vs ${v.altLen} bytes) when the ${v.header} header is set to "${v.value}". Version header-based routing is often missed during security reviews — older versions may have weaker auth or return more data.`,
+      evidence: `GET ${v.pathname}\n${v.header}: ${v.value}\nDefault response: ${v.baseLen} bytes\nVersioned response: ${v.altLen} bytes`,
+      remediation: `Ensure all API versions accessed via the ${v.header} header have the same security controls. Reject unsupported version values with a 400 or 404 response.`,
+      cwe: "CWE-284",
+      owasp: "A01:2021",
+      confidence: 65,
+    });
+    break;
+  }
+
+  // Test 9: Backward compatibility — check if old version endpoints still respond alongside current
+  const backwardCompatResults = await Promise.allSettled(
+    Array.from(versionedEndpoints.entries()).slice(0, 4).flatMap(([basePath, versions]) => {
+      const highestVer = Math.max(...versions.map((v) => parseInt(v.replace(/\D/g, ""), 10)));
+      if (highestVer <= 1) return [];
+      return Array.from({ length: highestVer - 1 }, (_, i) => i + 1).slice(0, 3).map(async (v) => {
+        const oldPath = basePath.replace("VERSION", `v${v}`);
+        const currentPath = basePath.replace("VERSION", `v${highestVer}`);
+        const [oldRes, currentRes] = await Promise.all([
+          scanFetch(target.baseUrl + oldPath, { timeoutMs: 5000 }),
+          scanFetch(target.baseUrl + currentPath, { timeoutMs: 5000 }),
+        ]);
+        if (!oldRes.ok || !currentRes.ok) return null;
+        const [oldText, currentText] = await Promise.all([oldRes.text(), currentRes.text()]);
+        if (looksLikeHtml(oldText) && (isSoft404(oldText, target) || target.isSpa)) return null;
+        if (oldText.length < 10) return null;
+        // Both versions respond — check if old version returns more fields (data leakage)
+        let moreData = false;
+        try {
+          const oldJson = JSON.parse(oldText);
+          const currentJson = JSON.parse(currentText);
+          const oldKeys = Object.keys(typeof oldJson === "object" && oldJson ? oldJson : {});
+          const currentKeys = Object.keys(typeof currentJson === "object" && currentJson ? currentJson : {});
+          if (oldKeys.length > currentKeys.length) moreData = true;
+        } catch { /* skip */ }
+        return { oldPath, currentPath, oldVersion: `v${v}`, currentVersion: `v${highestVer}`, moreData, oldLen: oldText.length, currentLen: currentText.length };
+      });
+    }),
+  );
+
+  for (const r of backwardCompatResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const severity = v.moreData ? "high" as const : "medium" as const;
+    findings.push({
+      id: `api-ver-backward-compat-${findings.length}`,
+      module: "API Versioning",
+      severity,
+      title: `Old API version ${v.oldVersion} still accessible${v.moreData ? " (returns more data)" : ""} alongside ${v.currentVersion}`,
+      description: `Both ${v.oldVersion} and ${v.currentVersion} are accessible for the same endpoint.${v.moreData ? " The older version appears to return more data fields, which could indicate data leakage through removed/filtered fields." : ""} Old versions may not receive security patches.`,
+      evidence: `GET ${v.oldPath} (${v.oldLen} bytes)\nGET ${v.currentPath} (${v.currentLen} bytes)\nBoth return valid responses${v.moreData ? "\nOlder version returns more data fields" : ""}`,
+      remediation: "Decommission old API versions or ensure they receive the same security patches and field filtering as the current version. Return 410 Gone for deprecated versions.",
+      cwe: "CWE-284",
+      owasp: "A01:2021",
+      confidence: 70,
+    });
+    break;
+  }
+
+  // Test 10: Version sunset header detection
+  const sunsetResults = await Promise.allSettled(
+    target.apiEndpoints.slice(0, 15).map(async (ep) => {
+      const res = await scanFetch(ep, { timeoutMs: 5000 });
+      const sunset = res.headers.get("sunset") || "";
+      const link = res.headers.get("link") || "";
+      const pathname = new URL(ep).pathname;
+      if (!sunset && !link.includes("sunset")) return null;
+
+      let pastSunset = false;
+      let sunsetDate = sunset;
+      if (sunset) {
+        try {
+          pastSunset = new Date(sunset).getTime() < Date.now();
+        } catch { /* invalid date */ }
+      }
+      // Parse Link header for sunset relation
+      let successorUrl = "";
+      const linkMatch = link.match(/<([^>]+)>;\s*rel="successor-version"/);
+      if (linkMatch) successorUrl = linkMatch[1];
+
+      if (!sunsetDate && !successorUrl) return null;
+      return { pathname, sunsetDate, pastSunset, successorUrl };
+    }),
+  );
+
+  for (const r of sunsetResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const v = r.value;
+    const severity = v.pastSunset ? "high" as const : "info" as const;
+    findings.push({
+      id: `api-ver-sunset-${findings.length}`,
+      module: "API Versioning",
+      severity,
+      title: `API endpoint has Sunset header: ${v.pathname}${v.pastSunset ? " (EXPIRED)" : ""}`,
+      description: `The endpoint declares a sunset date${v.sunsetDate ? ` of ${v.sunsetDate}` : ""}.${v.pastSunset ? " This date has passed, meaning the API should have been decommissioned but is still serving traffic." : ""}${v.successorUrl ? ` Successor version: ${v.successorUrl}` : ""}`,
+      evidence: `GET ${v.pathname}\nSunset: ${v.sunsetDate}${v.successorUrl ? `\nLink: <${v.successorUrl}>; rel="successor-version"` : ""}`,
+      remediation: v.pastSunset
+        ? "This API is past its declared sunset date. Decommission it immediately, return 410 Gone, and redirect clients to the successor version."
+        : "Plan migration before the sunset date. Ensure clients are aware of the upcoming deprecation.",
+      cwe: "CWE-284",
+      owasp: "A01:2021",
+    });
+    if (findings.length >= 8) break;
+  }
+
+  // Test 11: API changelog / release-notes endpoint detection
+  const changelogPaths = [
+    "/api/changelog", "/api/release-notes", "/api/releases",
+    "/changelog", "/release-notes", "/api/v1/changelog",
+    "/api/v2/changelog", "/api/changes", "/api/versions",
+    "/docs/changelog", "/docs/release-notes",
+  ];
+  const changelogResults = await Promise.allSettled(
+    changelogPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (text.length < 20) return null;
+      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+      // Check if it looks like a changelog (contains version-like patterns or date patterns)
+      const hasVersionInfo = /v?\d+\.\d+|breaking\s+change|deprecat|removed|added|fixed|security/i.test(text);
+      if (!hasVersionInfo && text.length < 200) return null;
+      return { path, size: text.length, hasVersionInfo };
+    }),
+  );
+
+  const foundChangelogs = changelogResults
+    .filter((r) => r.status === "fulfilled" && r.value)
+    .map((r) => (r as PromiseFulfilledResult<{ path: string; size: number; hasVersionInfo: boolean }>).value);
+
+  if (foundChangelogs.length > 0) {
+    findings.push({
+      id: `api-ver-changelog-${findings.length}`,
+      module: "API Versioning",
+      severity: "info",
+      title: `API changelog endpoint${foundChangelogs.length > 1 ? "s" : ""} detected: ${foundChangelogs.map((c) => c.path).join(", ")}`,
+      description: `Public changelog or release notes endpoints were found. While not a vulnerability by itself, changelogs can reveal internal version history, breaking changes, security fixes, and deprecated features that help attackers understand your API evolution.`,
+      evidence: foundChangelogs.map((c) => `${c.path} (${c.size} bytes, ${c.hasVersionInfo ? "contains version info" : "content detected"})`).join("\n"),
+      remediation: "Ensure changelogs do not expose security-sensitive details such as specific vulnerability fixes, internal endpoint names, or infrastructure changes. Consider restricting access to authenticated users.",
+      cwe: "CWE-200",
+      confidence: 60,
+    });
+  }
+
+  // Test 12: Shadow API detection — probe common undocumented endpoints
+  const shadowApiPaths = [
+    "/api/internal", "/api/admin", "/api/debug", "/api/test",
+    "/api/health", "/api/status", "/api/metrics", "/api/info",
+    "/api/config", "/api/settings", "/api/env",
+    "/api/_internal", "/api/__debug", "/api/__test",
+    "/internal/api", "/debug/api", "/admin/api",
+    "/api/v1/internal", "/api/v1/admin", "/api/v1/debug",
+    "/api/private", "/api/hidden", "/api/system",
+    "/api/graphql/playground", "/api/graphql/voyager",
+  ];
+  const shadowResults = await Promise.allSettled(
+    shadowApiPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (text.length < 10) return null;
+      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+      // Check it returns structured data (JSON-like) not a generic page
+      const isStructured = text.trimStart().startsWith("{") || text.trimStart().startsWith("[");
+      const hasApiContent = /version|status|uptime|config|debug|admin|error|message/i.test(text);
+      if (!isStructured && !hasApiContent) return null;
+      return { path, size: text.length, isStructured, snippet: text.substring(0, 200) };
+    }),
+  );
+
+  const foundShadowApis = shadowResults
+    .filter((r) => r.status === "fulfilled" && r.value)
+    .map((r) => (r as PromiseFulfilledResult<{ path: string; size: number; isStructured: boolean; snippet: string }>).value);
+
+  if (foundShadowApis.length > 0) {
+    const hasSensitive = foundShadowApis.some((s) => /admin|debug|config|env|internal|private/i.test(s.path));
+    const severity = hasSensitive ? "high" as const : "medium" as const;
+    findings.push({
+      id: `api-ver-shadow-api-${findings.length}`,
+      module: "API Versioning",
+      severity,
+      title: `${foundShadowApis.length} undocumented/shadow API endpoint${foundShadowApis.length > 1 ? "s" : ""} detected`,
+      description: `Undocumented API endpoints were found responding to requests. Shadow APIs are endpoints not part of the official API surface — they may lack proper authentication, rate limiting, and input validation.${hasSensitive ? " Some endpoints appear to expose admin, debug, or configuration data." : ""}`,
+      evidence: foundShadowApis.slice(0, 5).map((s) => `${s.path} (${s.size} bytes):\n  ${s.snippet.substring(0, 100)}...`).join("\n"),
+      remediation: "Audit all responding endpoints. Remove or restrict access to internal/debug/admin APIs. Implement an API gateway that only routes documented endpoints. Use allowlists instead of blocklists for API routing.",
+      cwe: "CWE-912",
+      owasp: "A01:2021",
+      confidence: 65,
+      codeSnippet: `// Block undocumented API paths in middleware\nconst ALLOWED_API_ROUTES = ["/api/users", "/api/posts", "/api/auth"];\n\napp.use("/api/*", (req, res, next) => {\n  if (!ALLOWED_API_ROUTES.some(r => req.path.startsWith(r))) {\n    return res.status(404).json({ error: "Not found" });\n  }\n  next();\n});`,
+    });
+  }
+
   return findings;
 };

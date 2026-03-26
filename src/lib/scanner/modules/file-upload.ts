@@ -10,6 +10,13 @@ const UPLOAD_PATHS = [
   "/api/import", "/api/csv", "/api/bulk",
 ];
 
+const UPLOAD_DIR_PATHS = [
+  "/uploads", "/media", "/files", "/assets/uploads", "/public/uploads",
+  "/static/uploads", "/content/uploads", "/wp-content/uploads",
+  "/images/uploads", "/data/uploads", "/tmp/uploads", "/storage",
+  "/attachments", "/documents", "/user-uploads",
+];
+
 export const fileUploadModule: ScanModule = async (target) => {
   const findings: Finding[] = [];
   const allJs = Array.from(target.jsContents.values()).join("\n");
@@ -37,7 +44,7 @@ export const fileUploadModule: ScanModule = async (target) => {
     }
   }
 
-  const MAX_FINDINGS = 3;
+  const MAX_FINDINGS = 5;
   const endpointsToTest = [...uploadEndpoints].slice(0, 15);
 
   // Helper to build multipart body
@@ -165,7 +172,119 @@ export const fileUploadModule: ScanModule = async (target) => {
           }
         }
 
-        // Test 7: Oversize filename (255+ chars) — may cause path truncation or errors
+        // Test 7: SVG with event handler XSS (onload, onerror)
+        const svgEventPayload = `<svg xmlns="http://www.w3.org/2000/svg" onload="alert('xss')"><circle r="50"/></svg>`;
+        const { boundary: b7a, body: body7a } = buildMultipart("icon.svg", "image/svg+xml", svgEventPayload);
+        const res7a = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b7a}` }, body: body7a, timeoutMs: 5000,
+        });
+        if (res7a.ok) {
+          const text7a = await res7a.text();
+          if (!(looksLikeHtml(text7a) && (isSoft404(text7a, target) || target.isSpa)) && text7a.length > 10) {
+            const urlMatch7a = text7a.match(/["']((?:https?:\/\/[^"']+|\/[^"']+)\.svg?)["']/);
+            if (urlMatch7a) {
+              try {
+                const fileUrl = urlMatch7a[1].startsWith("http") ? urlMatch7a[1] : target.baseUrl + urlMatch7a[1];
+                const fileRes = await scanFetch(fileUrl, { timeoutMs: 5000 });
+                const fileText = await fileRes.text();
+                if (fileRes.ok && /onload|onerror|onclick/i.test(fileText) && fileText.includes("alert")) {
+                  return { type: "svg-xss-rendered" as const, endpoint, pathname, fileUrl };
+                }
+              } catch { /* skip */ }
+            }
+          }
+        }
+
+        // Test 8: EXIF metadata injection — JPEG with script in EXIF comment field
+        const exifPayload = "\xFF\xD8\xFF\xE1\x00\x1C\x45\x78\x69\x66\x00\x00" +
+          "<script>alert('exif')</script>" + "\xFF\xD9";
+        const { boundary: b7b, body: body7b } = buildMultipart("photo.jpg", "image/jpeg", exifPayload);
+        const res7b = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b7b}` }, body: body7b, timeoutMs: 5000,
+        });
+        if (res7b.ok) {
+          const text7b = await res7b.text();
+          if (!(looksLikeHtml(text7b) && (isSoft404(text7b, target) || target.isSpa)) && text7b.length > 10) {
+            // Check if the server reflects EXIF data in any metadata endpoint
+            if (/script|alert|exif/i.test(text7b) && /url|path|key|location|filename/i.test(text7b)) {
+              return { type: "exif-injection" as const, endpoint, pathname, text: text7b };
+            }
+          }
+        }
+
+        // Test 9: Archive extraction — zip slip (symlink and path traversal in archive name)
+        const zipSlipFilename = "../../etc/cron.d/malicious.zip";
+        const { boundary: b7c, body: body7c } = buildMultipart(zipSlipFilename, "application/zip", "PK\x03\x04test-archive-content");
+        const res7c = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b7c}` }, body: body7c, timeoutMs: 5000,
+        });
+        if (res7c.ok) {
+          const text7c = await res7c.text();
+          if (!(looksLikeHtml(text7c) && (isSoft404(text7c, target) || target.isSpa))) {
+            if (text7c.length > 10 && /url|path|key|location|filename|extract/i.test(text7c) && /\.\.|etc|cron/i.test(text7c)) {
+              return { type: "zip-slip" as const, endpoint, pathname, text: text7c };
+            }
+          }
+        }
+
+        // Test 10: Tar path traversal
+        const tarTraversalName = "archive.tar.gz";
+        const tarContent = "../../etc/passwd\x00" + "x".repeat(50);
+        const { boundary: b7d, body: body7d } = buildMultipart(tarTraversalName, "application/gzip", tarContent);
+        const res7d = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b7d}` }, body: body7d, timeoutMs: 5000,
+        });
+        if (res7d.ok) {
+          const text7d = await res7d.text();
+          if (!(looksLikeHtml(text7d) && (isSoft404(text7d, target) || target.isSpa))) {
+            if (text7d.length > 10 && /extract|unpack|decompress|path|file/i.test(text7d) && /\.\.|passwd/i.test(text7d)) {
+              return { type: "tar-traversal" as const, endpoint, pathname, text: text7d };
+            }
+          }
+        }
+
+        // Test 11: Additional double extension variants
+        const doubleExtensions = [
+          { name: "shell.php5.jpg", type: "image/jpeg" },
+          { name: "cmd.aspx.png", type: "image/png" },
+          { name: "exec.jsp.gif", type: "image/gif" },
+          { name: "run.cgi.bmp", type: "image/bmp" },
+          { name: "index.html.png", type: "image/png" },
+        ];
+        for (const { name, type } of doubleExtensions) {
+          const { boundary: bDe, body: bodyDe } = buildMultipart(name, type, "<?php echo 'test'; ?>");
+          const resDe = await scanFetch(endpoint, {
+            method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${bDe}` }, body: bodyDe, timeoutMs: 5000,
+          });
+          if (resDe.ok) {
+            const textDe = await resDe.text();
+            if (!(looksLikeHtml(textDe) && (isSoft404(textDe, target) || target.isSpa))) {
+              if (textDe.length > 10 && /url|path|key|location|filename/i.test(textDe)) {
+                const dangerousExt = /\.(php|php5|aspx|jsp|cgi|html|htm|phtml|shtml)/i;
+                if (dangerousExt.test(textDe)) {
+                  return { type: "double-ext" as const, endpoint, pathname, filename: name, text: textDe };
+                }
+              }
+            }
+          }
+        }
+
+        // Test 12: MIME type vs content mismatch — send actual PNG magic bytes with .php extension
+        const pngMagic = "\x89PNG\r\n\x1a\n<?php echo 'hidden'; ?>";
+        const { boundary: b12, body: body12 } = buildMultipart("image.php", "image/png", pngMagic);
+        const res12 = await scanFetch(endpoint, {
+          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${b12}` }, body: body12, timeoutMs: 5000,
+        });
+        if (res12.ok) {
+          const text12 = await res12.text();
+          if (!(looksLikeHtml(text12) && (isSoft404(text12, target) || target.isSpa))) {
+            if (text12.length > 10 && /url|path|key|location|filename/i.test(text12) && /\.php/i.test(text12)) {
+              return { type: "mime-content-mismatch" as const, endpoint, pathname, text: text12 };
+            }
+          }
+        }
+
+        // Test 13: Oversize filename (255+ chars) — may cause path truncation or errors
         const longName = "a".repeat(250) + ".jpg";
         const { boundary: b7, body: body7 } = buildMultipart(longName, "image/jpeg", "test");
         const res7 = await scanFetch(endpoint, {
@@ -245,9 +364,9 @@ export const fileUploadModule: ScanModule = async (target) => {
       }),
     ),
 
-    // Test 6: Exposed upload directories in parallel
+    // Test: Exposed upload directories in parallel
     Promise.allSettled(
-      ["/uploads", "/media", "/files", "/assets/uploads", "/public/uploads", "/static/uploads"].map(async (dir) => {
+      UPLOAD_DIR_PATHS.map(async (dir) => {
         const res = await scanFetch(target.baseUrl + dir, { timeoutMs: 5000 });
         if (!res.ok) return null;
         const text = await res.text();
@@ -341,6 +460,46 @@ export const fileUploadModule: ScanModule = async (target) => {
         evidence: `POST ${v.endpoint} with Content-Length: 10737418240 (10GB)\nResponse: ${v.status} (accepted)`,
         remediation: "Enforce upload size limits at the web server (e.g., client_max_body_size in nginx) and application level. Return 413 Payload Too Large for oversized requests before reading the body.", cwe: "CWE-770", owasp: "A05:2021",
         codeSnippet: `// Express/Node.js\napp.use('/api/upload', express.raw({ limit: '10mb' }));\n\n// Next.js route config\nexport const config = { api: { bodyParser: { sizeLimit: '10mb' } } };\n\n// nginx\nclient_max_body_size 10m;` });
+    } else if (v.type === "svg-xss-rendered") {
+      findings.push({ id: `file-upload-svg-xss-rendered-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `SVG XSS rendered on ${v.pathname}`,
+        description: "An uploaded SVG file containing JavaScript event handlers (onload) is served and rendered by the browser, enabling stored XSS attacks.",
+        evidence: `POST ${v.endpoint} with SVG containing onload handler\nServed at: ${v.fileUrl}\nSVG event handlers are preserved and executable`,
+        remediation: "Sanitize SVG uploads by stripping all event handlers and script elements. Serve SVGs with Content-Disposition: attachment or Content-Type: image/svg+xml with CSP restrictions.", cwe: "CWE-79", owasp: "A03:2021",
+        codeSnippet: `import DOMPurify from 'dompurify';\nconst clean = DOMPurify.sanitize(svg, {\n  USE_PROFILES: { svg: true },\n  FORBID_TAGS: ['script', 'foreignObject'],\n  FORBID_ATTR: ['onload', 'onerror', 'onclick', 'onmouseover'],\n});` });
+    } else if (v.type === "exif-injection") {
+      findings.push({ id: `file-upload-exif-injection-${findings.length}`, module: "File Upload", severity: "medium",
+        title: `EXIF metadata injection on ${v.pathname}`,
+        description: "The upload endpoint accepted a JPEG with script content embedded in EXIF metadata fields. If EXIF data is reflected in HTML without sanitization, this enables stored XSS.",
+        evidence: `POST ${v.endpoint} with JPEG containing script in EXIF\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Strip EXIF metadata from uploaded images using a library like sharp or exiftool. Never render raw EXIF data in HTML without sanitization.", cwe: "CWE-79", owasp: "A03:2021",
+        codeSnippet: `import sharp from 'sharp';\n// Strip all metadata from uploaded images\nconst cleaned = await sharp(buffer)\n  .rotate() // preserve orientation before stripping\n  .withMetadata({ exif: undefined, iptc: undefined, xmp: undefined })\n  .toBuffer();` });
+    } else if (v.type === "zip-slip") {
+      findings.push({ id: `file-upload-zip-slip-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `Zip slip path traversal on ${v.pathname}`,
+        description: "The upload endpoint accepted an archive with path traversal in the filename. When extracted, files may be written outside the intended directory (zip slip attack).",
+        evidence: `POST ${v.endpoint} with archive filename containing "../../"\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate extracted file paths to ensure they stay within the target directory. Reject archives with path traversal sequences.", cwe: "CWE-22", owasp: "A01:2021",
+        codeSnippet: `import path from 'path';\n\nconst extractDir = path.resolve('/app/uploads/extracted');\nfor (const entry of archive.entries()) {\n  const dest = path.resolve(extractDir, entry.name);\n  if (!dest.startsWith(extractDir + path.sep)) {\n    throw new Error('Zip slip detected: ' + entry.name);\n  }\n}` });
+    } else if (v.type === "tar-traversal") {
+      findings.push({ id: `file-upload-tar-traversal-${findings.length}`, module: "File Upload", severity: "critical",
+        title: `Tar path traversal on ${v.pathname}`,
+        description: "The upload endpoint processed a tar archive containing entries with path traversal sequences. Extracted files may overwrite arbitrary locations on the filesystem.",
+        evidence: `POST ${v.endpoint} with tar containing traversal paths\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate all tar entry paths before extraction. Use libraries with built-in zip slip protection or validate manually.", cwe: "CWE-22", owasp: "A01:2021" });
+    } else if (v.type === "double-ext") {
+      findings.push({ id: `file-upload-double-ext-${findings.length}`, module: "File Upload", severity: "high",
+        title: `Double extension bypass with ${v.filename} on ${v.pathname}`,
+        description: `The upload endpoint accepted "${v.filename}" — a dangerous double extension. On misconfigured servers (Apache with AddHandler), the first extension may be executed.`,
+        evidence: `POST ${v.endpoint} with filename "${v.filename}"\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate file type by magic bytes, not extension. Strip all extensions except the last. Generate random filenames server-side.", cwe: "CWE-434", owasp: "A04:2021" });
+    } else if (v.type === "mime-content-mismatch") {
+      findings.push({ id: `file-upload-mime-content-mismatch-${findings.length}`, module: "File Upload", severity: "high",
+        title: `MIME type vs content mismatch accepted on ${v.pathname}`,
+        description: "The upload endpoint accepted a file with PNG magic bytes but a .php extension. The server does not validate that file content matches the claimed type, allowing executable files to be uploaded disguised as images.",
+        evidence: `POST ${v.endpoint} with filename "image.php" containing PNG magic bytes\nResponse: ${v.text.substring(0, 200)}`,
+        remediation: "Validate both file extension and magic bytes. Reject files where the extension doesn't match the detected content type. Generate safe filenames server-side.", cwe: "CWE-434", owasp: "A04:2021",
+        codeSnippet: `import { fileTypeFromBuffer } from 'file-type';\nimport path from 'path';\n\nconst detected = await fileTypeFromBuffer(buffer);\nconst ext = path.extname(filename).toLowerCase();\n// Reject if extension doesn't match content\nif (detected && !EXTENSION_MAP[detected.mime]?.includes(ext)) {\n  return Response.json({ error: 'File content does not match extension' }, { status: 400 });\n}` });
     } else if (v.type === "oversize-error") {
       findings.push({ id: `file-upload-error-${findings.length}`, module: "File Upload", severity: "low",
         title: `Upload endpoint error disclosure on ${v.pathname}`,

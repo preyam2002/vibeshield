@@ -14,6 +14,28 @@ const ADMIN_PATHS = [
   "/manage", "/management", "/internal", "/backstage",
   "/debug", "/debug/", "/_debug", "/api/debug",
   "/phpinfo.php", "/server-status", "/server-info",
+  "/wp-admin", "/wp-login.php", "/administrator",
+  "/panel", "/console", "/portal", "/cpanel",
+  "/phpmyadmin", "/adminer", "/grafana", "/kibana",
+];
+
+const DEFAULT_CREDENTIALS = [
+  { username: "admin", password: "admin" },
+  { username: "admin", password: "password" },
+  { username: "admin", password: "123456" },
+  { username: "admin", password: "admin123" },
+  { username: "root", password: "root" },
+  { username: "root", password: "toor" },
+  { username: "test", password: "test" },
+  { username: "user", password: "user" },
+  { username: "demo", password: "demo" },
+  { username: "guest", password: "guest" },
+];
+
+const LOGIN_PATHS = [
+  "/api/auth/login", "/api/login", "/api/auth/signin",
+  "/api/signin", "/api/authenticate", "/auth/login",
+  "/login", "/api/session", "/api/auth/callback/credentials",
 ];
 
 export const authModule: ScanModule = async (target) => {
