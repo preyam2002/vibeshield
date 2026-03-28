@@ -470,6 +470,57 @@ export const commandInjectionModule: ScanModule = async (target) => {
         cwe: "CWE-1336", owasp: "A03:2021",
         codeSnippet: `// BAD: user input in template string\n// render(\`Hello \${userInput}\`)  // allows {{7*7}} or \${{...}}\n\n// GOOD: pass user data as template variables\nres.render("page", { name: sanitizedInput });\n\n// Use logic-less templates (Mustache) or sandbox mode\n// Jinja2: env = SandboxedEnvironment()`,
       });
+    } else if (v.type === "blind-timing") {
+      findings.push({
+        id: `cmdi-blind-timing-${count++}`, module: "command-injection", severity: "critical",
+        title: `Blind command injection (timing) on ${v.pathname} (param: ${v.paramName})`,
+        description: `A sleep-based payload (${v.label}) caused a ${v.elapsed}ms delay (baseline: ${v.baseline}ms). Confirmation with a shorter sleep took ${v.confirmElapsed}ms, indicating the server is executing injected commands.`,
+        evidence: `Payload: test${v.payload}\nResponse time: ${v.elapsed}ms\nBaseline: ${v.baseline}ms\nConfirmation (2s sleep): ${v.confirmElapsed}ms`,
+        remediation: "Never pass user input to system commands (exec, spawn, system, popen). Use language-native libraries. If shell execution is required, use strict allowlists and parameterized commands (execFile with args array).",
+        cwe: "CWE-78", owasp: "A03:2021",
+        codeSnippet: `// BAD: exec(\`ping \${userInput}\`)\n// GOOD: use execFile with args array\nimport { execFile } from "child_process";\nexecFile("ping", ["-c", "1", sanitized], callback);`,
+      });
+    } else if (v.type === "special-char") {
+      findings.push({
+        id: `cmdi-special-char-${count++}`, module: "command-injection", severity: "critical",
+        title: `Command injection via special characters on ${v.pathname} (param: ${v.paramName})`,
+        description: `A special character injection payload (${v.label}) produced command output in the response. The server fails to sanitize shell metacharacters (newlines, backticks, subshells, pipes) in user input.`,
+        evidence: `Payload: ${v.payload}\nTechnique: ${v.label}\nPattern matched: ${v.pattern}\nResponse excerpt: ${v.text}`,
+        remediation: "Sanitize all shell metacharacters from user input. Strip or reject newlines (%0a/%0d), backticks, $(), pipes, and semicolons. Prefer execFile over exec to avoid shell interpretation.",
+        cwe: "CWE-78", owasp: "A03:2021",
+        codeSnippet: `// Strip all shell metacharacters\nconst sanitized = input.replace(/[\\n\\r;&|$\\\`(){}\\[\\]!#~]/g, "");\n\n// Or better: use execFile (no shell)\nimport { execFile } from "child_process";\nexecFile(cmd, [sanitized], callback);`,
+      });
+    } else if (v.type === "os-specific") {
+      findings.push({
+        id: `cmdi-os-${count++}`, module: "command-injection", severity: "critical",
+        title: `OS command injection (${v.os}) on ${v.pathname} (param: ${v.paramName})`,
+        description: `An OS-specific payload (${v.label}, ${v.os}) produced recognizable system output. The server is executing user-controlled system commands on a ${v.os} host.`,
+        evidence: `Payload: test${v.payload}\nOS: ${v.os}\nTechnique: ${v.label}\nPattern matched: ${v.pattern}\nResponse excerpt: ${v.text}`,
+        remediation: "Never pass user input to system commands. Use language-native APIs instead of shelling out (e.g., fs.readFile instead of cat, os.userInfo() instead of whoami). Apply strict input allowlists.",
+        cwe: "CWE-78", owasp: "A03:2021",
+        codeSnippet: `// BAD: exec("cat " + userFile)\n// GOOD: use native filesystem APIs\nimport { readFileSync } from "fs";\nconst data = readFileSync(validatedPath, "utf-8");`,
+      });
+    } else if (v.type === "header-injection") {
+      findings.push({
+        id: `cmdi-header-${count++}`, module: "command-injection", severity: "high",
+        title: `Command injection via HTTP header (${v.header}) on ${v.pathname}`,
+        description: `A command injection payload in the ${v.header} header (${v.label}) produced command output in the response. The server is passing HTTP header values to system commands without sanitization.`,
+        evidence: `Header: ${v.header}\nPayload: ${v.payload}\nTechnique: ${v.label}\nResponse excerpt: ${v.text}`,
+        remediation: "Never pass HTTP header values to system commands. Treat all headers (User-Agent, Referer, X-Forwarded-For, etc.) as untrusted input. Log headers safely without shell interpolation.",
+        cwe: "CWE-78", owasp: "A03:2021",
+        confidence: 80,
+        codeSnippet: `// BAD: logging/processing headers via shell\n// exec(\`echo \${req.headers['user-agent']} >> log.txt\`)\n\n// GOOD: use native file APIs for logging\nimport { appendFileSync } from "fs";\nappendFileSync("log.txt", sanitize(req.headers["user-agent"]));`,
+      });
+    } else if (v.type === "extended-ssti") {
+      findings.push({
+        id: `cmdi-ext-ssti-${count++}`, module: "command-injection", severity: "critical",
+        title: `Template injection leading to RCE on ${v.pathname} (param: ${v.paramName})`,
+        description: `A template injection payload (${v.tag}) was evaluated server-side, returning computed or internal output. This SSTI vulnerability can escalate to full remote code execution via template engine internals.`,
+        evidence: `Payload: ${v.payload}\nTemplate engine hint: ${v.tag}\nResponse excerpt: ${v.text}`,
+        remediation: "Never interpolate user input into template source code. Pass user data as template variables only. Use sandboxed template environments (e.g., Jinja2 SandboxedEnvironment). Disable dangerous template features in production.",
+        cwe: "CWE-1336", owasp: "A03:2021",
+        codeSnippet: `// BAD: template.render(userInput) or eval in template\n// GOOD: pass data as variables\nres.render("page", { userContent: sanitizedInput });\n\n// Jinja2: use SandboxedEnvironment\nfrom jinja2.sandbox import SandboxedEnvironment\nenv = SandboxedEnvironment()`,
+      });
     } else {
       findings.push({
         id: `cmdi-output-${count++}`, module: "Command Injection", severity: "critical",
