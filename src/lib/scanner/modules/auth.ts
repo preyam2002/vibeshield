@@ -392,5 +392,341 @@ export const authModule: ScanModule = async (target) => {
     } catch { /* skip */ }
   }
 
+  // 7. Default credential testing
+  const loginEndpoints = [
+    ...target.apiEndpoints.filter((ep) => /login|signin|authenticate|session/i.test(new URL(ep).pathname)),
+    ...LOGIN_PATHS.map((p) => target.baseUrl + p),
+  ];
+  const uniqueLoginEndpoints = [...new Set(loginEndpoints)].slice(0, 3);
+
+  if (uniqueLoginEndpoints.length > 0) {
+    const credResults = await Promise.allSettled(
+      uniqueLoginEndpoints.flatMap((endpoint) =>
+        DEFAULT_CREDENTIALS.slice(0, 5).map(async ({ username, password }) => {
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password, email: username }),
+            timeoutMs: 5000,
+          });
+          if (!res.ok) return null;
+          const text = await res.text();
+          if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+          if (text.length < 10) return null;
+          // Check for successful login indicators
+          if (/token|session|jwt|access_token|auth|logged.?in|success/i.test(text) && !/invalid|error|fail|wrong|incorrect|denied/i.test(text)) {
+            return { endpoint, username, password, text };
+          }
+          return null;
+        }),
+      ),
+    );
+
+    let credCount = 0;
+    for (const r of credResults) {
+      if (credCount >= 2) break;
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const { endpoint, username, password, text } = r.value;
+      credCount++;
+      findings.push({
+        id: `auth-default-creds-${findings.length}`,
+        module: "Authentication",
+        severity: "critical",
+        title: `Default credentials accepted: ${username}/${password}`,
+        description: `The login endpoint accepted default credentials (${username}/${password}). This provides immediate unauthorized access to the application.`,
+        evidence: `POST ${endpoint}\nCredentials: ${username}:${password}\nResponse: ${text.substring(0, 200)}`,
+        remediation: "Remove or change all default credentials. Enforce strong password requirements on initial setup. Implement account provisioning that requires unique credentials.",
+        cwe: "CWE-798",
+        owasp: "A07:2021",
+        codeSnippet: `// Block common/default passwords\nconst BLOCKED_PASSWORDS = new Set([\n  'admin', 'password', '123456', 'admin123', 'root', 'test', 'demo'\n]);\n\nif (BLOCKED_PASSWORDS.has(password.toLowerCase())) {\n  return Response.json({ error: 'Password too common' }, { status: 400 });\n}`,
+      });
+    }
+  }
+
+  // 8. Password policy analysis — test registration/signup endpoints
+  const signupEndpoints = [
+    ...target.apiEndpoints.filter((ep) => /signup|register|create.?account|onboard/i.test(new URL(ep).pathname)),
+    ...["/api/auth/signup", "/api/register", "/api/auth/register", "/api/signup"].map((p) => target.baseUrl + p),
+  ];
+  const uniqueSignupEndpoints = [...new Set(signupEndpoints)].slice(0, 2);
+
+  if (uniqueSignupEndpoints.length > 0) {
+    const weakPasswords = [
+      { pw: "1", desc: "single character" },
+      { pw: "abc", desc: "3-char alphabetic" },
+      { pw: "123456", desc: "numeric only" },
+      { pw: "password", desc: "common dictionary word" },
+    ];
+    const policyResults = await Promise.allSettled(
+      uniqueSignupEndpoints.flatMap((endpoint) =>
+        weakPasswords.map(async ({ pw, desc }) => {
+          const email = `vibeshield-test-${Math.random().toString(36).slice(2)}@example.com`;
+          const res = await scanFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password: pw, username: email.split("@")[0], name: "Test" }),
+            timeoutMs: 5000,
+          });
+          if (res.status === 404 || res.status === 405) return null;
+          const text = await res.text();
+          if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+          // Check if the weak password was accepted (no password policy error)
+          if (res.ok && !/password.*(?:weak|short|simple|must|require|minimum|at least|too)/i.test(text)) {
+            return { endpoint, pw, desc };
+          }
+          return null;
+        }),
+      ),
+    );
+
+    const acceptedWeak: string[] = [];
+    for (const r of policyResults) {
+      if (r.status === "fulfilled" && r.value) acceptedWeak.push(r.value.desc);
+    }
+    if (acceptedWeak.length >= 2) {
+      findings.push({
+        id: `auth-weak-password-policy-${findings.length}`,
+        module: "Authentication",
+        severity: "medium",
+        title: "Weak password policy detected",
+        description: `The signup endpoint accepts weak passwords: ${acceptedWeak.join(", ")}. No minimum length, complexity, or dictionary checks are enforced.`,
+        evidence: `Accepted weak passwords: ${acceptedWeak.join(", ")}\nEndpoint: ${uniqueSignupEndpoints[0]}`,
+        remediation: "Enforce a minimum password length of 8+ characters with complexity requirements. Check passwords against known breach databases (e.g., HaveIBeenPwned).",
+        cwe: "CWE-521",
+        owasp: "A07:2021",
+        codeSnippet: `// Password validation\nfunction validatePassword(pw: string): string | null {\n  if (pw.length < 8) return 'Password must be at least 8 characters';\n  if (!/[A-Z]/.test(pw)) return 'Must contain uppercase letter';\n  if (!/[a-z]/.test(pw)) return 'Must contain lowercase letter';\n  if (!/[0-9]/.test(pw)) return 'Must contain a number';\n  return null; // valid\n}`,
+      });
+    }
+  }
+
+  // 9. Account lockout detection — send repeated failed logins
+  if (uniqueLoginEndpoints.length > 0) {
+    const lockoutEndpoint = uniqueLoginEndpoints[0];
+    try {
+      const lockoutResponses: { status: number; text: string; headers: Headers }[] = [];
+      for (let i = 0; i < 10; i++) {
+        const res = await scanFetch(lockoutEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "lockout-test@vibeshield.dev", password: `wrong-password-${i}`, username: "lockout-test" }),
+          timeoutMs: 5000,
+        });
+        const text = await res.text();
+        lockoutResponses.push({ status: res.status, text, headers: res.headers });
+        // Stop early if we get 429 or lockout
+        if (res.status === 429 || /locked|blocked|too many|suspended|disabled/i.test(text)) break;
+      }
+
+      const gotLocked = lockoutResponses.some((r) =>
+        r.status === 429 || /locked|blocked|too many|suspended|disabled/i.test(r.text) ||
+        r.headers.get("retry-after") !== null,
+      );
+
+      if (!gotLocked && lockoutResponses.length >= 10) {
+        const allSameStatus = lockoutResponses.every((r) => r.status === lockoutResponses[0].status);
+        if (allSameStatus) {
+          findings.push({
+            id: `auth-no-lockout-${findings.length}`,
+            module: "Authentication",
+            severity: "medium",
+            title: `No account lockout after 10 failed attempts on ${new URL(lockoutEndpoint).pathname}`,
+            description: "10 consecutive failed login attempts did not trigger any account lockout, rate limiting, or CAPTCHA challenge. This enables unlimited brute-force attacks.",
+            evidence: `POST ${lockoutEndpoint}\n10 failed login attempts → all returned ${lockoutResponses[0].status}\nNo lockout, 429, or retry-after headers detected`,
+            remediation: "Implement progressive account lockout (e.g., lock for 15 minutes after 5 failed attempts). Add CAPTCHA after 3 failures. Send notification emails on suspicious login activity.",
+            cwe: "CWE-307",
+            owasp: "A07:2021",
+            codeSnippet: `// Track failed attempts per account\nconst failures = await redis.incr(\`login:fail:\${email}\`);\nawait redis.expire(\`login:fail:\${email}\`, 900); // 15 min window\nif (failures > 5) {\n  await redis.set(\`login:locked:\${email}\`, '1', 'EX', 900);\n  return Response.json({ error: 'Account temporarily locked' }, { status: 423 });\n}`,
+          });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  // 10. Password reset token analysis
+  const resetEndpoints = [
+    ...target.apiEndpoints.filter((ep) => /forgot|reset|recover/i.test(new URL(ep).pathname)),
+    ...["/api/auth/forgot-password", "/api/forgot-password", "/api/auth/reset", "/api/password-reset"].map((p) => target.baseUrl + p),
+  ];
+  const uniqueResetEndpoints = [...new Set(resetEndpoints)].slice(0, 2);
+
+  if (uniqueResetEndpoints.length > 0) {
+    const resetResults = await Promise.allSettled(
+      uniqueResetEndpoints.map(async (endpoint) => {
+        // Send two reset requests to compare tokens for predictability
+        const res1 = await scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "reset-test-1@vibeshield.dev" }),
+          timeoutMs: 5000,
+        });
+        if (res1.status === 404 || res1.status === 405) return null;
+        const text1 = await res1.text();
+        if (looksLikeHtml(text1) && (isSoft404(text1, target) || target.isSpa)) return null;
+
+        const res2 = await scanFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "reset-test-2@vibeshield.dev" }),
+          timeoutMs: 5000,
+        });
+        const text2 = await res2.text();
+
+        // Check if tokens are exposed in the response
+        const tokenPattern = /["'](?:token|reset_token|resetToken|code)["']\s*:\s*["']([^"']+)["']/i;
+        const match1 = text1.match(tokenPattern);
+        const match2 = text2.match(tokenPattern);
+
+        if (match1 && match2) {
+          const token1 = match1[1];
+          const token2 = match2[1];
+          // Check for short/predictable tokens
+          const isShort = token1.length < 20;
+          const isSequential = Math.abs(parseInt(token1, 16) - parseInt(token2, 16)) < 1000;
+          const isNumericOnly = /^\d+$/.test(token1);
+          return { endpoint, token1, token2, isShort, isSequential, isNumericOnly, text: text1 };
+        }
+
+        // Check if the response reveals whether the email exists (enumeration)
+        if (res1.ok !== res2.ok || text1.length !== text2.length) {
+          const diff = Math.abs(text1.length - text2.length);
+          if (diff > 10) {
+            return { endpoint, enumeration: true, text1, text2 };
+          }
+        }
+
+        return null;
+      }),
+    );
+
+    for (const r of resetResults) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      const v = r.value;
+      if ("enumeration" in v && v.enumeration) {
+        findings.push({
+          id: `auth-reset-enumeration-${findings.length}`,
+          module: "Authentication",
+          severity: "medium",
+          title: `User enumeration via password reset on ${new URL(v.endpoint).pathname}`,
+          description: "The password reset endpoint returns different responses for existing vs non-existing emails, enabling user enumeration.",
+          evidence: `POST ${v.endpoint}\nDifferent response lengths for different emails\nResponse 1: ${v.text1.substring(0, 100)}\nResponse 2: ${v.text2.substring(0, 100)}`,
+          remediation: "Return a generic response regardless of whether the email exists. Always say 'If this email exists, a reset link has been sent.'",
+          cwe: "CWE-204",
+          owasp: "A07:2021",
+        });
+      } else if ("token1" in v) {
+        const issues: string[] = [];
+        if (v.isShort) issues.push("short token length");
+        if (v.isSequential) issues.push("sequential/predictable values");
+        if (v.isNumericOnly) issues.push("numeric-only token");
+        issues.push("token exposed in response body");
+        findings.push({
+          id: `auth-reset-token-weak-${findings.length}`,
+          module: "Authentication",
+          severity: "high",
+          title: `Weak password reset token on ${new URL(v.endpoint).pathname}`,
+          description: `The password reset endpoint returns tokens directly in the response with issues: ${issues.join(", ")}. Reset tokens should be sent via email only and be cryptographically random.`,
+          evidence: `POST ${v.endpoint}\nToken 1: ${v.token1}\nToken 2: ${v.token2}\nIssues: ${issues.join(", ")}`,
+          remediation: "Generate reset tokens with crypto.randomBytes(32). Never expose tokens in API responses — send via email only. Set token expiry to 15-30 minutes.",
+          cwe: "CWE-640",
+          owasp: "A07:2021",
+          codeSnippet: `import crypto from 'crypto';\n\nconst token = crypto.randomBytes(32).toString('hex');\nawait db.resetToken.create({\n  data: { token: await bcrypt.hash(token, 10), userId, expiresAt: new Date(Date.now() + 30 * 60000) },\n});\nawait sendEmail(email, \`Reset: \${url}/reset?token=\${token}\`);\n// NEVER return the token in the API response\nreturn Response.json({ message: 'If this email exists, a reset link was sent' });`,
+        });
+      }
+    }
+  }
+
+  // 11. Multi-factor authentication detection
+  if (uniqueLoginEndpoints.length > 0) {
+    const mfaIndicators = {
+      inJs: Array.from(target.jsContents.values()).some((js) => /2fa|mfa|totp|otp|authenticator|two.?factor|multi.?factor|verify.?code|sms.?code/i.test(js)),
+      inEndpoints: target.apiEndpoints.some((ep) => /2fa|mfa|totp|otp|verify.?code/i.test(ep)),
+    };
+
+    if (!mfaIndicators.inJs && !mfaIndicators.inEndpoints) {
+      findings.push({
+        id: `auth-no-mfa-${findings.length}`,
+        module: "Authentication",
+        severity: "medium",
+        title: "No multi-factor authentication detected",
+        description: "No references to MFA, 2FA, TOTP, or OTP were found in the application's JavaScript bundles or API endpoints. Multi-factor authentication significantly reduces the risk of account compromise.",
+        evidence: `Searched JS bundles (${target.jsContents.size} files) and ${target.apiEndpoints.length} API endpoints\nNo MFA/2FA/TOTP/OTP references found`,
+        remediation: "Implement multi-factor authentication using TOTP (e.g., Google Authenticator) or WebAuthn. At minimum, offer SMS-based 2FA for high-value accounts.",
+        cwe: "CWE-308",
+        owasp: "A07:2021",
+        codeSnippet: `// Using otplib for TOTP\nimport { authenticator } from 'otplib';\n\n// Generate secret for user\nconst secret = authenticator.generateSecret();\n// Verify TOTP code\nconst isValid = authenticator.verify({ token: userCode, secret: user.totpSecret });\nif (!isValid) return Response.json({ error: 'Invalid 2FA code' }, { status: 401 });`,
+      });
+    }
+  }
+
+  // 12. Remember-me token security — check for persistent auth cookies
+  const authCookies = target.cookies.filter((c) =>
+    /remember|persistent|stay.?logged|keep.?logged|auth|session|token/i.test(c.name),
+  );
+  for (const cookie of authCookies.slice(0, 2)) {
+    const issues: string[] = [];
+    if (!cookie.httpOnly) issues.push("missing HttpOnly flag (vulnerable to XSS theft)");
+    if (!cookie.secure) issues.push("missing Secure flag (sent over HTTP)");
+    if (!cookie.sameSite || cookie.sameSite.toLowerCase() === "none") issues.push("SameSite=None (vulnerable to CSRF)");
+    // Check for predictable/short token values
+    if (cookie.value && cookie.value.length < 20) issues.push("short token value (predictable)");
+
+    if (issues.length >= 2) {
+      findings.push({
+        id: `auth-remember-me-insecure-${findings.length}`,
+        module: "Authentication",
+        severity: "high",
+        title: `Insecure remember-me cookie: ${cookie.name}`,
+        description: `The persistent authentication cookie "${cookie.name}" has security issues: ${issues.join("; ")}. This exposes the session to theft or hijacking.`,
+        evidence: `Cookie: ${cookie.name}\nSecure: ${cookie.secure}\nHttpOnly: ${cookie.httpOnly}\nSameSite: ${cookie.sameSite}\nValue length: ${cookie.value?.length || 0}\nIssues: ${issues.join(", ")}`,
+        remediation: "Set all auth cookies with Secure, HttpOnly, and SameSite=Lax/Strict flags. Use long, cryptographically random token values. Implement token rotation on each use.",
+        cwe: "CWE-614",
+        owasp: "A07:2021",
+        codeSnippet: `// Secure cookie settings\nres.cookie('remember_token', crypto.randomBytes(32).toString('hex'), {\n  httpOnly: true,\n  secure: true,\n  sameSite: 'lax',\n  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days\n  path: '/',\n});`,
+      });
+    }
+  }
+
+  // 13. Forced browsing to additional admin panels
+  const additionalAdminPaths = [
+    "/api/users", "/api/roles", "/api/permissions", "/api/config",
+    "/api/settings", "/api/system", "/api/logs", "/api/audit",
+    "/api/env", "/api/health/full", "/api/internal",
+    "/.env", "/config.json", "/config.yml", "/settings.json",
+  ];
+  const forcedBrowsingResults = await Promise.allSettled(
+    additionalAdminPaths.map(async (path) => {
+      const url = target.baseUrl + path;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (res.status !== 200) return null;
+      const text = await res.text();
+      if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+      if (text.length < 20) return null;
+      // Check for sensitive config/admin data
+      if (/password|secret|api.?key|database|db_|redis|aws_|private|credential/i.test(text)) {
+        return { path, url, text };
+      }
+      return null;
+    }),
+  );
+
+  let forcedCount = 0;
+  for (const r of forcedBrowsingResults) {
+    if (forcedCount >= 2) break;
+    if (r.status !== "fulfilled" || !r.value) continue;
+    const { path, url, text } = r.value;
+    forcedCount++;
+    findings.push({
+      id: `auth-forced-browsing-${findings.length}`,
+      module: "Authentication",
+      severity: "critical",
+      title: `Sensitive endpoint exposed without auth: ${path}`,
+      description: "A sensitive administrative or configuration endpoint is accessible without authentication, exposing internal data such as credentials, API keys, or system configuration.",
+      evidence: `GET ${url}\nStatus: 200\nResponse preview: ${text.substring(0, 300)}`,
+      remediation: "Protect all sensitive endpoints with authentication. Move configuration files outside the web root. Use environment variables instead of config files.",
+      cwe: "CWE-425",
+      owasp: "A01:2021",
+    });
+  }
+
   return findings;
 };

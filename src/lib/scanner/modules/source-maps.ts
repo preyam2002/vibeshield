@@ -342,5 +342,336 @@ export const sourceMapsModule: ScanModule = async (target) => {
     });
   }
 
+  // CSS source map detection — check for .css.map files alongside stylesheets
+  const cssUrls: string[] = [];
+  for (const page of target.pages.slice(0, 5)) {
+    try {
+      const res = await scanFetch(page, { timeoutMs: 5000 });
+      const html = await res.text();
+      const cssMatches = html.matchAll(/<link[^>]+href=["']([^"']+\.css)["']/gi);
+      for (const m of cssMatches) {
+        const href = m[1];
+        const cssUrl = href.startsWith("http") ? href : new URL(href, page).href;
+        if (!cssUrls.includes(cssUrl)) cssUrls.push(cssUrl);
+      }
+    } catch { /* skip */ }
+  }
+
+  const cssMapResults = await Promise.allSettled(
+    cssUrls.slice(0, 20).flatMap((cssUrl) => {
+      const checks = [cssUrl + ".map"];
+      // Also check for sourceMappingURL comment inside the CSS
+      const checkInline = async (): Promise<{ url: string; type: "inline" } | null> => {
+        const res = await scanFetch(cssUrl, { timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const text = await res.text();
+        const mapMatch = text.match(/\/\*[#@]\s*sourceMappingURL\s*=\s*(\S+)\s*\*\//);
+        if (mapMatch && !mapMatch[1].startsWith("data:")) {
+          const mapUrl = mapMatch[1].startsWith("http") ? mapMatch[1] : new URL(mapMatch[1], cssUrl).href;
+          const mapRes = await scanFetch(mapUrl, { timeoutMs: 5000 });
+          if (mapRes.ok) {
+            const mapText = await mapRes.text();
+            try {
+              const json = JSON.parse(mapText);
+              if (json.version && json.sources) return { url: mapUrl, type: "inline" as const };
+            } catch { /* skip */ }
+          }
+        }
+        return null;
+      };
+      const checkConvention = async (): Promise<{ url: string; type: "convention" } | null> => {
+        const mapUrl = checks[0];
+        const res = await scanFetch(mapUrl, { timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const text = await res.text();
+        try {
+          const json = JSON.parse(text);
+          if (json.version && json.sources) return { url: mapUrl, type: "convention" as const };
+        } catch { /* skip */ }
+        return null;
+      };
+      return [checkInline(), checkConvention()];
+    }),
+  );
+
+  const foundCssMaps: string[] = [];
+  for (const r of cssMapResults) {
+    if (r.status === "fulfilled" && r.value && !foundCssMaps.includes(r.value.url)) {
+      foundCssMaps.push(r.value.url);
+    }
+  }
+
+  if (foundCssMaps.length > 0) {
+    findings.push({
+      id: "sourcemaps-css",
+      module: "Source Maps",
+      severity: "medium",
+      title: `${foundCssMaps.length} CSS source map${foundCssMaps.length > 1 ? "s" : ""} publicly accessible`,
+      description: "CSS source map files are accessible in production. These expose original SCSS/SASS/Less source files, including variable names, mixin structures, and potentially internal class naming conventions that reveal component architecture.",
+      evidence: `Accessible CSS source maps:\n${foundCssMaps.slice(0, 5).join("\n")}${foundCssMaps.length > 5 ? `\n...and ${foundCssMaps.length - 5} more` : ""}`,
+      remediation: "Disable CSS source map generation in production builds. For webpack: css-loader options.sourceMap: false. Block .css.map files at the CDN/reverse proxy level.",
+      cwe: "CWE-540",
+      owasp: "A05:2021",
+      confidence: 90,
+      codeSnippet: `// webpack.config.js\nmodule.exports = {\n  module: {\n    rules: [{\n      test: /\\.css$/,\n      use: [\n        "style-loader",\n        { loader: "css-loader", options: { sourceMap: false } },\n      ],\n    }],\n  },\n};\n\n// Nginx — block CSS source maps\nlocation ~* \\.css\\.map$ {\n  return 404;\n}`,
+    });
+  }
+
+  // Source map via sourceMappingURL in inline scripts
+  const inlineScriptMaps: { page: string; mapUrl: string }[] = [];
+  for (const page of target.pages.slice(0, 5)) {
+    try {
+      const res = await scanFetch(page, { timeoutMs: 5000 });
+      const html = await res.text();
+      const scriptMatches = html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi);
+      for (const m of scriptMatches) {
+        const scriptContent = m[1];
+        if (scriptContent.length < 50) continue;
+        const mapMatch = scriptContent.match(/\/\/[#@]\s*sourceMappingURL\s*=\s*(\S+)/);
+        if (mapMatch && !mapMatch[1].startsWith("data:")) {
+          const mapUrl = mapMatch[1].startsWith("http") ? mapMatch[1] : new URL(mapMatch[1], page).href;
+          inlineScriptMaps.push({ page, mapUrl });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  if (inlineScriptMaps.length > 0) {
+    // Verify the source maps are actually accessible
+    const inlineMapVerifyResults = await Promise.allSettled(
+      inlineScriptMaps.slice(0, 10).map(async (entry) => {
+        const res = await scanFetch(entry.mapUrl, { timeoutMs: 5000 });
+        if (!res.ok) return null;
+        const text = await res.text();
+        try {
+          const json = JSON.parse(text);
+          if (json.version && json.sources) return entry;
+        } catch { /* skip */ }
+        return null;
+      }),
+    );
+
+    const verifiedInlineMaps = inlineMapVerifyResults
+      .filter((r) => r.status === "fulfilled" && r.value)
+      .map((r) => (r as PromiseFulfilledResult<{ page: string; mapUrl: string }>).value);
+
+    if (verifiedInlineMaps.length > 0) {
+      findings.push({
+        id: "sourcemaps-inline-script-ref",
+        module: "Source Maps",
+        severity: "high",
+        title: `${verifiedInlineMaps.length} inline script${verifiedInlineMaps.length > 1 ? "s" : ""} reference accessible source maps`,
+        description: "Inline <script> blocks in HTML pages contain sourceMappingURL comments pointing to accessible source map files. This exposes original source code for scripts embedded directly in the page.",
+        evidence: verifiedInlineMaps.slice(0, 5).map((e) => `Page: ${new URL(e.page).pathname}\n  Map: ${e.mapUrl}`).join("\n"),
+        remediation: "Strip sourceMappingURL comments from inline scripts during the build process. Use a post-processing step or CSP to prevent source map exposure.",
+        cwe: "CWE-540",
+        owasp: "A05:2021",
+        confidence: 90,
+      });
+    }
+  }
+
+  // Source map content analysis — look for sensitive paths and API key variable names
+  const sensitivePatterns = [
+    { pattern: /(?:api[_-]?key|apiKey|API_KEY)\s*[:=]\s*["']([^"']{8,})["']/i, label: "API key assignment" },
+    { pattern: /(?:secret|SECRET|token|TOKEN)\s*[:=]\s*["']([^"']{8,})["']/i, label: "Secret/token assignment" },
+    { pattern: /(?:password|PASSWORD|passwd)\s*[:=]\s*["']([^"']{4,})["']/i, label: "Password assignment" },
+    { pattern: /(?:aws_access_key_id|AWS_ACCESS)\s*[:=]\s*["']([A-Z0-9]{16,})["']/i, label: "AWS access key" },
+    { pattern: /(?:firebase|FIREBASE).*?["']AIza[A-Za-z0-9_-]{35}["']/i, label: "Firebase API key" },
+    { pattern: /(?:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59})/i, label: "GitHub token" },
+  ];
+
+  const sensitivePathPatterns = [
+    /\/(?:internal|private|admin|secret|hidden)\//i,
+    /\/(?:\.env|\.config|credentials|secrets)\//i,
+    /\/(?:node_modules|vendor)\//i,
+    /(?:\/src\/(?:server|backend|api|db|database|auth)\/)/i,
+  ];
+
+  const contentAnalysisFindings: { mapUrl: string; secrets: string[]; sensitivePaths: string[] }[] = [];
+  for (const data of mapData) {
+    const sensitivePaths = data.sensitiveFiles.length > 0 ? data.sensitiveFiles : [];
+    // Also check source paths against sensitive patterns
+    try {
+      const mapRes = await scanFetch(data.url, { timeoutMs: 8000 });
+      if (!mapRes.ok) continue;
+      const mapText = await mapRes.text();
+      const json = JSON.parse(mapText) as { sources?: string[]; sourcesContent?: string[] };
+
+      // Check paths
+      for (const src of json.sources || []) {
+        for (const pp of sensitivePathPatterns) {
+          if (pp.test(src) && !sensitivePaths.includes(src)) {
+            sensitivePaths.push(src);
+          }
+        }
+      }
+
+      // Check source content for secrets
+      const secrets: string[] = [];
+      for (const content of (json.sourcesContent || []).slice(0, 30)) {
+        if (!content) continue;
+        for (const sp of sensitivePatterns) {
+          if (sp.pattern.test(content) && !secrets.includes(sp.label)) {
+            secrets.push(sp.label);
+          }
+        }
+      }
+
+      if (secrets.length > 0 || sensitivePaths.length > 3) {
+        contentAnalysisFindings.push({ mapUrl: data.url, secrets, sensitivePaths: sensitivePaths.slice(0, 10) });
+      }
+    } catch { /* skip */ }
+  }
+
+  if (contentAnalysisFindings.length > 0) {
+    const hasSecrets = contentAnalysisFindings.some((f) => f.secrets.length > 0);
+    const allSecrets = [...new Set(contentAnalysisFindings.flatMap((f) => f.secrets))];
+    const allPaths = [...new Set(contentAnalysisFindings.flatMap((f) => f.sensitivePaths))];
+    findings.push({
+      id: "sourcemaps-content-analysis",
+      module: "Source Maps",
+      severity: hasSecrets ? "critical" : "high",
+      title: `Source map content analysis: ${hasSecrets ? `secrets detected (${allSecrets.join(", ")})` : `${allPaths.length} sensitive file paths exposed`}`,
+      description: `Deep analysis of source map contents revealed ${hasSecrets ? `potential hardcoded secrets (${allSecrets.join(", ")})` : "sensitive internal file paths"} in the original source code.${allPaths.length > 0 ? ` Exposed paths include: ${allPaths.slice(0, 5).join(", ")}.` : ""}`,
+      evidence: contentAnalysisFindings.slice(0, 3).map((f) =>
+        `${f.mapUrl}:\n${f.secrets.length > 0 ? `  Secrets: ${f.secrets.join(", ")}\n` : ""}${f.sensitivePaths.length > 0 ? `  Sensitive paths: ${f.sensitivePaths.slice(0, 5).join(", ")}` : ""}`,
+      ).join("\n"),
+      remediation: hasSecrets
+        ? "IMMEDIATELY rotate all secrets found in source maps. Disable source maps in production and audit your codebase for hardcoded credentials. Use environment variables for all secrets."
+        : "Disable source maps in production to prevent exposure of internal file structure and sensitive paths.",
+      cwe: hasSecrets ? "CWE-798" : "CWE-540",
+      owasp: "A05:2021",
+      confidence: hasSecrets ? 80 : 70,
+    });
+  }
+
+  // Hidden source map endpoint patterns
+  const hiddenSourceMapPaths = [
+    "/debug/source-maps", "/debug/sourcemaps", "/debug/maps",
+    "/.sourcemaps/", "/.source-maps/", "/sourcemaps/",
+    "/.maps/", "/source-maps/", "/__sourcemaps/",
+    "/dev/sourcemaps", "/dev/source-maps",
+    "/_debug/sourcemaps", "/_sourcemaps/",
+  ];
+  const hiddenSmResults = await Promise.allSettled(
+    hiddenSourceMapPaths.map(async (path) => {
+      const url = `${origin}${path}`;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (text.length < 10) return null;
+      if (/not found|404|page doesn't exist/i.test(text) && text.length < 5000) return null;
+      // Check if it looks like a directory listing or source map content
+      const isSourceMapRelated = /\.map|sourceMappingURL|sources|mappings|version/i.test(text);
+      if (!isSourceMapRelated && text.length < 200) return null;
+      return { path, size: text.length, isSourceMapRelated };
+    }),
+  );
+
+  const foundHiddenSm = hiddenSmResults
+    .filter((r) => r.status === "fulfilled" && r.value)
+    .map((r) => (r as PromiseFulfilledResult<{ path: string; size: number; isSourceMapRelated: boolean }>).value);
+
+  if (foundHiddenSm.length > 0) {
+    findings.push({
+      id: "sourcemaps-hidden-endpoints",
+      module: "Source Maps",
+      severity: "high",
+      title: `${foundHiddenSm.length} hidden source map endpoint${foundHiddenSm.length > 1 ? "s" : ""} detected`,
+      description: "Source map files or directories are accessible at non-standard/debug paths. These hidden endpoints are often left behind after disabling standard source map serving and can expose full application source code.",
+      evidence: foundHiddenSm.map((s) => `${s.path} (${s.size} bytes)`).join("\n"),
+      remediation: "Remove all source map debug endpoints from production. Audit your server configuration for any paths serving .map files. Use automated checks to detect source map leaks.",
+      cwe: "CWE-540",
+      owasp: "A05:2021",
+      confidence: 75,
+    });
+  }
+
+  // Framework-specific source map paths — probe well-known paths for Vite, CRA, and other frameworks
+  const frameworkMapPaths = [
+    // Vite
+    { path: "/assets/index.js.map", framework: "Vite" },
+    { path: "/assets/vendor.js.map", framework: "Vite" },
+    { path: "/assets/index.css.map", framework: "Vite" },
+    { path: "/.vite/deps/_metadata.json", framework: "Vite" },
+    { path: "/.vite/deps/package.json", framework: "Vite" },
+    // Next.js additional paths
+    { path: "/_next/static/chunks/app/layout.js.map", framework: "Next.js" },
+    { path: "/_next/static/chunks/app/page.js.map", framework: "Next.js" },
+    { path: "/_next/static/chunks/polyfills.js.map", framework: "Next.js" },
+    { path: "/_next/static/development/_buildManifest.js", framework: "Next.js" },
+    { path: "/_next/static/development/_ssgManifest.js", framework: "Next.js" },
+    // Create React App
+    { path: "/static/js/main.chunk.js.map", framework: "CRA" },
+    { path: "/static/js/vendors~main.chunk.js.map", framework: "CRA" },
+    { path: "/static/js/runtime-main.js.map", framework: "CRA" },
+    { path: "/static/css/main.chunk.css.map", framework: "CRA" },
+    // Webpack numbered chunks
+    { path: "/static/js/3.chunk.js.map", framework: "Webpack" },
+    { path: "/static/js/4.chunk.js.map", framework: "Webpack" },
+    { path: "/static/js/5.chunk.js.map", framework: "Webpack" },
+    { path: "/static/js/6.chunk.js.map", framework: "Webpack" },
+    { path: "/static/js/7.chunk.js.map", framework: "Webpack" },
+    // Angular
+    { path: "/main.js.map", framework: "Angular" },
+    { path: "/polyfills.js.map", framework: "Angular" },
+    { path: "/runtime.js.map", framework: "Angular" },
+    { path: "/vendor.js.map", framework: "Angular" },
+    { path: "/styles.css.map", framework: "Angular" },
+    // Nuxt
+    { path: "/_nuxt/entry.js.map", framework: "Nuxt" },
+    { path: "/_nuxt/vendor.js.map", framework: "Nuxt" },
+  ];
+
+  const frameworkResults = await Promise.allSettled(
+    frameworkMapPaths.map(async (check) => {
+      const url = `${origin}${check.path}`;
+      const res = await scanFetch(url, { timeoutMs: 5000 });
+      if (!res.ok) return null;
+      const text = await res.text();
+      if (text.length < 20) return null;
+      // For .map files, verify valid source map JSON
+      if (check.path.endsWith(".map")) {
+        try {
+          const json = JSON.parse(text);
+          if (json.version && json.sources && json.mappings) {
+            return { ...check, sourceCount: (json.sources as string[]).length };
+          }
+        } catch { /* skip */ }
+        return null;
+      }
+      // For metadata/config files, just verify they have content
+      if (/not found|404/i.test(text) && text.length < 5000) return null;
+      return { ...check, sourceCount: 0 };
+    }),
+  );
+
+  const foundFrameworkMaps = frameworkResults
+    .filter((r) => r.status === "fulfilled" && r.value)
+    .map((r) => (r as PromiseFulfilledResult<{ path: string; framework: string; sourceCount: number }>).value);
+
+  // Only report if not already covered by the chunk maps check above
+  const alreadyReported = new Set(foundChunkMaps.map((m) => m.path));
+  const newFrameworkMaps = foundFrameworkMaps.filter((m) => !alreadyReported.has(m.path));
+
+  if (newFrameworkMaps.length > 0) {
+    const frameworks = [...new Set(newFrameworkMaps.map((m) => m.framework))];
+    const totalSrc = newFrameworkMaps.reduce((sum, m) => sum + m.sourceCount, 0);
+    findings.push({
+      id: "sourcemaps-framework-specific",
+      module: "Source Maps",
+      severity: "high",
+      title: `${newFrameworkMaps.length} ${frameworks.join("/")} source map${newFrameworkMaps.length > 1 ? "s" : ""} exposed at framework-specific paths`,
+      description: `Source maps were found at paths specific to ${frameworks.join(", ")} builds${totalSrc > 0 ? `, exposing ${totalSrc} source files` : ""}. These framework-specific paths are well-known to attackers and automated scanners.`,
+      evidence: `Framework source maps:\n${newFrameworkMaps.slice(0, 8).map((m) => `[${m.framework}] ${m.path}${m.sourceCount > 0 ? ` (${m.sourceCount} sources)` : ""}`).join("\n")}${newFrameworkMaps.length > 8 ? `\n...and ${newFrameworkMaps.length - 8} more` : ""}`,
+      remediation: `Disable source maps in production for ${frameworks.join(", ")}. ${frameworks.includes("Vite") ? "Vite: set build.sourcemap: false. " : ""}${frameworks.includes("Angular") ? "Angular: set sourceMap: false in angular.json production config. " : ""}${frameworks.includes("Nuxt") ? "Nuxt: set sourcemap: false in nuxt.config.ts. " : ""}${frameworks.includes("CRA") ? "CRA: set GENERATE_SOURCEMAP=false in .env. " : ""}Block access at the CDN/proxy level as defense in depth.`,
+      cwe: "CWE-540",
+      owasp: "A05:2021",
+      confidence: 90,
+      codeSnippet: `// Vite\nexport default defineConfig({ build: { sourcemap: false } });\n\n// Angular (angular.json)\n"production": { "sourceMap": false }\n\n// Nuxt (nuxt.config.ts)\nexport default defineNuxtConfig({ sourcemap: false });\n\n// CRA (.env)\nGENERATE_SOURCEMAP=false`,
+    });
+  }
+
   return findings;
 };
