@@ -39,7 +39,8 @@ export async function POST(req: NextRequest) {
   if (!auth.valid)
     return NextResponse.json({ error: auth.error }, { status: 401 });
 
-  const body = await req.json();
+  let body: { findingKey?: string; reason?: string };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
   const { findingKey, reason } = body as {
     findingKey?: string;
     reason?: string;
@@ -71,7 +72,9 @@ export async function DELETE(req: NextRequest) {
   if (!auth.valid)
     return NextResponse.json({ error: auth.error }, { status: 401 });
 
-  const { findingKey } = (await req.json()) as { findingKey?: string };
+  let deleteBody: { findingKey?: string };
+  try { deleteBody = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
+  const { findingKey } = deleteBody;
 
   if (!findingKey) {
     return NextResponse.json(

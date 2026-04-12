@@ -47,7 +47,8 @@ const isPrivateHost = (host: string): boolean => {
 export async function POST(req: NextRequest) {
   const auth = validateApiKey(req);
   if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
-  const body = await req.json() as { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick"; minScore?: number; failOnCritical?: boolean; authHeaders?: Record<string, string>; authCookies?: string; policyId?: string; modules?: string[] };
+  let body: { url?: string; callbackUrl?: string; mode?: "full" | "security" | "quick"; minScore?: number; failOnCritical?: boolean; authHeaders?: Record<string, string>; authCookies?: string; policyId?: string; modules?: string[] };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
   const url = typeof body.url === "string" ? body.url.trim() : "";
   // Validate callback URL — only allow public HTTPS URLs
   let callbackUrl: string | undefined;

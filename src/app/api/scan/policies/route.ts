@@ -40,7 +40,8 @@ export async function POST(req: NextRequest) {
   if (!auth.valid)
     return NextResponse.json({ error: auth.error }, { status: 401 });
 
-  const body = await req.json();
+  let body: { name?: string; description?: string; enabledModules?: string[] };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
   const { name, description, enabledModules } = body as {
     name?: string;
     description?: string;
@@ -79,7 +80,9 @@ export async function DELETE(req: NextRequest) {
   if (!auth.valid)
     return NextResponse.json({ error: auth.error }, { status: 401 });
 
-  const { id } = (await req.json()) as { id?: string };
+  let deleteBody: { id?: string };
+  try { deleteBody = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
+  const { id } = deleteBody;
 
   if (!id) {
     return NextResponse.json(

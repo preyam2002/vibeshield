@@ -96,6 +96,17 @@ export default function DashboardPage() {
     loadData();
   };
 
+  const runNow = async (schedule: ScheduledScan) => {
+    try {
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: schedule.url, mode: schedule.mode }),
+      });
+      if (res.ok) loadData();
+    } catch { /* skip */ }
+  };
+
   const activeScans = scans.filter((s) => s.status === "scanning" || s.status === "queued");
   const completedScans = scans.filter((s) => s.status === "completed");
 
@@ -242,6 +253,13 @@ export default function DashboardPage() {
                           Next: {nextRun.toLocaleString()}
                         </div>
                       </div>
+                      <button
+                        onClick={() => runNow(s)}
+                        className="text-zinc-600 hover:text-zinc-300 transition-colors text-xs shrink-0"
+                        title="Run scan now"
+                      >
+                        Run Now
+                      </button>
                       <button
                         onClick={() => deleteSchedule(s.id)}
                         className="text-zinc-600 hover:text-red-400 transition-colors text-xs shrink-0"

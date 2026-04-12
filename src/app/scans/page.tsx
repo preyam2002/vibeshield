@@ -69,6 +69,21 @@ export default function ScansPage() {
     return () => clearInterval(interval);
   }, []);
 
+  const deleteScan = async (id: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm("Delete this scan? This cannot be undone.")) return;
+    try {
+      await fetch(`/api/scan/${id}`, { method: "DELETE" });
+      setScans((prev) => prev.filter((s) => s.id !== id));
+      try {
+        const stored: ScanEntry[] = JSON.parse(localStorage.getItem("vibeshield-history") || "[]");
+        localStorage.setItem("vibeshield-history", JSON.stringify(stored.filter((s) => s.id !== id)));
+        localStorage.removeItem(`vibeshield-scan-${id}`);
+      } catch { /* skip */ }
+    } catch { /* skip */ }
+  };
+
   const searchLower = search.toLowerCase();
   const filtered = scans.filter((s) => {
     if (search && !s.target.toLowerCase().includes(searchLower)) return false;
@@ -392,6 +407,17 @@ export default function ScansPage() {
                       );
                     })}
                   </div>
+                  {!isRunning && (
+                    <button
+                      onClick={(e) => deleteScan(s.id, e)}
+                      className="text-zinc-800 hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
+                      title="Delete scan"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
                   <svg className="w-4 h-4 text-zinc-700 group-hover:text-zinc-500 transition-colors shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>

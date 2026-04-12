@@ -281,8 +281,18 @@ export const jwtModule: ScanModule = async (target) => {
           timeoutMs: 5000,
         });
         if (!res.ok) return null;
+
+        // Followed a redirect? Then the "endpoint" isn't actually an API — likely a
+        // URL rewrite to a marketing page. Bail out to avoid FPs like /api/event → /event-info/.
+        try {
+          const finalPath = new URL(res.url || endpoint).pathname.replace(/\/$/, "");
+          const origPath = new URL(endpoint).pathname.replace(/\/$/, "");
+          if (finalPath !== origPath) return null;
+        } catch { /* skip */ }
+
         const text = await res.text();
-        if (looksLikeHtml(text) && (isSoft404(text, target) || target.isSpa)) return null;
+        // An API that trusts JWTs returns JSON/text — not a full HTML page.
+        if (looksLikeHtml(text)) return null;
         if (/unauthorized|invalid|forbidden|expired/i.test(text.substring(0, 200))) return null;
         if (text.length > 10) {
           return { endpoint, pathname: new URL(endpoint).pathname };

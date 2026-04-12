@@ -1,4 +1,5 @@
 import type { ScanModuleDefinition, ScanTarget, Finding } from "./types";
+import { scanLogger } from "@/lib/logger";
 import {
   createScan,
   getScan,
@@ -33,6 +34,7 @@ import { graphqlModule } from "./modules/graphql";
 import { websocketModule } from "./modules/websocket";
 import { httpMethodsModule } from "./modules/http-methods";
 import { clickjackingModule } from "./modules/clickjacking";
+import { postmessageModule } from "./modules/postmessage";
 import { emailEnumModule } from "./modules/email-enum";
 import { nextjsModule } from "./modules/nextjs";
 import { stripeModule } from "./modules/stripe";
@@ -82,6 +84,7 @@ export const SECURITY_MODULES: ScanModuleDefinition[] = [
   { name: "SSL/TLS", description: "Check HTTPS and TLS configuration", category: "security", run: sslModule },
   { name: "Cookies", description: "Check cookie security flags", category: "security", run: cookiesModule },
   { name: "Clickjacking", description: "Test clickjacking protection", category: "security", run: clickjackingModule },
+  { name: "postMessage", description: "Analyze postMessage handlers for missing origin validation", category: "security", run: postmessageModule },
   { name: "CSP Analysis", description: "Deep Content Security Policy analysis for bypasses", category: "security", run: cspModule },
   { name: "Secret Detection", description: "Scan JS bundles for exposed API keys and secrets", category: "security", run: secretsModule },
   { name: "Source Maps", description: "Check for exposed source maps", category: "security", run: sourceMapsModule },
@@ -204,7 +207,7 @@ export const startScan = (
     }).catch((err) => {
       cleanupAbort(scanId);
       if (!abortController.signal.aborted) {
-        console.error(`Scan ${scanId} failed:`, err);
+        scanLogger.error({ scanId, err: String(err) }, `Scan failed`);
         updateScanStatus(scanId, "failed", humanizeError(err, targetUrl));
       }
       if (callbackUrl) sendCallback(callbackUrl, scanId, gateConfig).catch(() => {});
@@ -292,7 +295,7 @@ const runScan = async (
         });
         if (!cancelled) {
           consecutiveFailures++;
-          console.error(`Module ${mod.name} failed:`, err);
+          scanLogger.error({ scanId, module: mod.name, err: String(err) }, `Module failed`);
         }
       }
     };
@@ -328,7 +331,7 @@ const runScan = async (
           if (mod.status === "pending") mod.status = "skipped";
         }
       }
-      console.warn(`Scan ${scanId}: circuit breaker tripped after ${CIRCUIT_BREAKER_THRESHOLD} consecutive module failures`);
+      scanLogger.warn({ scanId, threshold: CIRCUIT_BREAKER_THRESHOLD }, `Circuit breaker tripped`);
     }
 
     if (!abortSignal?.aborted) {
@@ -465,7 +468,7 @@ const sendCallback = async (callbackUrl: string, scanId: string, gateConfig?: { 
       if (res.ok || res.status < 500) return; // Success or client error (don't retry 4xx)
     } catch (err) {
       if (attempt === 2) {
-        console.error(`Callback to ${callbackUrl} failed after 3 attempts:`, err);
+        scanLogger.error({ callbackUrl, err: String(err) }, `Callback failed after 3 attempts`);
         return;
       }
     }

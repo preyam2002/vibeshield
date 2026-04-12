@@ -76,12 +76,8 @@ if (!globalForSchedule.__vibeshieldScheduleTimer) {
 export async function POST(req: NextRequest) {
   const auth = validateApiKey(req);
   if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
-  const body = await req.json() as {
-    url?: string;
-    mode?: "full" | "security" | "quick";
-    callbackUrl?: string;
-    intervalHours?: number;
-  };
+  let body: { url?: string; mode?: "full" | "security" | "quick"; callbackUrl?: string; intervalHours?: number };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
 
   const url = typeof body.url === "string" ? body.url.trim() : "";
   if (!url) {

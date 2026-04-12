@@ -286,40 +286,39 @@ export const injectionModule: ScanModule = async (target) => {
       ),
     ),
 
-    // SSTI: parallelize across endpoints
+    // SSTI: parallelize across endpoints.
+    // Uses unique large-product markers (9-digit results) to avoid random matches
+    // on marketing pages where small numbers like "49" or "64" appear naturally
+    // (image dimensions, CSS percentages, dates, etc.)
     Promise.allSettled(
       dedupedTargets.slice(0, 5).map(async (t) => {
         const pathname = new URL(t.url).pathname;
+        const PROBE_A = { input: "{{19123*19321}}", value: "369475483" };
+        const PROBE_B = { input: "{{27351*28121}}", value: "769137471" };
 
-        let baselineHas49 = false;
         try {
           const baseUrl = new URL(t.url);
-          baseUrl.searchParams.set(t.paramName, "harmless_test_value");
+          baseUrl.searchParams.set(t.paramName, "vs_baseline_" + Math.random().toString(36).slice(2, 10));
           const baseRes = await scanFetch(baseUrl.href, { timeoutMs: 5000 });
           const baselineText = await baseRes.text();
-          baselineHas49 = baselineText.includes("49");
-        } catch { /* skip */ }
-
-        if (baselineHas49) return null;
+          if (baselineText.includes(PROBE_A.value) || baselineText.includes(PROBE_B.value)) return null;
+        } catch { return null; }
 
         const url1 = new URL(t.url);
-        url1.searchParams.set(t.paramName, "{{7*7}}");
+        url1.searchParams.set(t.paramName, PROBE_A.input);
         const res1 = await scanFetch(url1.href, { timeoutMs: 5000 });
         const text1 = await res1.text();
 
         if (looksLikeHtml(text1) && target.isSpa) return null;
+        if (!text1.includes(PROBE_A.value)) return null;
 
-        if (text1.includes("49") && !text1.includes("{{7*7}}")) {
-          const url2 = new URL(t.url);
-          url2.searchParams.set(t.paramName, "{{8*8}}");
-          const res2 = await scanFetch(url2.href, { timeoutMs: 5000 });
-          const text2 = await res2.text();
+        const url2 = new URL(t.url);
+        url2.searchParams.set(t.paramName, PROBE_B.input);
+        const res2 = await scanFetch(url2.href, { timeoutMs: 5000 });
+        const text2 = await res2.text();
 
-          if (text2.includes("64") && !text2.includes("{{8*8}}")) {
-            return { pathname };
-          }
-        }
-        return null;
+        if (!text2.includes(PROBE_B.value)) return null;
+        return { pathname };
       }),
     ),
   ]);

@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
-import { getScan, findPreviousScan, getPercentile, cancelScan, getScanHistory } from "@/lib/scanner/store";
-import { dbAvailable, dbGetScan } from "@/lib/db";
+import { NextResponse, type NextRequest } from "next/server";
+import { getScan, findPreviousScan, getPercentile, cancelScan, getScanHistory, deleteScan } from "@/lib/scanner/store";
+import { dbAvailable, dbGetScan, dbDeleteScan } from "@/lib/db";
+import { validateApiKey } from "@/lib/auth";
 
 export async function GET(
   _req: Request,
@@ -59,17 +60,21 @@ export async function GET(
 }
 
 export async function DELETE(
-  _req: Request,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = validateApiKey(req);
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
   const { id } = await params;
-  const scan = getScan(id);
+  const scan = getScan(id) ?? (dbAvailable ? dbGetScan(id) : undefined);
   if (!scan) {
     return NextResponse.json({ error: "Scan not found" }, { status: 404 });
   }
-  if (scan.status !== "scanning") {
-    return NextResponse.json({ error: "Scan is not running" }, { status: 409 });
+  if (scan.status === "scanning" || scan.status === "queued") {
+    cancelScan(id);
+    return NextResponse.json({ id, status: "cancelled", message: "Scan cancelled successfully." });
   }
-  cancelScan(id);
-  return NextResponse.json({ id, status: "cancelled", message: "Scan cancelled successfully." });
+  deleteScan(id);
+  if (dbAvailable) dbDeleteScan(id);
+  return NextResponse.json({ id, status: "deleted", message: "Scan deleted." });
 }

@@ -39,7 +39,11 @@ const OPENAPI_PATHS = [
 ];
 
 const TECH_SIGNATURES: Record<string, RegExp[]> = {
-  "Next.js": [/__next/i, /_next\/static/i, /next-router/i],
+  // Next.js — match specific runtime markers, not just "_next" text which can
+  // appear inside third-party tracking bundles that monitor Next.js apps.
+  "Next.js": [/__NEXT_DATA__/, /\/_next\/static\//, /next\/dist\//],
+  WordPress: [/\/wp-content\//, /\/wp-includes\//, /name=["']generator["']\s+content=["']WordPress/i, /\/wp-json\//],
+  Elementor: [/elementor-frontend/i, /elementor\/assets\//i, /data-elementor-type/],
   Supabase: [/supabase/i, /\.supabase\.co/i, /supabaseUrl/i],
   Firebase: [/firebase/i, /firebaseConfig/i, /\.firebaseapp\.com/i, /firebasestorage\.googleapis/i],
   React: [/__react/i, /react-dom/i, /reactMount/i],
@@ -262,10 +266,23 @@ export const runRecon = async (inputUrl: string): Promise<ScanTarget> => {
   // Also check headers for tech hints
   const server = target.headers["server"] || "";
   const poweredBy = target.headers["x-powered-by"] || "";
-  if (/next/i.test(server) || /next/i.test(poweredBy)) target.technologies.push("Next.js");
+  // Header-based Next.js detection — require a specific header, not a loose "next" substring
+  // (Apache and PHP sometimes surface "next" in unrelated contexts).
+  if (target.headers["x-nextjs-build-id"] || target.headers["x-nextjs-cache"] || /\bnext\.js\b/i.test(poweredBy)) {
+    target.technologies.push("Next.js");
+  }
   if (/vercel/i.test(server)) target.technologies.push("Vercel");
 
   target.technologies = [...new Set(target.technologies)];
+
+  // WordPress and modern JS frameworks are almost always mutually exclusive.
+  // If the page is clearly WordPress, drop false-positive framework detections
+  // that may have fired on strings inside plugin/tracker bundles.
+  if (target.technologies.includes("WordPress")) {
+    target.technologies = target.technologies.filter(
+      (t) => !["Next.js", "Remix", "Nuxt", "SvelteKit", "Astro"].includes(t),
+    );
+  }
 
   // Extract API endpoints referenced in JS bundles
   const apiFromJs = new Set<string>();

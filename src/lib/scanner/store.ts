@@ -56,6 +56,8 @@ export const createScan = (id: string, target: string, mode: "full" | "security"
 
 export const getScan = (id: string): ScanResult | undefined => scans.get(id);
 
+export const deleteScan = (id: string): void => { scans.delete(id); };
+
 export const getActiveScansCount = (): number =>
   Array.from(scans.values()).filter((s) => s.status === "scanning" || s.status === "queued").length;
 
@@ -87,7 +89,11 @@ const cleanupStaleScans = () => {
       now - new Date(scan.startedAt).getTime() > STALE_SCAN_TIMEOUT_MS
     ) {
       scan.status = "failed";
+      scan.error = "Scan timed out (exceeded stale threshold)";
       scan.completedAt = new Date().toISOString();
+      if (dbAvailable) {
+        try { dbSaveScan(scan); } catch { /* in-memory is primary */ }
+      }
     }
   }
 };

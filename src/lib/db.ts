@@ -51,6 +51,7 @@ function initDb(): void {
     db!.pragma("foreign_keys = ON");
 
     createTables();
+    migrateSchema();
     createIndexes();
 
     globalForDb.__vibeshieldDb = db;
@@ -97,6 +98,9 @@ function createTables(): void {
       code_snippet TEXT,
       endpoint TEXT,
       confidence INTEGER,
+      cvss_score REAL,
+      cvss_vector TEXT,
+      cvss_rating TEXT,
       suppressed INTEGER DEFAULT 0,
       suppressed_reason TEXT
     );
@@ -126,6 +130,16 @@ function createTables(): void {
       created_at TEXT
     );
   `);
+}
+
+function migrateSchema(): void {
+  // Add CVSS columns to existing findings table (safe to run repeatedly — SQLite ignores if exists)
+  const cols = db!.prepare("PRAGMA table_info(findings)").all().map((r) => (r as { name: string }).name);
+  if (!cols.includes("cvss_score")) {
+    db!.exec("ALTER TABLE findings ADD COLUMN cvss_score REAL");
+    db!.exec("ALTER TABLE findings ADD COLUMN cvss_vector TEXT");
+    db!.exec("ALTER TABLE findings ADD COLUMN cvss_rating TEXT");
+  }
 }
 
 function createIndexes(): void {
@@ -196,6 +210,9 @@ function rowToFinding(row: Record<string, unknown>): Finding {
   if (row.code_snippet) f.codeSnippet = row.code_snippet as string;
   if (row.endpoint) f.endpoint = row.endpoint as string;
   if (row.confidence !== null && row.confidence !== undefined) f.confidence = row.confidence as number;
+  if (row.cvss_score !== null && row.cvss_score !== undefined) {
+    f.cvss = { score: row.cvss_score as number, vector: (row.cvss_vector as string) || "", rating: (row.cvss_rating as string) || "" };
+  }
   return f;
 }
 
@@ -225,67 +242,46 @@ function loadFullScan(row: Record<string, unknown>): ScanResult {
 export function dbSaveScan(scan: ScanResult): void {
   if (!db) return;
 
-  db!.prepare(`
-    INSERT OR REPLACE INTO scans (id, target, status, mode, started_at, completed_at, error, grade, score, technologies, is_spa, summary, surface, comparison)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    scan.id,
-    scan.target,
-    scan.status,
-    scan.mode,
-    scan.startedAt,
-    scan.completedAt ?? null,
-    scan.error ?? null,
-    scan.grade,
-    scan.score,
-    jsonOrNull(scan.technologies),
-    scan.isSpa ? 1 : 0,
-    jsonOrNull(scan.summary),
-    jsonOrNull(scan.surface),
-    jsonOrNull(scan.comparison),
-  );
-
-  // Replace findings and modules for this scan
-  db!.prepare("DELETE FROM findings WHERE scan_id = ?").run(scan.id);
-  db!.prepare("DELETE FROM modules WHERE scan_id = ?").run(scan.id);
-
-  const insertFinding = db!.prepare(`
-    INSERT INTO findings (id, scan_id, module, severity, title, description, evidence, remediation, cwe, owasp, code_snippet, endpoint, confidence, suppressed, suppressed_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
-  `);
-
-  for (const f of scan.findings) {
-    insertFinding.run(
-      f.id,
-      scan.id,
-      f.module,
-      f.severity,
-      f.title,
-      f.description,
-      f.evidence ?? null,
-      f.remediation,
-      f.cwe ?? null,
-      f.owasp ?? null,
-      f.codeSnippet ?? null,
-      f.endpoint ?? null,
-      f.confidence ?? null,
+  db!.exec("BEGIN");
+  try {
+    db!.prepare(`
+      INSERT OR REPLACE INTO scans (id, target, status, mode, started_at, completed_at, error, grade, score, technologies, is_spa, summary, surface, comparison)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      scan.id, scan.target, scan.status, scan.mode, scan.startedAt,
+      scan.completedAt ?? null, scan.error ?? null, scan.grade, scan.score,
+      jsonOrNull(scan.technologies), scan.isSpa ? 1 : 0,
+      jsonOrNull(scan.summary), jsonOrNull(scan.surface), jsonOrNull(scan.comparison),
     );
-  }
 
-  const insertModule = db!.prepare(`
-    INSERT INTO modules (scan_id, name, status, findings_count, duration_ms, error)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
+    db!.prepare("DELETE FROM findings WHERE scan_id = ?").run(scan.id);
+    db!.prepare("DELETE FROM modules WHERE scan_id = ?").run(scan.id);
 
-  for (const m of scan.modules) {
-    insertModule.run(
-      scan.id,
-      m.name,
-      m.status,
-      m.findingsCount,
-      m.durationMs ?? null,
-      m.error ?? null,
-    );
+    const insertFinding = db!.prepare(`
+      INSERT INTO findings (id, scan_id, module, severity, title, description, evidence, remediation, cwe, owasp, code_snippet, endpoint, confidence, cvss_score, cvss_vector, cvss_rating, suppressed, suppressed_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+    `);
+    for (const f of scan.findings) {
+      insertFinding.run(
+        f.id, scan.id, f.module, f.severity, f.title, f.description,
+        f.evidence ?? null, f.remediation, f.cwe ?? null, f.owasp ?? null,
+        f.codeSnippet ?? null, f.endpoint ?? null, f.confidence ?? null,
+        f.cvss?.score ?? null, f.cvss?.vector ?? null, f.cvss?.rating ?? null,
+      );
+    }
+
+    const insertModule = db!.prepare(`
+      INSERT INTO modules (scan_id, name, status, findings_count, duration_ms, error)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const m of scan.modules) {
+      insertModule.run(scan.id, m.name, m.status, m.findingsCount, m.durationMs ?? null, m.error ?? null);
+    }
+
+    db!.exec("COMMIT");
+  } catch (e) {
+    db!.exec("ROLLBACK");
+    throw e;
   }
 }
 

@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
     ...(i > 0 ? {
       delta: {
         score: s.score - matching[i - 1].score,
-        findings: s.findings - matching[i - 1].findings,
+        findings: s.summary.total - matching[i - 1].summary.total,
         critical: s.summary.critical - matching[i - 1].summary.critical,
         high: s.summary.high - matching[i - 1].summary.high,
       },

@@ -50,7 +50,7 @@ function CompareContent() {
 
   useEffect(() => {
     fetch("/api/scans").then((r) => r.json()).then((d) => {
-      setScans((d.scans || []).filter((s: ScanListItem) => s.status === "completed"));
+      setScans((Array.isArray(d) ? d : []).filter((s: ScanListItem) => s.status === "completed"));
     }).catch(() => {});
   }, []);
 

@@ -15,7 +15,8 @@ export const GET = async (
     return NextResponse.json({ error: "Scan not found" }, { status: 404 });
   }
 
-  const hostname = new URL(scan.target).hostname;
+  let hostname: string;
+  try { hostname = new URL(scan.target).hostname; } catch { hostname = scan.target; }
   const minScore = Math.max(0, scan.score - 10); // Set gate slightly below current score
 
   const workflow = `# VibeShield Security Scan — ${hostname}

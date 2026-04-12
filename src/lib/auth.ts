@@ -52,12 +52,10 @@ export const withAuth = (handler: (req: NextRequest) => Promise<NextResponse>) =
   };
 };
 
-/** Constant-time string comparison */
+/** Constant-time string comparison — uses SHA-256 to normalize length before comparing */
 const timingSafeEqual = (a: string, b: string): boolean => {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
+  const { createHash, timingSafeEqual: tsEqual } = require("crypto");
+  const hashA = createHash("sha256").update(a).digest();
+  const hashB = createHash("sha256").update(b).digest();
+  return tsEqual(hashA, hashB);
 };

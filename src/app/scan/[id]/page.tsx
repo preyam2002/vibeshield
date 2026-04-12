@@ -99,6 +99,7 @@ const CVSS_COLORS: Record<string, string> = {
 };
 
 const FindingCard = ({ finding, isOpen, onToggle, suppressed, onSuppress }: { finding: Finding; isOpen: boolean; onToggle: () => void; suppressed?: { reason?: string; suppressedAt?: string }; onSuppress?: (key: string) => void }) => {
+  const [copied, setCopied] = useState(false);
   const sev = SEVERITY_CONFIG[finding.severity];
   const isSuppressed = !!suppressed;
   const cvssColor = finding.cvss ? (CVSS_COLORS[finding.cvss.rating] || CVSS_COLORS.None) : "";
@@ -226,13 +227,12 @@ const FindingCard = ({ finding, isOpen, onToggle, suppressed, onSuppress }: { fi
                 e.stopPropagation();
                 const prompt = `Fix this security vulnerability in my app:\n\n**${finding.title}**\n\nSeverity: ${finding.severity.toUpperCase()}\n\n${finding.description}\n\n${finding.evidence ? `Evidence:\n${finding.evidence}\n\n` : ""}Recommended fix:\n${finding.remediation}${finding.codeSnippet ? `\n\nExample code fix:\n\`\`\`\n${finding.codeSnippet}\n\`\`\`` : ""}`;
                 navigator.clipboard.writeText(prompt);
-                const btn = e.currentTarget;
-                btn.textContent = "Copied!";
-                setTimeout(() => { btn.textContent = "Copy AI fix prompt"; }, 2000);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
               }}
               className="text-[10px] bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-400 rounded px-2 py-0.5 transition-colors ml-auto"
             >
-              Copy AI fix prompt
+              {copied ? "Copied!" : "Copy AI fix prompt"}
             </button>
           </div>
           {finding.cvss && (
@@ -396,6 +396,20 @@ export default function ScanPage({ params }: { params: Promise<{ id: string }> }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  // Dynamic document title
+  useEffect(() => {
+    if (!scan) return;
+    const hostname = (() => { try { return new URL(scan.target).hostname; } catch { return scan.target; } })();
+    if (scan.status === "scanning" || scan.status === "queued") {
+      document.title = `Scanning ${hostname}... — VibeShield`;
+    } else if (scan.status === "failed") {
+      document.title = `Failed | ${hostname} — VibeShield`;
+    } else {
+      document.title = `${scan.grade} (${scan.score}) | ${hostname} — VibeShield`;
+    }
+    return () => { document.title = "VibeShield — Pentest Your Vibe-Coded App"; };
+  }, [scan?.status, scan?.grade, scan?.score, scan?.target]);
 
   // Auto-expand first critical/high finding when scan completes, or deep-link to hash target
   useEffect(() => {
@@ -945,7 +959,7 @@ export default nextConfig;`;
         {!isRunning && scan.status === "completed" && scan.mode === "quick" && scan.summary.total > 0 && (
           <div className="mb-4 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center justify-between gap-3">
             <div className="text-xs text-orange-300/80">
-              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check {48 + 6 - 13} more security modules including injection, SSRF, and stress testing.
+              Quick scan found {scan.summary.total} issue{scan.summary.total !== 1 ? "s" : ""}. Run a full scan to check 41 more security modules including injection, SSRF, and stress testing.
             </div>
             <button
               onClick={async () => {

@@ -1,6 +1,21 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { validateApiKey } from "@/lib/auth";
 
+const isPrivateHost = (host: string): boolean => {
+  if (host === "localhost" || host === "0.0.0.0" || host === "::1") return true;
+  if (host.endsWith(".internal") || host.endsWith(".local") || host.endsWith(".localhost")) return true;
+  if (host.startsWith("::ffff:")) return isPrivateHost(host.slice(7));
+  if (host.startsWith("fd") || host.startsWith("fe80:") || host.startsWith("fc")) return true;
+  const parts = host.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((p) => isNaN(p))) return false;
+  const [a, b] = parts;
+  if (a === 127 || a === 10 || a === 0) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+};
+
 /**
  * Webhook test endpoint — sends a sample payload to a webhook URL
  * so users can verify their Slack/Discord integration works.
@@ -11,7 +26,8 @@ import { validateApiKey } from "@/lib/auth";
 export async function POST(req: NextRequest) {
   const auth = validateApiKey(req);
   if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
-  const body = await req.json() as { url?: string; format?: string };
+  let body: { url?: string; format?: string };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON in request body" }, { status: 400 }); }
 
   const webhookUrl = typeof body.url === "string" ? body.url.trim() : "";
   if (!webhookUrl) {
@@ -26,6 +42,10 @@ export async function POST(req: NextRequest) {
     }
   } catch {
     return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
+  }
+
+  if (isPrivateHost(parsed.hostname)) {
+    return NextResponse.json({ error: "Webhook URL cannot point to private addresses" }, { status: 400 });
   }
 
   const format = body.format === "discord" ? "discord" : body.format === "json" ? "json" : "slack";
@@ -97,7 +117,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     return NextResponse.json({
       success: false,
-      error: err instanceof Error ? err.message : "Failed to send webhook",
+      error: "Failed to send webhook",
     });
   }
 }
